@@ -14,7 +14,8 @@ const historyCache = new Map();
 let runBusy = false;
 let alignMode = false;
 let alignTurn = 1;
-const TURN_H = 150;
+let alignCumulative = [0]; // alignCumulative[i] = 第 i+1 轮顶部的滚动偏移
+let alignScrollGuard = false; // 程序同步滚动时避免 scroll 事件回环
 let expandedGroups = new Set();
 
 function escapeHtml(value) {
@@ -490,7 +491,7 @@ async function loadHistory(id) {
     const conversations = data.conversations || [];
     historyCache.set(id, conversations);
     renderChat(panel, conversations);
-    if (alignMode) refreshAlign();
+    if (alignMode) reflowAlign();
   } catch (err) {
     chat.innerHTML = `<div class="empty">加载历史失败: ${escapeHtml(err.message)}</div>`;
   }
@@ -506,10 +507,12 @@ function renderHistory(panel, conversations) {
   chat.innerHTML = "";
   chat.classList.remove("aligned");
   let count = 0;
+  let idx = 0;
   for (const conv of conversations) {
     for (const msg of conv.history || []) {
       count++;
-      chat.appendChild(bubbleFor(msg));
+      chat.appendChild(bubbleFor(msg, idx));
+      idx++;
     }
   }
   if (!count) {
@@ -538,29 +541,26 @@ function groupTurns(history) {
   return turns;
 }
 
-// 轮次对齐模式：每轮固定行高，行内内容超高时行内滚动，保证所有面板按轮次对齐
+// 轮次对齐模式：保留连续气泡流，每轮包一层 turn-wrap，高度由 reflowAlign 统一为各面板该轮的最大值
 function renderAligned(panel, conversations) {
   const chat = panel.querySelector(".chat");
   chat.innerHTML = "";
   chat.classList.add("aligned");
+  let count = 0;
   let idx = 0;
   for (const conv of conversations) {
     for (const turn of groupTurns(conv.history)) {
-      const row = document.createElement("div");
-      row.className = "turn-row";
-      const label = document.createElement("div");
-      label.className = "turn-label";
-      label.textContent = `轮次 ${idx + 1}`;
-      row.appendChild(label);
-      const body = document.createElement("div");
-      body.className = "turn-body";
-      for (const msg of turn.messages) body.appendChild(bubbleFor(msg));
-      row.appendChild(body);
-      chat.appendChild(row);
-      idx++;
+      const wrap = document.createElement("div");
+      wrap.className = "turn-wrap";
+      for (const msg of turn.messages) {
+        wrap.appendChild(bubbleFor(msg, idx));
+        idx++;
+      }
+      chat.appendChild(wrap);
+      count++;
     }
   }
-  if (!idx) {
+  if (!count) {
     const p = document.createElement("div");
     p.className = "empty";
     p.textContent = "暂无对话历史";
@@ -585,10 +585,11 @@ function extractText(content) {
   return "";
 }
 
-function bubbleFor(msg) {
+function bubbleFor(msg, index) {
   const role = msg.role || "";
   const text = extractText(msg.content);
   const el = document.createElement("div");
+  el.dataset.index = String(index);
   if (role === "user") {
     el.className = "msg user";
     el.textContent = text || "（空消息）";
@@ -614,7 +615,107 @@ function bubbleFor(msg) {
       el.textContent = text || "…";
     }
   }
+  // 悬停操作：编辑（全部消息）+ 重新生成（仅 user 发言）
+  const actions = document.createElement("div");
+  actions.className = "msg-actions";
+  const editBtn = document.createElement("button");
+  editBtn.type = "button";
+  editBtn.className = "icon-btn";
+  editBtn.dataset.action = "edit";
+  editBtn.textContent = "编辑";
+  actions.appendChild(editBtn);
+  if (role === "user") {
+    const regenBtn = document.createElement("button");
+    regenBtn.type = "button";
+    regenBtn.className = "icon-btn";
+    regenBtn.dataset.action = "regenerate";
+    regenBtn.textContent = "重新生成";
+    actions.appendChild(regenBtn);
+  }
+  el.appendChild(actions);
   return el;
+}
+
+// 在会话历史（conversations）中按全局索引取消息
+function historyMsgAt(conversations, index) {
+  let i = 0;
+  for (const conv of conversations || []) {
+    for (const m of conv.history || []) {
+      if (i === index) return m;
+      i++;
+    }
+  }
+  return null;
+}
+
+function startEditMsg(panel, index) {
+  const id = panel.dataset.id;
+  const convs = historyCache.get(id) || [];
+  const msg = historyMsgAt(convs, index);
+  const msgEl = panel.querySelector(`.msg[data-index="${index}"]`);
+  if (!msg || !msgEl || msgEl.querySelector(".msg-edit")) return;
+  const wrap = document.createElement("div");
+  wrap.className = "msg-edit";
+  const ta = document.createElement("textarea");
+  ta.className = "msg-edit-input";
+  ta.value = extractText(msg.content);
+  const row = document.createElement("div");
+  row.className = "msg-edit-actions";
+  const save = document.createElement("button");
+  save.type = "button";
+  save.className = "btn primary small";
+  save.textContent = "保存";
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.className = "btn small";
+  cancel.textContent = "取消";
+  row.append(save, cancel);
+  wrap.append(ta, row);
+  msgEl.innerHTML = "";
+  msgEl.appendChild(wrap);
+  save.addEventListener("click", () => void saveEditMsg(id, index, ta.value));
+  cancel.addEventListener("click", () => renderChat(panel, convs));
+  ta.focus();
+}
+
+async function saveEditMsg(id, index, content) {
+  const panel = panelEls.get(id);
+  try {
+    await bridge.apiPost("sessions/history/edit", { id, index, content });
+  } catch (err) {
+    if (panel) panelStatus(panel, "error", "保存失败: " + err.message);
+    return;
+  }
+  void loadHistory(id);
+}
+
+async function regenerateMsg(id, index) {
+  const panel = panelEls.get(id);
+  try {
+    const resp = await bridge.apiPost("sessions/history/regenerate", { id, index });
+    if (panel) panelStatus(panel, "warn", "重新生成中…");
+    pollRun(
+      resp.test_id,
+      (r) => {
+        const p = panelEls.get(id);
+        if (!p) return;
+        if (r.status === "ok") {
+          panelStatus(p, "ok", `重新生成完成（${r.duration}s）`);
+        } else {
+          panelStatus(
+            p,
+            r.status === "error" ? "error" : "warn",
+            statusText(r.status) + (r.error ? `：${r.error}` : ""),
+          );
+        }
+        void loadHistory(id);
+      },
+      () => {},
+    );
+  } catch (err) {
+    if (panel) panelStatus(panel, "error", "重新生成失败: " + err.message);
+    void loadHistory(id); // 后端可能已截断历史，刷新展示
+  }
 }
 
 function panelStatus(panel, status, text) {
@@ -632,11 +733,36 @@ function clearPanelStatus(panel) {
 
 // ---------- 发送 ----------
 
-function runParams() {
-  return {
-    timeout: parseFloat($("run-timeout").value) || 120,
-    batch_size: parseInt($("run-batch-size").value, 10) || 10,
-  };
+// 轮询测试运行状态：每个会话完成时回调 onSession（单独刷新），全部完成回调 onAll
+function pollRun(testId, onSession, onAll) {
+  const seen = new Set();
+  let stopped = false;
+  const timer = setInterval(tick, 1000);
+  async function tick() {
+    if (stopped) return;
+    let record;
+    try {
+      record = await bridge.apiGet(`test/run/status?test_id=${encodeURIComponent(testId)}`);
+    } catch (err) {
+      return; // 查询失败下轮重试
+    }
+    for (const r of record.results || []) {
+      if (!seen.has(r.session_id)) {
+        seen.add(r.session_id);
+        try {
+          onSession(r);
+        } catch (err) {
+          console.error("会话结果刷新失败:", err);
+        }
+      }
+    }
+    if (record.done) {
+      stopped = true;
+      clearInterval(timer);
+      onAll(record);
+    }
+  }
+  void tick();
 }
 
 async function sendToOne(id, text) {
@@ -647,21 +773,28 @@ async function sendToOne(id, text) {
   input.value = "";
   panelStatus(panel, "warn", "发送中…");
   try {
-    const result = await bridge.apiPost("test/run", { sessions: [id], text, ...runParams() });
-    const r = result.results && result.results[0];
-    if (r && r.status === "ok") {
-      panelStatus(panel, "ok", `回复成功（${r.duration}s）`);
-    } else if (r) {
-      panelStatus(
-        panel,
-        r.status === "error" ? "error" : "warn",
-        statusText(r.status) + (r.error ? `：${r.error}` : ""),
-      );
-    }
+    const resp = await bridge.apiPost("test/run", { sessions: [id], text });
+    pollRun(
+      resp.test_id,
+      (r) => {
+        const p = panelEls.get(id);
+        if (!p) return;
+        if (r.status === "ok") {
+          panelStatus(p, "ok", `回复成功（${r.duration}s）`);
+        } else {
+          panelStatus(
+            p,
+            r.status === "error" ? "error" : "warn",
+            statusText(r.status) + (r.error ? `：${r.error}` : ""),
+          );
+        }
+        void loadHistory(id);
+      },
+      () => {},
+    );
   } catch (err) {
     panelStatus(panel, "error", "发送失败: " + err.message);
   }
-  void loadHistory(id);
 }
 
 async function sendToAll() {
@@ -682,35 +815,41 @@ async function sendToAll() {
   $("run-text").value = "";
   showRunStatus("warn", `正在并发发送给 ${ids.length} 个会话…`);
   try {
-    const result = await bridge.apiPost("test/run", {
-      sessions: ids,
-      text,
-      ...runParams(),
-    });
-    const s = result.stats || {};
-    showRunStatus(
-      result.error || result.timeout ? "warn" : "ok",
-      `完成：成功 ${result.ok} / 无回复 ${result.no_reply} / 超时 ${result.timeout} / 错误 ${result.error}` +
-        `，耗时 avg ${s.avg}s，p95 ${s.p95}s`,
-    );
-    for (const r of result.results || []) {
-      const panel = panelEls.get(r.session_id);
-      if (!panel) continue;
-      if (r.status === "ok") {
-        panelStatus(panel, "ok", `回复成功（${r.duration}s）`);
-      } else {
-        panelStatus(
-          panel,
-          r.status === "error" ? "error" : "warn",
-          statusText(r.status) + (r.error ? `：${r.error}` : ""),
+    const resp = await bridge.apiPost("test/run", { sessions: ids, text });
+    pollRun(
+      resp.test_id,
+      (r) => {
+        const panel = panelEls.get(r.session_id);
+        if (panel) {
+          if (r.status === "ok") {
+            panelStatus(panel, "ok", `回复成功（${r.duration}s）`);
+          } else {
+            panelStatus(
+              panel,
+              r.status === "error" ? "error" : "warn",
+              statusText(r.status) + (r.error ? `：${r.error}` : ""),
+            );
+          }
+        }
+        void loadHistory(r.session_id);
+      },
+      (record) => {
+        const s = record.stats || {};
+        const ok = record.results.filter((r) => r.status === "ok").length;
+        const noReply = record.results.filter((r) => r.status === "no_reply").length;
+        const err = record.results.filter((r) => r.status === "error").length;
+        showRunStatus(
+          err ? "warn" : "ok",
+          `完成：成功 ${ok} / 无回复 ${noReply} / 错误 ${err}` +
+            `，耗时 avg ${s.avg}s，p95 ${s.p95}s`,
         );
-      }
-    }
-    // 重新拉取所有面板历史，与真实 pipeline 持久化的对话同步
-    for (const id of ids) void loadHistory(id);
+        runBusy = false;
+        $("btn-run-all").disabled = false;
+        $("btn-run-all").textContent = "发送到全部";
+      },
+    );
   } catch (err) {
     showRunStatus("error", "发送失败: " + err.message);
-  } finally {
     runBusy = false;
     $("btn-run-all").disabled = false;
     $("btn-run-all").textContent = "发送到全部";
@@ -828,7 +967,7 @@ function renderPanels() {
   panelsEl.classList.toggle("single", openIds.length === 1);
   $("empty-hint").hidden = openIds.length > 0;
   $("align-bar").hidden = !alignMode || openIds.length === 0;
-  if (alignMode) refreshAlign();
+  if (alignMode) reflowAlign();
 }
 
 // 拖拽排序
@@ -872,29 +1011,66 @@ panelsEl.addEventListener("dragend", () => {
   document.querySelectorAll(".panel.dragging").forEach((p) => p.classList.remove("dragging"));
 });
 
+// 气泡悬停操作：编辑历史消息 / 重新生成某轮
+panelsEl.addEventListener("click", (e) => {
+  const btn = e.target.closest('[data-action="edit"], [data-action="regenerate"]');
+  if (!btn) return;
+  const panel = btn.closest(".panel");
+  const msgEl = btn.closest(".msg");
+  if (!panel || !msgEl) return;
+  const index = parseInt(msgEl.dataset.index, 10);
+  if (Number.isNaN(index)) return;
+  if (btn.dataset.action === "edit") startEditMsg(panel, index);
+  else if (btn.dataset.action === "regenerate") void regenerateMsg(panel.dataset.id, index);
+});
+
 // ---------- 轮次对齐 ----------
 
-function alignMaxTurns() {
-  let m = 1;
+// 重新测量所有打开面板的每轮内容高度，把每轮统一撑到各面板该轮的最大高度，
+// 使各面板总高度一致、轮次纵向对齐，再刷新滑动条
+function reflowAlign() {
+  if (!alignMode) return;
+  const turnList = [];
   for (const id of openIds) {
     const panel = panelEls.get(id);
     if (!panel) continue;
-    m = Math.max(m, panel.querySelectorAll(".turn-row").length);
+    const ws = [...panel.querySelectorAll(".turn-wrap")];
+    for (const w of ws) w.style.height = ""; // 先还原自然高度再测量
+    turnList.push(ws);
   }
-  return m;
+  const maxTurns = Math.max(1, ...turnList.map((ws) => ws.length));
+  const maxH = [];
+  for (let i = 0; i < maxTurns; i++) {
+    maxH[i] = Math.max(0, ...turnList.map((ws) => (ws[i] ? ws[i].scrollHeight : 0)));
+  }
+  for (const ws of turnList) {
+    ws.forEach((w, i) => {
+      w.style.height = maxH[i] + "px";
+    });
+  }
+  alignCumulative = [0];
+  for (let i = 0; i < maxTurns; i++) {
+    alignCumulative.push(alignCumulative[i] + maxH[i]);
+  }
+  refreshAlign();
 }
 
 // 把统一滑动条定位到指定轮次，同步所有面板的滚动位置
 function setTurn(t, { force = false } = {}) {
   if (!alignMode) return;
-  const max = alignMaxTurns();
+  const max = alignCumulative.length - 1;
   t = Math.max(1, Math.min(max, Math.round(t)));
   if (!force && t === alignTurn) return;
   alignTurn = t;
-  const top = (t - 1) * TURN_H;
-  for (const [, panel] of panelEls) {
-    const chat = panel.querySelector(".chat");
-    if (chat) chat.scrollTop = top;
+  const top = alignCumulative[t - 1] || 0;
+  alignScrollGuard = true;
+  try {
+    for (const [, panel] of panelEls) {
+      const chat = panel.querySelector(".chat");
+      if (chat) chat.scrollTop = top;
+    }
+  } finally {
+    alignScrollGuard = false;
   }
   $("align-slider").value = String(t);
   $("align-turn-label").textContent = `轮次 ${t}/${max}`;
@@ -902,7 +1078,7 @@ function setTurn(t, { force = false } = {}) {
 
 function refreshAlign() {
   if (!alignMode) return;
-  $("align-slider").max = String(alignMaxTurns());
+  $("align-slider").max = String(alignCumulative.length - 1);
   setTurn(alignTurn, { force: true });
 }
 
@@ -917,7 +1093,7 @@ function applyAlignMode() {
   }
   if (alignMode) {
     alignTurn = 1;
-    refreshAlign();
+    reflowAlign();
   }
 }
 
@@ -927,32 +1103,48 @@ $("align-slider").addEventListener("input", () => {
   setTurn(parseInt($("align-slider").value, 10), { force: true });
 });
 
-// 对齐模式下滚轮同步滚动所有窗口；行内还有可滚动内容时优先行内滚动
-let wheelAccum = 0;
+// 手动滚动任一面板时同步其余面板，并更新滑动条指示的当前轮次（capture 捕获不冒泡的 scroll）
 panelsEl.addEventListener(
-  "wheel",
+  "scroll",
   (e) => {
-    if (!alignMode) return;
-    const body = e.target.closest(".turn-body");
-    if (body) {
-      const canDown = body.scrollTop + body.clientHeight < body.scrollHeight - 1;
-      const canUp = body.scrollTop > 0;
-      if ((e.deltaY > 0 && canDown) || (e.deltaY < 0 && canUp)) return;
+    if (!alignMode || alignScrollGuard) return;
+    const chat = e.target;
+    if (!(chat instanceof HTMLElement) || !chat.classList.contains("chat")) return;
+    const panel = chat.closest(".panel");
+    if (!panel) return;
+    alignScrollGuard = true;
+    try {
+      for (const [id, el] of panelEls) {
+        if (id === panel.dataset.id) continue;
+        const other = el.querySelector(".chat");
+        if (!other) continue;
+        const max = other.scrollHeight - other.clientHeight;
+        other.scrollTop = Math.max(0, Math.min(max, chat.scrollTop));
+      }
+    } finally {
+      alignScrollGuard = false;
     }
-    e.preventDefault();
-    wheelAccum += e.deltaY;
-    const STEP = 60;
-    while (wheelAccum >= STEP) {
-      wheelAccum -= STEP;
-      setTurn(alignTurn + 1);
+    let turn = 1;
+    for (let i = alignCumulative.length - 2; i >= 0; i--) {
+      if (alignCumulative[i] <= chat.scrollTop + 1) {
+        turn = i + 1;
+        break;
+      }
     }
-    while (wheelAccum <= -STEP) {
-      wheelAccum += STEP;
-      setTurn(alignTurn - 1);
-    }
+    alignTurn = turn;
+    $("align-slider").value = String(turn);
+    $("align-turn-label").textContent = `轮次 ${turn}/${alignCumulative.length - 1}`;
   },
-  { passive: false },
+  true,
 );
+
+// 窗口尺寸变化会改变换行高度，防抖后重新对齐
+let alignResizeTimer = 0;
+window.addEventListener("resize", () => {
+  if (!alignMode) return;
+  clearTimeout(alignResizeTimer);
+  alignResizeTimer = setTimeout(reflowAlign, 120);
+});
 
 // ---------- 选项加载 ----------
 

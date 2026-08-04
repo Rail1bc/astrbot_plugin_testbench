@@ -630,41 +630,56 @@ code {
   font-size: 12px;
 }
 
-/* ---------- 轮次对齐模式 ---------- */
-
-.panels.align .chat {
-  overflow-y: hidden;
+/* 气泡悬停操作与编辑历史 */
+.msg-actions {
+  display: none;
+  gap: 4px;
+  justify-content: flex-end;
+  margin-top: 4px;
 }
+
+.msg:hover .msg-actions {
+  display: flex;
+}
+
+.msg-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.msg-edit-input {
+  width: 100%;
+  min-height: 60px;
+  resize: vertical;
+  background: var(--card-bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 13px;
+  box-sizing: border-box;
+}
+
+.msg-edit-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+/* ---------- 轮次对齐模式 ---------- */
 
 .chat.aligned {
   padding: 0;
   gap: 0;
 }
 
-.chat.aligned .turn-row {
-  height: 150px;
-  flex: 0 0 auto;
-  display: flex;
-  flex-direction: column;
-  border-bottom: 1px solid var(--border);
-}
-
-.chat.aligned .turn-label {
+.chat.aligned .turn-wrap {
   flex-shrink: 0;
-  font-size: 11px;
-  color: var(--text-secondary);
-  padding: 3px 12px;
-  background: var(--badge-bg);
-}
-
-.chat.aligned .turn-body {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 8px 12px;
+  gap: 8px;
+  padding: 12px;
 }
 
 .panel-status {

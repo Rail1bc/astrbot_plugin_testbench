@@ -106,7 +106,25 @@ class VirtualSessionPlugin(Star):
             f"/{PLUGIN_NAME}/test/run",
             self.run_test,
             ["POST"],
-            "并发向多个虚拟会话发送消息并汇总结果",
+            "向多个虚拟会话投递消息（立即返回 test_id，结果轮询 status 接口）",
+        )
+        context.register_web_api(
+            f"/{PLUGIN_NAME}/test/run/status",
+            self.test_run_status,
+            ["GET"],
+            "查询测试运行状态（已完成的会话逐个返回结果）",
+        )
+        context.register_web_api(
+            f"/{PLUGIN_NAME}/sessions/history/edit",
+            self.edit_history,
+            ["POST"],
+            "编辑会话历史中的单条消息",
+        )
+        context.register_web_api(
+            f"/{PLUGIN_NAME}/sessions/history/regenerate",
+            self.regenerate_history,
+            ["POST"],
+            "重新生成指定轮次（截断该轮之后的历史并重发该轮用户消息）",
         )
 
     async def list_providers(self):
@@ -328,7 +346,10 @@ class VirtualSessionPlugin(Star):
     # ---------- 测试 ----------
 
     async def run_test(self):
-        """并发向多个虚拟会话发送同一条消息并汇总结果。"""
+        """向多个虚拟会话投递同一条消息，立即返回 test_id（结果轮询 status 接口）。
+
+        与真实平台一致：不设总超时、不分批投递，完全由 AstrBot 原生 pipeline 处理。
+        """
         payload = await request.json(default={})
         sessions = payload.get("sessions")
         text = payload.get("text", "")
@@ -342,35 +363,154 @@ class VirtualSessionPlugin(Star):
             return error_response(f"未找到指定的虚拟会话: {missing}", status_code=404)
 
         try:
-            timeout = float(payload.get("timeout", 120) or 120)
-            batch_size = int(payload.get("batch_size", 10) or 10)
-            batch_interval = float(payload.get("batch_interval", 0) or 0)
-        except (TypeError, ValueError):
-            return error_response(
-                "timeout/batch_size/batch_interval 参数不合法", status_code=400
-            )
-        if timeout <= 0:
-            return error_response("timeout 必须大于 0", status_code=400)
-        if batch_size < 1:
-            return error_response("batch_size 必须大于等于 1", status_code=400)
-
-        try:
-            result = await self.runner.run(
+            test_id = await self.runner.start(
                 sessions=session_objs,
                 text=str(text),
                 provider_id=payload.get("provider_id"),
                 model=payload.get("model"),
                 conf_id=payload.get("conf_id"),
-                timeout=timeout,
-                batch_size=batch_size,
-                batch_interval=batch_interval,
             )
         except ValueError as e:
             return error_response(str(e), status_code=400)
         except Exception as e:  # noqa: BLE001
-            self.logger.error("并发测试运行失败", exc_info=True)
-            return error_response(f"并发测试运行失败: {e}", status_code=500)
-        return json_response(result)
+            self.logger.error("并发测试启动失败", exc_info=True)
+            return error_response(f"并发测试启动失败: {e}", status_code=500)
+        return json_response({"test_id": test_id, "total": len(session_objs)})
+
+    async def test_run_status(self):
+        """查询测试运行状态（已完成会话的结果与统计）。"""
+        test_id = request.query.get("test_id")
+        if not test_id:
+            return error_response("test_id 不能为空", status_code=400)
+        record = self.runner.status(test_id)
+        if record is None:
+            return error_response("未找到该测试运行", status_code=404)
+        return json_response(record)
+
+    async def edit_history(self):
+        """编辑会话历史中的单条消息内容（content 可为文本或 parts 数组）。"""
+        payload = await request.json(default={})
+        session_id = payload.get("id")
+        index = payload.get("index")
+        content = payload.get("content")
+        if not isinstance(session_id, str) or not session_id:
+            return error_response("id 不能为空", status_code=400)
+        if not isinstance(index, int) or isinstance(index, bool) or index < 0:
+            return error_response("index 必须是非负整数", status_code=400)
+        if not isinstance(content, str):
+            return error_response("content 必须是字符串", status_code=400)
+        found = self.group_mgr.find_session(session_id)
+        if found is None:
+            return error_response("未找到该虚拟会话", status_code=404)
+        group, session = found
+        resolved = self.group_mgr.effective(group, session)
+        hist_info = await self._get_session_history(resolved)
+        if hist_info is None:
+            return error_response("该会话暂无对话历史", status_code=404)
+        history, cid = hist_info
+        if index >= len(history):
+            return error_response(
+                f"index 越界（历史共 {len(history)} 条）", status_code=400
+            )
+        self._set_msg_content(history[index], content)
+        await self.context.conversation_manager.update_conversation(
+            umo_of(resolved), cid, history=history
+        )
+        return json_response({"updated": index, "history": history})
+
+    async def regenerate_history(self):
+        """重新生成指定轮次：截断该轮（含）之后的历史，重发该轮的 user 消息。"""
+        payload = await request.json(default={})
+        session_id = payload.get("id")
+        index = payload.get("index")
+        if not isinstance(session_id, str) or not session_id:
+            return error_response("id 不能为空", status_code=400)
+        if not isinstance(index, int) or isinstance(index, bool) or index < 0:
+            return error_response("index 必须是非负整数", status_code=400)
+        found = self.group_mgr.find_session(session_id)
+        if found is None:
+            return error_response("未找到该虚拟会话", status_code=404)
+        group, session = found
+        resolved = self.group_mgr.effective(group, session)
+        hist_info = await self._get_session_history(resolved)
+        if hist_info is None:
+            return error_response("该会话暂无对话历史", status_code=404)
+        history, cid = hist_info
+        if index >= len(history):
+            return error_response(
+                f"index 越界（历史共 {len(history)} 条）", status_code=400
+            )
+        turn_start = index
+        while turn_start >= 0 and history[turn_start].get("role") != "user":
+            turn_start -= 1
+        if turn_start < 0:
+            return error_response(
+                "该消息之前没有用户发言，无法定位轮次", status_code=400
+            )
+        user_text = self._msg_text(history[turn_start])
+        if not user_text.strip():
+            return error_response("该轮用户消息为空，无法重新生成", status_code=400)
+        new_history = history[:turn_start]
+        await self.context.conversation_manager.update_conversation(
+            umo_of(resolved), cid, history=new_history
+        )
+        try:
+            test_id = await self.runner.start(sessions=[resolved], text=user_text)
+        except ValueError as e:
+            return error_response(str(e), status_code=400)
+        except Exception as e:  # noqa: BLE001
+            self.logger.error("重新生成启动失败", exc_info=True)
+            return error_response(f"重新生成启动失败: {e}", status_code=500)
+        return json_response({"test_id": test_id, "total": 1})
+
+    # ---------- 会话历史辅助 ----------
+
+    async def _get_session_history(
+        self, session: dict
+    ) -> tuple[list[dict], str] | None:
+        """返回 (history, conversation_id)；该会话无对话历史时返回 None。"""
+        conv_mgr = self.context.conversation_manager
+        umo = umo_of(session)
+        cid = await conv_mgr.get_curr_conversation_id(umo)
+        if not cid:
+            return None
+        conv = await conv_mgr.get_conversation(umo, cid)
+        if not conv:
+            return None
+        try:
+            history = json.loads(conv.history)
+        except json.JSONDecodeError:
+            history = []
+        return history, cid
+
+    @staticmethod
+    def _set_msg_content(msg: dict, new_text: str) -> None:
+        """把消息 content 替换为新文本；parts 数组则替换首个 text part。"""
+        content = msg.get("content")
+        if isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    part["text"] = new_text
+                    return
+            content.append({"type": "text", "text": new_text})
+        else:
+            msg["content"] = new_text
+
+    @staticmethod
+    def _msg_text(msg: dict) -> str:
+        """提取消息的纯文本（content 可为字符串或 parts 数组）。"""
+        content = msg.get("content")
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts = []
+            for part in content:
+                if isinstance(part, str):
+                    parts.append(part)
+                elif isinstance(part, dict):
+                    parts.append(str(part.get("text") or part.get("content") or ""))
+            return "\n".join(p for p in parts if p)
+        return ""
 
     # ---------- UCR 路由辅助 ----------
 

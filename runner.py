@@ -336,12 +336,21 @@ def duration_stats(durations: list[float]) -> dict:
 
 
 class VirtualTestRunner:
-    """把一条消息并发发送到多个虚拟会话并汇总结果。"""
+    """把一条消息投递到多个虚拟会话，逐个流式汇总结果。
+
+    与真实平台一致：不设总超时、不分批投递，事件入队后完全由 AstrBot 原生
+    pipeline 处理。每次 ``start()`` 投递后立即返回 test_id，后台逐个等待会话
+    完成并记录，前端轮询 ``status()`` 即可实现"每个会话窗口独立刷新"。
+    不带 conf_id 的测试完全并行；带 conf_id 的测试之间通过路由锁串行，避免
+    临时 UCR 路由互相污染。
+    """
 
     def __init__(self, context: Context) -> None:
         self.context = context
-        self._lock = asyncio.Lock()
+        self._route_lock = asyncio.Lock()
         self._saved_routes: list[tuple[str, str | None]] = []
+        self._runs: dict[str, dict] = {}
+        self._run_seq = 0
 
     async def _apply_conf_route(self, sessions: list[dict], conf_id: str) -> None:
         """为每个会话设置精确的 UCR 路由（umo → conf_id），并保存原路由以便恢复。
@@ -368,18 +377,15 @@ class VirtualTestRunner:
                 await ucr.update_route(umop, prev_conf_id)
         self._saved_routes = []
 
-    async def run(
+    async def start(
         self,
         sessions: list[dict],
         text: str,
         provider_id: str | None = None,
         model: str | None = None,
         conf_id: str | None = None,
-        timeout: float = 120.0,
-        batch_size: int = 10,
-        batch_interval: float = 0.0,
-    ) -> dict:
-        """并发测试。
+    ) -> str:
+        """投递消息并立即返回 test_id（不等待回复）。
 
         Args:
             sessions: 已解析最终配置的虚拟会话数据列表。
@@ -387,46 +393,23 @@ class VirtualTestRunner:
             provider_id: 可选，覆盖 LLM provider。
             model: 可选，覆盖模型名。
             conf_id: 可选，临时把会话的配置档案路由到指定档案（测试提示词/系统设定）。
-            timeout: 整体等待超时（秒）。
-            batch_size: 每批入队的会话数。
-            batch_interval: 批次间隔（秒）。
 
         Returns:
-            包含 total/ok/no_reply/timeout/error/stats/results 的字典。
+            test_id，用于轮询 status()。
         """
         if not sessions:
             raise ValueError("sessions 不能为空")
         if not text or not text.strip():
             raise ValueError("text 不能为空")
 
-        # 同一时刻只允许一个测试运行（避免并发修改配置档案路由）
-        async with self._lock:
-            if conf_id:
-                await self._apply_conf_route(sessions, conf_id)
+        if conf_id:
+            await self._route_lock.acquire()
             try:
-                return await self._dispatch(
-                    sessions,
-                    text,
-                    provider_id,
-                    model,
-                    timeout,
-                    batch_size,
-                    batch_interval,
-                )
-            finally:
-                if conf_id:
-                    await self._restore_conf_route()
+                await self._apply_conf_route(sessions, conf_id)
+            except Exception:
+                self._route_lock.release()
+                raise
 
-    async def _dispatch(
-        self,
-        sessions: list[dict],
-        text: str,
-        provider_id: str | None,
-        model: str | None,
-        timeout: float,
-        batch_size: int,
-        batch_interval: float,
-    ) -> dict:
         events = [
             VirtualMessageEvent.create(
                 session_id=s["id"],
@@ -441,37 +424,69 @@ class VirtualTestRunner:
             for s in sessions
         ]
 
-        queue = self.context.get_event_queue()
-        for i in range(0, len(events), max(1, batch_size)):
-            batch = events[i : i + batch_size]
-            for event in batch:
-                queue.put_nowait(event)
-            if batch_interval and i + batch_size < len(events):
-                await asyncio.sleep(batch_interval)
-
-        try:
-            await asyncio.wait_for(
-                asyncio.gather(*(e.pipeline_done_event.wait() for e in events)),
-                timeout=timeout,
-            )
-        except asyncio.TimeoutError:
-            pass
-
-        results = []
-        for event in events:
-            if event.pipeline_done_event.is_set():
-                results.append(event.result_summary())
-            else:
-                results.append(
-                    event.result_summary(status="timeout", error="等待回复超时")
-                )
-
-        return {
-            "total": len(results),
-            "ok": sum(1 for r in results if r["status"] == "ok"),
-            "no_reply": sum(1 for r in results if r["status"] == "no_reply"),
-            "timeout": sum(1 for r in results if r["status"] == "timeout"),
-            "error": sum(1 for r in results if r["status"] == "error"),
-            "stats": duration_stats([r["duration"] for r in results]),
-            "results": results,
+        self._run_seq += 1
+        test_id = f"t_{int(time.time() * 1000)}_{self._run_seq}"
+        record = {
+            "id": test_id,
+            "total": len(events),
+            "results": {},  # session_id -> 结果摘要
+            "created_at": time.time(),
+            "finished_at": None,
+            "done": False,
+            "all_done": asyncio.Event(),
         }
+        self._runs[test_id] = record
+        self._prune_runs()
+
+        queue = self.context.get_event_queue()
+        for event in events:
+            queue.put_nowait(event)
+        for event in events:
+            asyncio.create_task(self._await_event(test_id, event))
+        if conf_id:
+            asyncio.create_task(self._release_route_after(test_id))
+        return test_id
+
+    async def _await_event(self, test_id: str, event: VirtualMessageEvent) -> None:
+        await event.pipeline_done_event.wait()
+        record = self._runs.get(test_id)
+        if record is None:
+            return
+        record["results"][event.session_id] = event.result_summary()
+        if len(record["results"]) >= record["total"] and not record["done"]:
+            record["done"] = True
+            record["finished_at"] = time.time()
+            record["all_done"].set()
+
+    async def _release_route_after(self, test_id: str) -> None:
+        record = self._runs.get(test_id)
+        if record is None:
+            return
+        await record["all_done"].wait()
+        await self._restore_conf_route()
+        self._route_lock.release()
+
+    def status(self, test_id: str) -> dict | None:
+        """查询运行状态（含已完成会话的结果与统计）。"""
+        record = self._runs.get(test_id)
+        if record is None:
+            return None
+        results = list(record["results"].values())
+        return {
+            "test_id": test_id,
+            "total": record["total"],
+            "done": record["done"],
+            "results": results,
+            "stats": duration_stats([r["duration"] for r in results]),
+        }
+
+    def _prune_runs(self) -> None:
+        """清理已完成超过 10 分钟的运行记录，避免内存累积。"""
+        now = time.time()
+        expired = [
+            tid
+            for tid, r in self._runs.items()
+            if r["done"] and (now - (r["finished_at"] or now)) > 600
+        ]
+        for tid in expired:
+            self._runs.pop(tid, None)
