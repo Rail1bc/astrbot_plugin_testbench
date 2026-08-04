@@ -112,6 +112,7 @@ jobs:
 
           rsync -a \
             --exclude '.git/' \
+            --exclude 'data/' \
             --exclude '.idea/' \
             --exclude '.vscode/' \
             --exclude '.pytest_cache/' \

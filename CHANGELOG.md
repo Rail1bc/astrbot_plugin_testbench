@@ -5,6 +5,14 @@
 <!-- markdownlint-disable MD041 -->
 # ChangeLog
 
+## [v0.2.1] - 2026-08-04
+
+### 🐛 Bug Fixes (缺陷修复)
+
+- 修复发布 zip 误打包本地运行数据 `data/`（含运行期 sqlite 数据库）的问题，发布包不再包含无关目录。
+
+---
+
 ## [v0.2.0] - 2026-08-04
 
 ### ✨ New Features (新功能)
