@@ -1,6 +1,22 @@
 // 会话测试台 - 页面脚本
-// 通过 window.AstrBotPluginPage bridge 与插件后端通信。
-const bridge = window.AstrBotPluginPage;
+import { createAlignController } from "./align.js";
+import {
+  addGroupSessions,
+  createGroup,
+  deleteGroups,
+  deleteSessions,
+  editHistory,
+  getHistory,
+  listConfs,
+  listGroups,
+  listPlatforms,
+  ready,
+  regenerateHistory,
+  resetSessions,
+  runStatus,
+  runTest,
+  updateSession,
+} from "./api.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -12,10 +28,6 @@ let pinnedIds = [];
 const panelEls = new Map();
 const historyCache = new Map();
 let runBusy = false;
-let alignMode = false;
-let alignTurn = 1;
-let alignCumulative = [0]; // alignCumulative[i] = 第 i+1 轮顶部的滚动偏移
-let alignScrollGuard = false; // 程序同步滚动时避免 scroll 事件回环
 let expandedGroups = new Set();
 
 function escapeHtml(value) {
@@ -34,8 +46,6 @@ function statusText(status) {
       return "成功";
     case "no_reply":
       return "无回复";
-    case "timeout":
-      return "超时";
     case "error":
       return "错误";
     default:
@@ -145,7 +155,7 @@ $("modal-mask").addEventListener("click", (e) => {
 // ---------- 测试组列表 ----------
 
 async function refreshGroups() {
-  const data = await bridge.apiGet("groups");
+  const data = await listGroups();
   groups = data.groups || [];
   // 清理已被删除的会话面板
   const valid = new Set();
@@ -287,10 +297,7 @@ function promptAddSessions(gid) {
         showModal("数量必须是大于 0 的整数");
         return;
       }
-      const created = await bridge.apiPost(
-        `groups/${encodeURIComponent(gid)}/sessions`,
-        { count: n },
-      );
+      const created = await addGroupSessions(gid, n);
       await refreshGroups();
       showRunStatus("ok", `已新增 ${created.length} 个会话`);
     },
@@ -304,7 +311,7 @@ function deleteGroup(gid) {
     {
       danger: true,
       onOk: async () => {
-        await bridge.apiPost("groups/delete", { ids: [gid] });
+        await deleteGroups([gid]);
         for (const s of g.sessions || []) {
           openIds = openIds.filter((x) => x !== s.id);
           pinnedIds = pinnedIds.filter((x) => x !== s.id);
@@ -369,7 +376,7 @@ function openSettings(sid) {
     content: form,
     okText: "保存",
     onOk: async () => {
-      await bridge.apiPost("sessions/update", {
+      await updateSession({
         id: sid,
         platform_id: selP.value || null,
         conf_id: selC.value === "__default__" ? "" : selC.value || null,
@@ -487,18 +494,18 @@ async function loadHistory(id) {
   if (!panel) return;
   const chat = panel.querySelector(".chat");
   try {
-    const data = await bridge.apiGet(`sessions/${encodeURIComponent(id)}/history`);
+    const data = await getHistory(id);
     const conversations = data.conversations || [];
     historyCache.set(id, conversations);
     renderChat(panel, conversations);
-    if (alignMode) reflowAlign();
+    if (align.isAlignMode()) align.reflowAlign();
   } catch (err) {
     chat.innerHTML = `<div class="empty">加载历史失败: ${escapeHtml(err.message)}</div>`;
   }
 }
 
 function renderChat(panel, conversations) {
-  if (alignMode) renderAligned(panel, conversations);
+  if (align.isAlignMode()) renderAligned(panel, conversations);
   else renderHistory(panel, conversations);
 }
 
@@ -681,7 +688,7 @@ function startEditMsg(panel, index) {
 async function saveEditMsg(id, index, content) {
   const panel = panelEls.get(id);
   try {
-    await bridge.apiPost("sessions/history/edit", { id, index, content });
+    await editHistory({ id, index, content });
   } catch (err) {
     if (panel) panelStatus(panel, "error", "保存失败: " + err.message);
     return;
@@ -692,7 +699,7 @@ async function saveEditMsg(id, index, content) {
 async function regenerateMsg(id, index) {
   const panel = panelEls.get(id);
   try {
-    const resp = await bridge.apiPost("sessions/history/regenerate", { id, index });
+    const resp = await regenerateHistory({ id, index });
     if (panel) panelStatus(panel, "warn", "重新生成中…");
     pollRun(
       resp.test_id,
@@ -742,7 +749,7 @@ function pollRun(testId, onSession, onAll) {
     if (stopped) return;
     let record;
     try {
-      record = await bridge.apiGet(`test/run/status?test_id=${encodeURIComponent(testId)}`);
+      record = await runStatus(testId);
     } catch (err) {
       return; // 查询失败下轮重试
     }
@@ -773,7 +780,7 @@ async function sendToOne(id, text) {
   input.value = "";
   panelStatus(panel, "warn", "发送中…");
   try {
-    const resp = await bridge.apiPost("test/run", { sessions: [id], text });
+    const resp = await runTest({ sessions: [id], text });
     pollRun(
       resp.test_id,
       (r) => {
@@ -815,7 +822,7 @@ async function sendToAll() {
   $("run-text").value = "";
   showRunStatus("warn", `正在并发发送给 ${ids.length} 个会话…`);
   try {
-    const resp = await bridge.apiPost("test/run", { sessions: ids, text });
+    const resp = await runTest({ sessions: ids, text });
     pollRun(
       resp.test_id,
       (r) => {
@@ -869,7 +876,7 @@ function resetHistory(id) {
   showModal(`确定重置会话 ${id} 的对话历史吗？`, {
     danger: true,
     onOk: async () => {
-      const resp = await bridge.apiPost("reset", { ids: [id] });
+      const resp = await resetSessions([id]);
       const panel = panelEls.get(id);
       if (panel) {
         clearPanelStatus(panel);
@@ -885,7 +892,7 @@ function deleteSession(id) {
   showModal(`确定删除会话 ${v ? v.name : id} 吗？`, {
     danger: true,
     onOk: async () => {
-      await bridge.apiPost("sessions/delete", { ids: [id] });
+      await deleteSessions([id]);
       openIds = openIds.filter((x) => x !== id);
       pinnedIds = pinnedIds.filter((x) => x !== id);
       renderPanels();
@@ -907,7 +914,7 @@ async function createGroup() {
   const btn = $("btn-create");
   btn.disabled = true;
   try {
-    const group = await bridge.apiPost("groups", {
+    const group = await createGroup({
       name: $("create-group-name").value,
       count,
       platform_id: platformId && platformId !== "virtual_test" ? platformId : undefined,
@@ -966,8 +973,8 @@ function renderPanels() {
   }
   panelsEl.classList.toggle("single", openIds.length === 1);
   $("empty-hint").hidden = openIds.length > 0;
-  $("align-bar").hidden = !alignMode || openIds.length === 0;
-  if (alignMode) reflowAlign();
+  $("align-bar").hidden = !align.isAlignMode() || openIds.length === 0;
+  if (align.isAlignMode()) align.reflowAlign();
 }
 
 // 拖拽排序
@@ -1025,138 +1032,19 @@ panelsEl.addEventListener("click", (e) => {
 });
 
 // ---------- 轮次对齐 ----------
-
-// 重新测量所有打开面板的每轮内容高度，把每轮统一撑到各面板该轮的最大高度，
-// 使各面板总高度一致、轮次纵向对齐，再刷新滑动条
-function reflowAlign() {
-  if (!alignMode) return;
-  const turnList = [];
-  for (const id of openIds) {
-    const panel = panelEls.get(id);
-    if (!panel) continue;
-    const ws = [...panel.querySelectorAll(".turn-wrap")];
-    for (const w of ws) w.style.height = ""; // 先还原自然高度再测量
-    turnList.push(ws);
-  }
-  const maxTurns = Math.max(1, ...turnList.map((ws) => ws.length));
-  const maxH = [];
-  for (let i = 0; i < maxTurns; i++) {
-    maxH[i] = Math.max(0, ...turnList.map((ws) => (ws[i] ? ws[i].scrollHeight : 0)));
-  }
-  for (const ws of turnList) {
-    ws.forEach((w, i) => {
-      w.style.height = maxH[i] + "px";
-    });
-  }
-  alignCumulative = [0];
-  for (let i = 0; i < maxTurns; i++) {
-    alignCumulative.push(alignCumulative[i] + maxH[i]);
-  }
-  refreshAlign();
-}
-
-// 把统一滑动条定位到指定轮次，同步所有面板的滚动位置
-function setTurn(t, { force = false } = {}) {
-  if (!alignMode) return;
-  const max = alignCumulative.length - 1;
-  t = Math.max(1, Math.min(max, Math.round(t)));
-  if (!force && t === alignTurn) return;
-  alignTurn = t;
-  const top = alignCumulative[t - 1] || 0;
-  alignScrollGuard = true;
-  try {
-    for (const [, panel] of panelEls) {
-      const chat = panel.querySelector(".chat");
-      if (chat) chat.scrollTop = top;
-    }
-  } finally {
-    alignScrollGuard = false;
-  }
-  $("align-slider").value = String(t);
-  $("align-turn-label").textContent = `轮次 ${t}/${max}`;
-}
-
-function refreshAlign() {
-  if (!alignMode) return;
-  $("align-slider").max = String(alignCumulative.length - 1);
-  setTurn(alignTurn, { force: true });
-}
-
-function applyAlignMode() {
-  alignMode = $("align-toggle").checked;
-  $("panels").classList.toggle("align", alignMode);
-  $("align-bar").hidden = !alignMode || openIds.length === 0;
-  for (const id of openIds) {
-    const panel = panelEls.get(id);
-    if (!panel) continue;
-    renderChat(panel, historyCache.get(id) || []);
-  }
-  if (alignMode) {
-    alignTurn = 1;
-    reflowAlign();
-  }
-}
-
-$("align-toggle").addEventListener("change", applyAlignMode);
-
-$("align-slider").addEventListener("input", () => {
-  setTurn(parseInt($("align-slider").value, 10), { force: true });
-});
-
-// 手动滚动任一面板时同步其余面板，并更新滑动条指示的当前轮次（capture 捕获不冒泡的 scroll）
-panelsEl.addEventListener(
-  "scroll",
-  (e) => {
-    if (!alignMode || alignScrollGuard) return;
-    const chat = e.target;
-    if (!(chat instanceof HTMLElement) || !chat.classList.contains("chat")) return;
-    const panel = chat.closest(".panel");
-    if (!panel) return;
-    alignScrollGuard = true;
-    try {
-      for (const [id, el] of panelEls) {
-        if (id === panel.dataset.id) continue;
-        const other = el.querySelector(".chat");
-        if (!other) continue;
-        const max = other.scrollHeight - other.clientHeight;
-        other.scrollTop = Math.max(0, Math.min(max, chat.scrollTop));
-      }
-    } finally {
-      alignScrollGuard = false;
-    }
-    let turn = 1;
-    for (let i = alignCumulative.length - 2; i >= 0; i--) {
-      if (alignCumulative[i] <= chat.scrollTop + 1) {
-        turn = i + 1;
-        break;
-      }
-    }
-    alignTurn = turn;
-    $("align-slider").value = String(turn);
-    $("align-turn-label").textContent = `轮次 ${turn}/${alignCumulative.length - 1}`;
-  },
-  true,
-);
-
-// 窗口尺寸变化会改变换行高度，防抖后重新对齐
-let alignResizeTimer = 0;
-window.addEventListener("resize", () => {
-  if (!alignMode) return;
-  clearTimeout(alignResizeTimer);
-  alignResizeTimer = setTimeout(reflowAlign, 120);
-});
+// 对齐逻辑已拆到 align.js（createAlignController），在初始化处创建并绑定事件。
 
 // ---------- 选项加载 ----------
 
 async function loadOptions() {
   try {
-    platforms = await bridge.apiGet("platforms");
+    platforms = await listPlatforms();
   } catch (err) {
     console.warn("加载平台列表失败:", err);
     platforms = [];
   }
   try {
-    confs = await bridge.apiGet("confs");
+    confs = await listConfs();
   } catch (err) {
     console.warn("加载配置档案失败:", err);
     confs = [];
@@ -1186,5 +1074,14 @@ $("run-text").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.isComposing) sendToAll();
 });
 
-await bridge.ready();
+const align = createAlignController({
+  getOpenIds: () => openIds,
+  getPanelEls: () => panelEls,
+  getHistoryCache: () => historyCache,
+  getPanelsEl: () => panelsEl,
+  renderChat,
+});
+align.attachEvents();
+
+await ready();
 await Promise.all([loadOptions(), refreshGroups()]);

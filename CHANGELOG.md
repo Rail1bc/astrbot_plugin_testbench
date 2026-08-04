@@ -5,6 +5,14 @@
 <!-- markdownlint-disable MD041 -->
 # ChangeLog
 
+## [Unreleased]
+
+### 🔧 Refactor (代码结构)
+
+- 代码结构拆分，无行为变化：后端 `runner.py` 拆为数据层 `group_store.py`、统计工具 `stats.py` 与运行器 `runner.py`；前端 `app.js` 拆出 `api.js`（bridge 调用统一封装）与 `align.js`（轮次对齐控制器）。
+
+---
+
 ## [v0.3.0] - 2026-08-04
 
 ### ✨ New Features (新功能)

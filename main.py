@@ -17,11 +17,12 @@ from typing import Any
 from astrbot.api.star import Context, Star
 from astrbot.api.web import error_response, json_response, request
 
-from .runner import VirtualGroupManager, VirtualTestRunner, umo_of
+from .group_store import VirtualGroupManager, umo_of
+from .runner import VirtualTestRunner
 
 PLUGIN_NAME = "astrbot_plugin_testbench"
 
-MAX_SESSIONS_PER_BATCH = 500
+MAX_SESSIONS_PER_GROUP = 500
 
 
 class VirtualSessionPlugin(Star):
@@ -183,9 +184,9 @@ class VirtualSessionPlugin(Star):
         count = payload.get("count", 1)
         if not isinstance(count, int) or isinstance(count, bool):
             return error_response("count 必须是整数", status_code=400)
-        if count < 1 or count > MAX_SESSIONS_PER_BATCH:
+        if count < 1 or count > MAX_SESSIONS_PER_GROUP:
             return error_response(
-                f"count 必须在 1-{MAX_SESSIONS_PER_BATCH} 之间",
+                f"count 必须在 1-{MAX_SESSIONS_PER_GROUP} 之间",
                 status_code=400,
             )
         conf_id = payload.get("conf_id") or None
@@ -225,9 +226,9 @@ class VirtualSessionPlugin(Star):
         count = payload.get("count", 1)
         if not isinstance(count, int) or isinstance(count, bool):
             return error_response("count 必须是整数", status_code=400)
-        if count < 1 or count > MAX_SESSIONS_PER_BATCH:
+        if count < 1 or count > MAX_SESSIONS_PER_GROUP:
             return error_response(
-                f"count 必须在 1-{MAX_SESSIONS_PER_BATCH} 之间",
+                f"count 必须在 1-{MAX_SESSIONS_PER_GROUP} 之间",
                 status_code=400,
             )
         group = self.group_mgr.get_group(group_id)

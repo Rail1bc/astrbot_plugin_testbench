@@ -40,12 +40,14 @@
 ```text
 data/plugins/astrbot_plugin_testbench/
 ├─ main.py               # 插件主入口文件（Star 类 + Web API 后端）
-├─ runner.py             # 测试组管理 + 并发测试运行器
+├─ group_store.py        # 测试组数据模型与持久化（纯数据层）
+├─ runner.py             # 并发测试运行器（流式汇总结果）
+├─ stats.py              # 耗时统计工具（纯函数）
 ├─ virtual_event.py      # 虚拟消息事件（捕获回复，不真实外发）
 ├─ metadata.yaml         # 插件元数据信息
 ├─ CHANGELOG.md          # 更新日志
 ├─ README.md             # 插件说明文档
-├─ pages/virtual-session/ # 插件页面（前端）
+├─ pages/virtual-session/ # 插件页面（前端：app.js / api.js / align.js / style.css）
 └─ .github/              # GitHub 工作流与协作模板
 ```
 
