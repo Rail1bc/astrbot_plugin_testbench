@@ -7,112 +7,86 @@
     <link rel="stylesheet" href="./style.css" />
   </head>
   <body>
-    <header class="page-header">
-      <h1>会话测试台</h1>
-      <p class="subtitle">
-        创建与真实会话走完全相同处理路径的虚拟会话，可并发向多个会话发送同一条消息，用于测试插件、提示词、模型与整体稳定性。
-      </p>
-    </header>
+    <div class="layout">
+      <aside class="sidebar">
+        <header class="page-header">
+          <h1>会话测试台</h1>
+          <p class="subtitle">创建虚拟会话，并行打开查看并测试</p>
+        </header>
 
-    <main>
-      <section class="card">
-        <h2>1. 创建虚拟会话</h2>
-        <div class="form-row">
-          <label>数量
-            <input id="create-count" type="number" min="1" max="500" value="10" />
-          </label>
-          <label>平台来源
-            <select id="create-platform"></select>
-          </label>
-          <label>发送者ID
-            <input id="create-sender-id" type="text" value="virtual_user" />
-          </label>
-          <label>发送者昵称
-            <input id="create-sender-name" type="text" value="虚拟用户" />
-          </label>
-          <label>名称前缀
-            <input id="create-name-prefix" type="text" placeholder="虚拟会话" />
-          </label>
-          <button id="btn-create" class="btn primary">创建会话</button>
-        </div>
-      </section>
+        <section class="card">
+          <h2>创建虚拟会话</h2>
+          <div class="form-col">
+            <div class="form-grid">
+              <label>数量
+                <input id="create-count" type="number" min="1" max="500" value="3" />
+              </label>
+              <label>平台来源
+                <select id="create-platform"></select>
+              </label>
+              <label class="full">配置档案
+                <select id="create-conf"><option value="">默认配置</option></select>
+              </label>
+            </div>
+            <details class="adv">
+              <summary>发送者与命名（可选）</summary>
+              <div class="form-grid">
+                <label>发送者ID
+                  <input id="create-sender-id" type="text" value="virtual_user" />
+                </label>
+                <label>发送者昵称
+                  <input id="create-sender-name" type="text" value="虚拟用户" />
+                </label>
+                <label>名称前缀
+                  <input id="create-name-prefix" type="text" placeholder="虚拟会话" />
+                </label>
+              </div>
+            </details>
+            <button id="btn-create" class="btn primary">创建会话</button>
+          </div>
+        </section>
 
-      <section class="card">
-        <h2>2. 虚拟会话列表</h2>
-        <div class="toolbar">
-          <button id="btn-select-all" class="btn">全选</button>
-          <button id="btn-reset" class="btn">重置所选历史</button>
-          <button id="btn-delete" class="btn danger">删除所选</button>
-          <button id="btn-refresh" class="btn">刷新</button>
-        </div>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th></th>
-                <th>ID</th>
-                <th>名称</th>
-                <th>平台</th>
-                <th>发送者</th>
-                <th>创建时间</th>
-              </tr>
-            </thead>
-            <tbody id="sessions-body"></tbody>
-          </table>
-        </div>
-      </section>
+        <section class="card sessions-card">
+          <h2>会话列表</h2>
+          <div class="toolbar">
+            <button id="btn-refresh" class="btn small">刷新</button>
+            <span id="session-count" class="count-label"></span>
+          </div>
+          <div id="session-list" class="session-list"></div>
+        </section>
+      </aside>
 
-      <section class="card">
-        <h2>3. 运行并发测试</h2>
-        <div class="form-row">
-          <label class="full">测试消息
-            <textarea
-              id="test-text"
-              rows="3"
-              placeholder="将发送给所有选中的虚拟会话（同时并发）"
-            ></textarea>
-          </label>
-          <label>Provider
-            <select id="test-provider"></select>
-          </label>
-          <label>模型
-            <select id="test-model"></select>
-          </label>
-          <label>配置档案
-            <select id="test-conf"><option value="">默认</option></select>
-          </label>
-          <label>超时(秒)
-            <input id="test-timeout" type="number" value="120" min="1" />
-          </label>
-          <label>每批数量
-            <input id="test-batch-size" type="number" value="10" min="1" />
-          </label>
-          <label>批间隔(秒)
-            <input id="test-batch-interval" type="number" value="0" min="0" step="0.1" />
-          </label>
-          <button id="btn-run" class="btn primary wide">运行测试</button>
-        </div>
-      </section>
+      <main class="workspace">
+        <section class="card run-bar">
+          <div class="run-row">
+            <label class="full">群发消息（发送给所有已打开的会话）
+              <input id="run-text" type="text" placeholder="输入一条消息，发送给所有已打开的会话" />
+            </label>
+            <button id="btn-run-all" class="btn primary">发送到全部</button>
+            <details class="adv inline">
+              <summary>高级</summary>
+              <div class="adv-row">
+                <label>超时(秒)
+                  <input id="run-timeout" type="number" value="120" min="1" />
+                </label>
+                <label>每批数量
+                  <input id="run-batch-size" type="number" value="10" min="1" />
+                </label>
+              </div>
+            </details>
+          </div>
+          <div id="run-status" class="run-status" hidden></div>
+        </section>
 
-      <section class="card" id="result-card" hidden>
-        <h2>4. 测试结果</h2>
-        <div id="result-summary" class="summary"></div>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>会话</th>
-                <th>状态</th>
-                <th>耗时(s)</th>
-                <th>回复</th>
-                <th>错误</th>
-              </tr>
-            </thead>
-            <tbody id="results-body"></tbody>
-          </table>
-        </div>
-      </section>
-    </main>
+        <section class="workspace-body">
+          <div id="panels" class="panels"></div>
+          <div id="empty-hint" class="empty">
+            点击左侧会话列表的「打开」即可并行查看；<br />
+            面板可拖拽排序、可置顶，每个面板可单独发送消息。
+          </div>
+        </section>
+      </main>
+    </div>
 
     <script type="module" src="./app.js"></script>
   </body>

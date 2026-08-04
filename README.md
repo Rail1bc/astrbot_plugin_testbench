@@ -5,15 +5,16 @@
 一个为 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 设计的虚拟会话并发测试插件。
 
 > [!NOTE]
-> 当前版本 v0.1.0，核心功能已可用。
+> 当前版本 v0.2.0，支持并行会话查看与配置档案绑定。
 
 ## ✨ 功能特性
 
 - **与真实会话无差别的虚拟会话**：消息通过框架原生插件页面注入 AstrBot 事件总线，走与真实平台消息完全相同的处理管道（唤醒检查 → 白名单 → 会话状态 → 限流 → 内容安全 → 预处理 → 插件 + LLM 处理 → 回复装饰）。
-- **并发测试**：一条消息同时发送给 N 个虚拟会话（可选分批投递与批间隔），用于测试插件、提示词、模型本身以及整体链路的性能与稳定性。
-- **结果汇总**：每个会话独立展示状态（成功 / 无回复 / 超时 / 错误）、回复内容、推理内容与耗时；提供 min / max / avg / p50 / p95 统计。
-- **定向测试**：可为单次测试指定 Provider、模型，或将虚拟会话路由到指定配置档案（UCR），用于对比提示词 / 系统设定效果。
-- **会话管理**：虚拟会话持久化存储，支持批量创建、勾选删除与对话历史重置。
+- **并行会话查看**：左侧会话列表创建、切换会话，右侧可同时打开 2–3 个甚至更多会话面板并行查看对话历史；面板支持拖拽排序与置顶。
+- **会话级配置档案**：创建虚拟会话时选择平台与配置档案，通过 AstrBot 原生 UCR 路由精确绑定到该会话（`platform:type:session` → conf），互不影响、删除会话时自动清理。
+- **并发测试**：一条消息同时发送给所有已打开的会话（可选超时与分批投递），每个面板实时展示状态（成功 / 无回复 / 超时 / 错误）、回复、耗时与 min / max / avg / p50 / p95 统计；也可在单个面板内单独发送消息。
+- **对话历史查看与重置**：每个面板展示该虚拟会话的完整对话历史（含推理内容与工具调用），支持一键重置。
+- **会话管理**：虚拟会话持久化存储，支持批量创建、单个删除与对话历史重置。
 
 ## 🚀 安装与使用
 
@@ -23,13 +24,13 @@
 
 ### 插件页面使用流程
 
-1. **创建虚拟会话**：在页面顶部设置数量、平台来源、发送者信息后点击「创建会话」。
-2. **勾选目标会话**：在会话列表中勾选要测试的虚拟会话。
-3. **配置测试参数**：输入测试消息，按需选择 Provider、模型、配置档案、超时时间、每批数量与批间隔。
-4. **运行测试**：点击「运行测试」，等待结果表格与耗时统计刷新。
+1. **创建虚拟会话**：在左侧创建表单设置数量、平台来源与配置档案（可选发送者信息），点击「创建会话」，新会话会自动打开。
+2. **打开 / 切换会话**：点击左侧会话列表的「打开」即可在右侧并行查看该会话；再次点击「关闭」收起。面板头部可拖拽排序，或点击「置顶」固定在前面。
+3. **发送消息**：在单个面板底部输入框发送消息到该会话；或在顶部群发栏输入一条消息，点击「发送到全部」并发发送给所有已打开的会话。
+4. **查看结果**：每个面板展示状态（成功 / 无回复 / 超时 / 错误）与对话历史更新；群发完成后顶部显示总数与 min / avg / p95 耗时统计。
 
 > [!TIP]
-> 虚拟会话使用独立的虚拟平台 id（默认 `virtual_test`），默认路由到「默认」配置档案；如需测试其他配置档案，在测试表单中选择对应档案即可。
+> 虚拟会话使用独立的虚拟平台 id（默认 `virtual_test`），创建时绑定到所选配置档案；测试无需再选择 Provider / 模型，由会话绑定的配置档案决定。
 
 ## 📂 插件目录与结构
 
@@ -49,11 +50,11 @@ data/plugins/astrbot_plugin_testbench/
 
 ```bash
 # 单元测试（插件位于 data/plugins 下，测试在插件缺失时会自动跳过）
-.venv/Scripts/python.exe -m pytest tests/unit/test_virtual_session_plugin.py -v
+.venv/Scripts/python.exe -m pytest tests/unit/test_testbench_plugin.py -v
 
 # 代码质量检查
-.venv/Scripts/python.exe -m ruff check data/plugins/astrbot_plugin_testbench tests/unit/test_virtual_session_plugin.py
-.venv/Scripts/python.exe -m ruff format --check data/plugins/astrbot_plugin_testbench tests/unit/test_virtual_session_plugin.py
+.venv/Scripts/python.exe -m ruff check data/plugins/astrbot_plugin_testbench tests/unit/test_testbench_plugin.py
+.venv/Scripts/python.exe -m ruff format --check data/plugins/astrbot_plugin_testbench tests/unit/test_testbench_plugin.py
 ```
 
 Windows 开发者可直接运行 `run_ruff.bat` 进行格式化与质量检查。

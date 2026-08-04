@@ -87,6 +87,7 @@ class VirtualSessionManager:
         sender_id: str | None = None,
         sender_name: str | None = None,
         name_prefix: str | None = None,
+        conf_id: str | None = None,
     ) -> list[dict]:
         """批量创建虚拟会话。
 
@@ -96,6 +97,7 @@ class VirtualSessionManager:
             sender_id: 消息发送者 id。
             sender_name: 消息发送者昵称。
             name_prefix: 会话展示名前缀。
+            conf_id: 可选，会话绑定的配置档案 id（通过 UCR 会话级路由生效）。
         """
         created: list[dict] = []
         for _ in range(count):
@@ -107,6 +109,7 @@ class VirtualSessionManager:
                     "platform_id": platform_id or DEFAULT_PLATFORM_ID,
                     "sender_id": sender_id or DEFAULT_SENDER_ID,
                     "sender_name": sender_name or DEFAULT_SENDER_NAME,
+                    "conf_id": conf_id,
                     "created_at": int(time.time()),
                 }
             )
@@ -158,26 +161,32 @@ class VirtualTestRunner:
     def __init__(self, context: Context) -> None:
         self.context = context
         self._lock = asyncio.Lock()
-        self._saved_route: tuple[str, str | None] | None = None
+        self._saved_routes: list[tuple[str, str | None]] = []
 
-    async def _apply_conf_route(self, platform_id: str, conf_id: str) -> None:
-        """把 `platform_id::` 路由到指定配置档案，并保存原路由以便恢复。"""
+    async def _apply_conf_route(self, sessions: list[dict], conf_id: str) -> None:
+        """为每个会话设置精确的 UCR 路由（umo → conf_id），并保存原路由以便恢复。
+
+        使用会话级精确路由（而非平台级 `platform_id::`），避免影响同平台其他会话，
+        且不覆盖会话创建时绑定的持久配置。
+        """
         ucr = self.context.astrbot_config_mgr.ucr
-        umop = f"{platform_id}::"
-        self._saved_route = (umop, ucr.umop_to_conf_id.get(umop))
-        await ucr.update_route(umop, conf_id)
+        self._saved_routes = []
+        for session in sessions:
+            umop = umo_of(session)
+            self._saved_routes.append((umop, ucr.umop_to_conf_id.get(umop)))
+            await ucr.update_route(umop, conf_id)
 
     async def _restore_conf_route(self) -> None:
-        if not self._saved_route:
+        if not self._saved_routes:
             return
-        umop, prev_conf_id = self._saved_route
         ucr = self.context.astrbot_config_mgr.ucr
-        if prev_conf_id is None:
-            if umop in ucr.umop_to_conf_id:
-                await ucr.delete_route(umop)
-        else:
-            await ucr.update_route(umop, prev_conf_id)
-        self._saved_route = None
+        for umop, prev_conf_id in self._saved_routes:
+            if prev_conf_id is None:
+                if umop in ucr.umop_to_conf_id:
+                    await ucr.delete_route(umop)
+            else:
+                await ucr.update_route(umop, prev_conf_id)
+        self._saved_routes = []
 
     async def run(
         self,
@@ -213,10 +222,7 @@ class VirtualTestRunner:
         # 同一时刻只允许一个测试运行（避免并发修改配置档案路由）
         async with self._lock:
             if conf_id:
-                platform_ids = {s.get("platform_id") for s in sessions}
-                if len(platform_ids) != 1:
-                    raise ValueError("指定配置档案时，所有会话的 platform_id 必须一致")
-                await self._apply_conf_route(next(iter(platform_ids)), conf_id)
+                await self._apply_conf_route(sessions, conf_id)
             try:
                 return await self._dispatch(
                     sessions,

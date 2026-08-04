@@ -9,6 +9,8 @@
 
 from __future__ import annotations
 
+import json
+
 from astrbot.api.star import Context, Star
 from astrbot.api.web import error_response, json_response, request
 
@@ -60,6 +62,12 @@ class VirtualSessionPlugin(Star):
             self.delete_sessions,
             ["POST"],
             "删除虚拟会话",
+        )
+        context.register_web_api(
+            f"/{PLUGIN_NAME}/sessions/<session_id>/history",
+            self.session_history,
+            ["GET"],
+            "查看虚拟会话的对话历史",
         )
         context.register_web_api(
             f"/{PLUGIN_NAME}/reset",
@@ -123,7 +131,7 @@ class VirtualSessionPlugin(Star):
         return json_response(self.session_mgr.list())
 
     async def create_sessions(self):
-        """批量创建虚拟会话。"""
+        """批量创建虚拟会话，可选绑定配置档案（UCR 会话级路由）。"""
         payload = await request.json(default={})
         count = payload.get("count", 1)
         if not isinstance(count, int) or isinstance(count, bool):
@@ -133,23 +141,68 @@ class VirtualSessionPlugin(Star):
                 f"count 必须在 1-{MAX_SESSIONS_PER_BATCH} 之间",
                 status_code=400,
             )
+        conf_id = payload.get("conf_id") or None
         created = self.session_mgr.create_many(
             count=count,
             platform_id=payload.get("platform_id"),
             sender_id=payload.get("sender_id"),
             sender_name=payload.get("sender_name"),
             name_prefix=payload.get("name_prefix"),
+            conf_id=conf_id,
         )
+        if conf_id:
+            await self._apply_conf_routes(created, conf_id)
         return json_response(created)
 
     async def delete_sessions(self):
-        """删除虚拟会话。"""
+        """删除虚拟会话，并清理其配置档案路由。"""
         payload = await request.json(default={})
         ids = payload.get("ids")
         if not isinstance(ids, list) or not ids:
             return error_response("ids 不能为空", status_code=400)
+        sessions = self.session_mgr.get_many(ids)
+        await self._clear_conf_routes(sessions)
         deleted = self.session_mgr.delete(ids)
         return json_response({"deleted": deleted})
+
+    async def session_history(self, session_id: str):
+        """查看虚拟会话的对话历史（LLM 上下文消息列表）。"""
+        session = self.session_mgr.get(session_id)
+        if not session:
+            return error_response("未找到该虚拟会话", status_code=404)
+        convs = await self.context.conversation_manager.get_conversations(
+            umo_of(session)
+        )
+        conversations = []
+        for conv in convs:
+            history: list[dict] = []
+            if conv.history:
+                try:
+                    history = json.loads(conv.history)
+                except json.JSONDecodeError:
+                    history = []
+            conversations.append(
+                {
+                    "conversation_id": conv.cid,
+                    "title": conv.title,
+                    "history": history,
+                }
+            )
+        return json_response({"conversations": conversations})
+
+    async def _apply_conf_routes(self, sessions: list[dict], conf_id: str) -> None:
+        """把每个会话路由到指定配置档案（精确到 umo，不互相影响）。"""
+        ucr = self.context.astrbot_config_mgr.ucr
+        for session in sessions:
+            await ucr.update_route(umo_of(session), conf_id)
+
+    async def _clear_conf_routes(self, sessions: list[dict]) -> None:
+        """删除会话对应的配置档案路由。"""
+        ucr = self.context.astrbot_config_mgr.ucr
+        for session in sessions:
+            umop = umo_of(session)
+            if umop in ucr.umop_to_conf_id:
+                await ucr.delete_route(umop)
 
     async def reset_sessions(self):
         """重置虚拟会话的对话历史（删除该 umo 下的全部对话）。"""
