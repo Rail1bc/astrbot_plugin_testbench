@@ -1,7 +1,9 @@
 """会话测试台插件。
 
-通过插件页面创建与真实会话走完全相同处理路径的虚拟会话，可并发向多个虚拟会话
-发送同一条消息，用于测试插件、提示词、模型与整体稳定性。
+通过插件页面创建"测试组"——一组共享同一套配置（平台来源/配置档案/发送者
+id/昵称）的虚拟会话，组内单个会话可覆盖组配置。测试以组为单位：可并发向组内
+（或跨组选中的）多个虚拟会话发送同一条消息，用于测试插件、提示词、模型与
+整体稳定性。
 
 消息注入路径：`context.get_event_queue()` -> EventBus -> PipelineScheduler，
 与真实平台消息完全一致，回复由 `VirtualMessageEvent` 捕获并回传页面。
@@ -10,11 +12,12 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 from astrbot.api.star import Context, Star
 from astrbot.api.web import error_response, json_response, request
 
-from .runner import VirtualSessionManager, VirtualTestRunner, umo_of
+from .runner import VirtualGroupManager, VirtualTestRunner, umo_of
 
 PLUGIN_NAME = "astrbot_plugin_testbench"
 
@@ -24,7 +27,7 @@ MAX_SESSIONS_PER_BATCH = 500
 class VirtualSessionPlugin(Star):
     def __init__(self, context: Context) -> None:
         super().__init__(context)
-        self.session_mgr = VirtualSessionManager()
+        self.group_mgr = VirtualGroupManager()
         self.runner = VirtualTestRunner(context)
 
         context.register_web_api(
@@ -46,16 +49,40 @@ class VirtualSessionPlugin(Star):
             "列出已启用的平台适配器",
         )
         context.register_web_api(
-            f"/{PLUGIN_NAME}/sessions",
-            self.list_sessions,
+            f"/{PLUGIN_NAME}/groups",
+            self.list_groups,
             ["GET"],
-            "列出虚拟会话",
+            "列出测试组（含组内会话）",
+        )
+        context.register_web_api(
+            f"/{PLUGIN_NAME}/groups",
+            self.create_group,
+            ["POST"],
+            "创建测试组并生成组内虚拟会话",
+        )
+        context.register_web_api(
+            f"/{PLUGIN_NAME}/groups/delete",
+            self.delete_groups,
+            ["POST"],
+            "删除测试组",
+        )
+        context.register_web_api(
+            f"/{PLUGIN_NAME}/groups/<group_id>/sessions",
+            self.add_group_sessions,
+            ["POST"],
+            "向测试组内新增虚拟会话",
         )
         context.register_web_api(
             f"/{PLUGIN_NAME}/sessions",
-            self.create_sessions,
+            self.list_sessions,
+            ["GET"],
+            "列出全部虚拟会话（已解析最终配置）",
+        )
+        context.register_web_api(
+            f"/{PLUGIN_NAME}/sessions/update",
+            self.update_session,
             ["POST"],
-            "批量创建虚拟会话",
+            "设置会话自身的配置（覆盖组配置）",
         )
         context.register_web_api(
             f"/{PLUGIN_NAME}/sessions/delete",
@@ -126,12 +153,14 @@ class VirtualSessionPlugin(Star):
             )
         return json_response(platforms)
 
-    async def list_sessions(self):
-        """列出已保存的虚拟会话。"""
-        return json_response(self.session_mgr.list())
+    # ---------- 测试组 ----------
 
-    async def create_sessions(self):
-        """批量创建虚拟会话，可选绑定配置档案（UCR 会话级路由）。"""
+    async def list_groups(self):
+        """列出全部测试组（含组内会话，会话字段为原始覆盖值）。"""
+        return json_response({"groups": self.group_mgr.list_groups()})
+
+    async def create_group(self):
+        """创建测试组并生成组内虚拟会话，可选绑定配置档案（UCR 会话级路由）。"""
         payload = await request.json(default={})
         count = payload.get("count", 1)
         if not isinstance(count, int) or isinstance(count, bool):
@@ -142,17 +171,104 @@ class VirtualSessionPlugin(Star):
                 status_code=400,
             )
         conf_id = payload.get("conf_id") or None
-        created = self.session_mgr.create_many(
+        group = self.group_mgr.create_group(
+            name=payload.get("name"),
             count=count,
             platform_id=payload.get("platform_id"),
+            conf_id=conf_id,
             sender_id=payload.get("sender_id"),
             sender_name=payload.get("sender_name"),
             name_prefix=payload.get("name_prefix"),
-            conf_id=conf_id,
         )
         if conf_id:
-            await self._apply_conf_routes(created, conf_id)
+            sessions = [self.group_mgr.effective(group, s) for s in group["sessions"]]
+            await self._apply_conf_routes(sessions, conf_id)
+        return json_response(group)
+
+    async def delete_groups(self):
+        """删除测试组，并清理组内会话的配置档案路由。"""
+        payload = await request.json(default={})
+        ids = payload.get("ids")
+        if not isinstance(ids, list) or not ids:
+            return error_response("ids 不能为空", status_code=400)
+        removed = self.group_mgr.delete_groups(ids)
+        sessions = [self.group_mgr.effective(group, s) for group, s in removed]
+        await self._clear_conf_routes(sessions)
+        return json_response(
+            {
+                "deleted": len(removed),
+                "sessions": [s["id"] for s in sessions],
+            }
+        )
+
+    async def add_group_sessions(self, group_id: str):
+        """向测试组内新增会话（继承组配置，组配置档案同样应用到新会话）。"""
+        payload = await request.json(default={})
+        count = payload.get("count", 1)
+        if not isinstance(count, int) or isinstance(count, bool):
+            return error_response("count 必须是整数", status_code=400)
+        if count < 1 or count > MAX_SESSIONS_PER_BATCH:
+            return error_response(
+                f"count 必须在 1-{MAX_SESSIONS_PER_BATCH} 之间",
+                status_code=400,
+            )
+        group = self.group_mgr.get_group(group_id)
+        if group is None:
+            return error_response("未找到该测试组", status_code=404)
+        created = self.group_mgr.add_sessions(
+            group_id,
+            count,
+            payload.get("name_prefix"),
+        )
+        conf_id = group.get("conf_id") or None
+        if conf_id:
+            sessions = [self.group_mgr.effective(group, s) for s in created]
+            await self._apply_conf_routes(sessions, conf_id)
         return json_response(created)
+
+    # ---------- 会话 ----------
+
+    async def list_sessions(self):
+        """列出全部虚拟会话（已解析最终配置，附组信息）。"""
+        return json_response(self.group_mgr.flat_sessions())
+
+    async def update_session(self):
+        """设置会话自身的配置覆盖；传 null 恢复继承组配置，conf_id 传空串显式使用默认档案。"""
+        payload = await request.json(default={})
+        session_id = payload.get("id")
+        if not isinstance(session_id, str) or not session_id:
+            return error_response("id 不能为空", status_code=400)
+        found = self.group_mgr.find_session(session_id)
+        if found is None:
+            return error_response("未找到该虚拟会话", status_code=404)
+        group, session = found
+        old_session = self.group_mgr.effective(group, session)
+
+        overrides: dict[str, Any] = {}
+        for key in ("platform_id", "conf_id", "sender_id", "sender_name"):
+            if key not in payload:
+                continue
+            value = payload[key]
+            if value is None:
+                overrides[key] = None  # 恢复继承组配置
+            elif key == "conf_id" and value == "":
+                overrides[key] = ""  # 显式使用默认配置档案（不绑定）
+            elif isinstance(value, str) and value:
+                overrides[key] = value
+            else:
+                overrides[key] = None
+
+        self.group_mgr.update_session(session_id, **overrides)
+        new_session = self.group_mgr.effective(group, session)
+
+        # 平台变更会使 umo 变化：清理旧 umo 的路由，再按新 umo 同步
+        ucr = self.context.astrbot_config_mgr.ucr
+        if old_session["platform_id"] != new_session["platform_id"]:
+            old_umop = umo_of(old_session)
+            if old_umop in ucr.umop_to_conf_id:
+                await ucr.delete_route(old_umop)
+        await self._sync_conf_route(new_session)
+        return json_response(new_session)
 
     async def delete_sessions(self):
         """删除虚拟会话，并清理其配置档案路由。"""
@@ -160,18 +276,20 @@ class VirtualSessionPlugin(Star):
         ids = payload.get("ids")
         if not isinstance(ids, list) or not ids:
             return error_response("ids 不能为空", status_code=400)
-        sessions = self.session_mgr.get_many(ids)
+        removed = self.group_mgr.delete_sessions(ids)
+        sessions = [self.group_mgr.effective(group, s) for group, s in removed]
         await self._clear_conf_routes(sessions)
-        deleted = self.session_mgr.delete(ids)
-        return json_response({"deleted": deleted})
+        return json_response({"deleted": len(sessions)})
 
     async def session_history(self, session_id: str):
         """查看虚拟会话的对话历史（LLM 上下文消息列表）。"""
-        session = self.session_mgr.get(session_id)
-        if not session:
+        found = self.group_mgr.find_session(session_id)
+        if found is None:
             return error_response("未找到该虚拟会话", status_code=404)
+        group, session = found
+        resolved = self.group_mgr.effective(group, session)
         convs = await self.context.conversation_manager.get_conversations(
-            umo_of(session)
+            umo_of(resolved)
         )
         conversations = []
         for conv in convs:
@@ -190,27 +308,13 @@ class VirtualSessionPlugin(Star):
             )
         return json_response({"conversations": conversations})
 
-    async def _apply_conf_routes(self, sessions: list[dict], conf_id: str) -> None:
-        """把每个会话路由到指定配置档案（精确到 umo，不互相影响）。"""
-        ucr = self.context.astrbot_config_mgr.ucr
-        for session in sessions:
-            await ucr.update_route(umo_of(session), conf_id)
-
-    async def _clear_conf_routes(self, sessions: list[dict]) -> None:
-        """删除会话对应的配置档案路由。"""
-        ucr = self.context.astrbot_config_mgr.ucr
-        for session in sessions:
-            umop = umo_of(session)
-            if umop in ucr.umop_to_conf_id:
-                await ucr.delete_route(umop)
-
     async def reset_sessions(self):
         """重置虚拟会话的对话历史（删除该 umo 下的全部对话）。"""
         payload = await request.json(default={})
         ids = payload.get("ids")
         if not isinstance(ids, list) or not ids:
             return error_response("ids 不能为空", status_code=400)
-        sessions = self.session_mgr.get_many(ids)
+        sessions = self.group_mgr.effective_many(ids)
         conv_mgr = self.context.conversation_manager
         reset = 0
         for session in sessions:
@@ -221,6 +325,8 @@ class VirtualSessionPlugin(Star):
                 self.logger.warning(f"重置会话 {session['id']} 的对话历史失败: {e}")
         return json_response({"reset": reset})
 
+    # ---------- 测试 ----------
+
     async def run_test(self):
         """并发向多个虚拟会话发送同一条消息并汇总结果。"""
         payload = await request.json(default={})
@@ -228,9 +334,12 @@ class VirtualSessionPlugin(Star):
         text = payload.get("text", "")
         if not isinstance(sessions, list) or not sessions:
             return error_response("sessions 不能为空", status_code=400)
-        session_objs = self.session_mgr.get_many(sessions)
-        if not session_objs:
-            return error_response("未找到指定的虚拟会话", status_code=404)
+        requested = list(dict.fromkeys(sessions))  # 去重，保持顺序
+        session_objs = self.group_mgr.effective_many(requested)
+        if len(session_objs) != len(requested):
+            found = {r["id"] for r in session_objs}
+            missing = [sid for sid in requested if sid not in found]
+            return error_response(f"未找到指定的虚拟会话: {missing}", status_code=404)
 
         try:
             timeout = float(payload.get("timeout", 120) or 120)
@@ -262,3 +371,29 @@ class VirtualSessionPlugin(Star):
             self.logger.error("并发测试运行失败", exc_info=True)
             return error_response(f"并发测试运行失败: {e}", status_code=500)
         return json_response(result)
+
+    # ---------- UCR 路由辅助 ----------
+
+    async def _apply_conf_routes(self, sessions: list[dict], conf_id: str) -> None:
+        """把每个会话路由到指定配置档案（精确到 umo，不互相影响）。"""
+        ucr = self.context.astrbot_config_mgr.ucr
+        for session in sessions:
+            await ucr.update_route(umo_of(session), conf_id)
+
+    async def _clear_conf_routes(self, sessions: list[dict]) -> None:
+        """删除会话对应的配置档案路由。"""
+        ucr = self.context.astrbot_config_mgr.ucr
+        for session in sessions:
+            umop = umo_of(session)
+            if umop in ucr.umop_to_conf_id:
+                await ucr.delete_route(umop)
+
+    async def _sync_conf_route(self, session: dict) -> None:
+        """按会话的有效配置档案同步 UCR 路由（无绑定则确保路由不存在）。"""
+        ucr = self.context.astrbot_config_mgr.ucr
+        umop = umo_of(session)
+        conf_id = session.get("conf_id")
+        if conf_id:
+            await ucr.update_route(umop, conf_id)
+        elif umop in ucr.umop_to_conf_id:
+            await ucr.delete_route(umop)

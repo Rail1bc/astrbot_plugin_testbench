@@ -11,20 +11,23 @@
       <aside class="sidebar">
         <header class="page-header">
           <h1>会话测试台</h1>
-          <p class="subtitle">创建虚拟会话，并行打开查看并测试</p>
+          <p class="subtitle">以测试组为单位，创建共享配置的虚拟会话并并行测试</p>
         </header>
 
         <section class="card">
-          <h2>创建虚拟会话</h2>
+          <h2>创建测试组</h2>
           <div class="form-col">
             <div class="form-grid">
-              <label>数量
+              <label>组名
+                <input id="create-group-name" type="text" placeholder="如：OpenAI 提示词对比" />
+              </label>
+              <label>会话数量
                 <input id="create-count" type="number" min="1" max="500" value="3" />
               </label>
               <label>平台来源
                 <select id="create-platform"></select>
               </label>
-              <label class="full">配置档案
+              <label>配置档案
                 <select id="create-conf"><option value="">默认配置</option></select>
               </label>
             </div>
@@ -37,22 +40,23 @@
                 <label>发送者昵称
                   <input id="create-sender-name" type="text" value="虚拟用户" />
                 </label>
-                <label>名称前缀
-                  <input id="create-name-prefix" type="text" placeholder="虚拟会话" />
+                <label>会话名称前缀
+                  <input id="create-name-prefix" type="text" placeholder="默认使用组名" />
                 </label>
               </div>
             </details>
-            <button id="btn-create" class="btn primary">创建会话</button>
+            <p class="hint">组内所有会话共享以上配置，单个会话可在列表中「设置」覆盖。</p>
+            <button id="btn-create" class="btn primary">创建测试组</button>
           </div>
         </section>
 
-        <section class="card sessions-card">
-          <h2>会话列表</h2>
+        <section class="card groups-card">
+          <h2>测试组列表</h2>
           <div class="toolbar">
             <button id="btn-refresh" class="btn small">刷新</button>
-            <span id="session-count" class="count-label"></span>
+            <span id="group-count" class="count-label"></span>
           </div>
-          <div id="session-list" class="session-list"></div>
+          <div id="group-list" class="group-list"></div>
         </section>
       </aside>
 
@@ -85,7 +89,7 @@
         <section class="workspace-body">
           <div id="panels" class="panels"></div>
           <div id="empty-hint" class="empty">
-            点击左侧会话列表的「打开」即可并行查看；<br />
+            创建测试组后，点「打开全部」或单个会话的「打开」即可并行查看；<br />
             面板可拖拽排序、可置顶，每个面板可单独发送消息。
           </div>
         </section>
@@ -99,7 +103,7 @@
 
     <div id="modal-mask" class="modal-mask" hidden>
       <div class="modal" role="dialog" aria-modal="true">
-        <p id="modal-text"></p>
+        <div id="modal-body" class="modal-body"></div>
         <div class="modal-actions">
           <button id="modal-cancel" class="btn">取消</button>
           <button id="modal-ok" class="btn primary">确定</button>

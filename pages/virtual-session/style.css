@@ -251,6 +251,17 @@ textarea:focus {
   color: var(--primary);
 }
 
+.badge.warn {
+  background: color-mix(in srgb, var(--warn) 15%, transparent);
+  color: var(--warn);
+}
+
+.hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
 code {
   background: var(--code-bg);
   border-radius: 4px;
@@ -306,6 +317,79 @@ code {
 .session-actions {
   display: flex;
   gap: 6px;
+}
+
+/* ---------- 测试组列表 ---------- */
+
+.groups-card {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.group-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.group-item {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.group-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.group-toggle {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.group-name {
+  font-weight: 600;
+  font-size: 13px;
+  word-break: break-all;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.group-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.group-meta {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.group-sessions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 8px;
+  margin-top: 2px;
+  border-top: 1px dashed var(--border);
 }
 
 /* ---------- 群发栏 ---------- */
@@ -641,13 +725,28 @@ code {
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 18px 20px;
-  width: min(360px, 90vw);
+  width: min(420px, 92vw);
 }
 
 .modal p {
   margin: 0 0 14px;
   word-break: break-word;
   color: var(--text);
+}
+
+.modal-title {
+  font-weight: 600;
+  font-size: 14px;
+  margin-bottom: 10px;
+  word-break: break-word;
+}
+
+.settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-secondary);
 }
 
 .modal-actions {

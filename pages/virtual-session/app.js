@@ -4,7 +4,7 @@ const bridge = window.AstrBotPluginPage;
 
 const $ = (id) => document.getElementById(id);
 
-let sessions = [];
+let groups = [];
 let platforms = [];
 let confs = [];
 let openIds = [];
@@ -15,6 +15,7 @@ let runBusy = false;
 let alignMode = false;
 let alignTurn = 1;
 const TURN_H = 150;
+let expandedGroups = new Set();
 
 function escapeHtml(value) {
   if (value === null || value === undefined) return "";
@@ -52,21 +53,66 @@ function platformName(id) {
   return p ? p.display_name || p.name : id;
 }
 
-function sessionById(id) {
-  return sessions.find((s) => s.id === id);
+function findSession(id) {
+  for (const g of groups) {
+    const s = (g.sessions || []).find((x) => x.id === id);
+    if (s) return { group: g, session: s };
+  }
+  return null;
+}
+
+// 解析会话的最终配置（组配置 + 会话覆盖）
+function effectiveView(id) {
+  const f = findSession(id);
+  if (!f) return null;
+  const { group, session } = f;
+  const confId =
+    session.conf_id === undefined || session.conf_id === null
+      ? group.conf_id
+      : session.conf_id || null;
+  return {
+    id: session.id,
+    name: session.name || session.id,
+    platform_id: session.platform_id || group.platform_id || "virtual_test",
+    conf_id: confId,
+    group_name: group.name,
+  };
 }
 
 // ---------- 弹窗（iframe 沙箱禁用原生 alert/confirm，用自绘弹窗替代） ----------
 
 let modalCallback = null;
 
-function showModal(text, { okText = "确定", danger = false, onOk } = {}) {
-  $("modal-text").textContent = text;
+function openModal({ title, content, okText = "确定", cancelText = "取消", danger = false, showCancel, onOk, onCancel } = {}) {
+  const body = $("modal-body");
+  body.innerHTML = "";
+  if (title) {
+    const h = document.createElement("div");
+    h.className = "modal-title";
+    h.textContent = title;
+    body.appendChild(h);
+  }
+  if (typeof content === "string") {
+    const p = document.createElement("p");
+    p.textContent = content;
+    body.appendChild(p);
+  } else if (content) {
+    body.appendChild(content);
+  }
+  // 无 onOk 的纯提示弹窗默认只显示确定按钮
+  const cancel = showCancel === undefined ? Boolean(onOk) : showCancel;
   $("modal-ok").textContent = okText;
   $("modal-ok").classList.toggle("danger", danger);
-  $("modal-cancel").hidden = !onOk;
-  modalCallback = onOk || null;
+  $("modal-cancel").textContent = cancelText;
+  $("modal-cancel").hidden = !cancel;
+  modalCallback = { onOk: onOk || null, onCancel: onCancel || null };
   $("modal-mask").hidden = false;
+  const first = body.querySelector("input, select, textarea");
+  if (first) first.focus();
+}
+
+function showModal(text, opts = {}) {
+  openModal({ content: text, ...opts });
 }
 
 function hideModal() {
@@ -74,65 +120,301 @@ function hideModal() {
   modalCallback = null;
 }
 
-$("modal-ok").addEventListener("click", () => {
+$("modal-ok").addEventListener("click", async () => {
   const cb = modalCallback;
   hideModal();
-  if (cb) cb();
+  if (!cb || !cb.onOk) return;
+  try {
+    await cb.onOk();
+  } catch (err) {
+    showRunStatus("error", "操作失败: " + err.message);
+  }
 });
 
-$("modal-cancel").addEventListener("click", hideModal);
+$("modal-cancel").addEventListener("click", () => {
+  const cb = modalCallback;
+  hideModal();
+  if (cb && cb.onCancel) cb.onCancel();
+});
 
 $("modal-mask").addEventListener("click", (e) => {
   if (e.target === $("modal-mask")) hideModal();
 });
 
-// ---------- 会话列表 ----------
+// ---------- 测试组列表 ----------
 
-async function refreshSessions() {
-  sessions = await bridge.apiGet("sessions");
+async function refreshGroups() {
+  const data = await bridge.apiGet("groups");
+  groups = data.groups || [];
   // 清理已被删除的会话面板
-  const valid = new Set(sessions.map((s) => s.id));
+  const valid = new Set();
+  for (const g of groups) for (const s of g.sessions || []) valid.add(s.id);
   const removed = openIds.filter((id) => !valid.has(id));
   if (removed.length) {
     openIds = openIds.filter((id) => valid.has(id));
     pinnedIds = pinnedIds.filter((id) => valid.has(id));
     renderPanels();
   }
-  renderSessionList();
+  renderGroupList();
 }
 
-function renderSessionList() {
-  const list = $("session-list");
+function renderGroupList() {
+  const list = $("group-list");
   list.innerHTML = "";
-  $("session-count").textContent = sessions.length ? `${sessions.length} 个会话` : "";
-  if (!sessions.length) {
-    list.innerHTML = '<div class="empty">暂无虚拟会话，请先创建</div>';
+  $("group-count").textContent = groups.length ? `${groups.length} 个测试组` : "";
+  if (!groups.length) {
+    list.innerHTML = '<div class="empty">暂无测试组，请先创建</div>';
     return;
   }
-  for (const s of sessions) {
+  for (const g of groups) {
     const item = document.createElement("div");
-    item.className = "session-item";
-    item.dataset.id = s.id;
-    const confBadge = s.conf_id
-      ? `<span class="badge conf">${escapeHtml(confName(s.conf_id))}</span>`
+    item.className = "group-item";
+    item.dataset.id = g.id;
+    const expanded = expandedGroups.has(g.id);
+    const sessions = g.sessions || [];
+    const platformBadge = g.platform_id
+      ? `<span class="badge">${escapeHtml(platformName(g.platform_id))}</span>`
+      : `<span class="badge">${escapeHtml(platformName("virtual_test"))}</span>`;
+    const confBadge = g.conf_id
+      ? `<span class="badge conf">${escapeHtml(confName(g.conf_id))}</span>`
       : "";
-    const isOpen = openIds.includes(s.id);
     item.innerHTML =
-      `<div class="name">${escapeHtml(s.name)}</div>` +
-      `<div class="session-meta">` +
-      `<span class="badge">${escapeHtml(platformName(s.platform_id))}</span>` +
-      confBadge +
+      `<div class="group-head">` +
+      `<span class="group-toggle">${expanded ? "▾" : "▸"}</span>` +
+      `<span class="group-name">${escapeHtml(g.name)}</span>` +
+      `<span class="badge">${sessions.length} 会话</span>` +
+      `<span class="group-actions">` +
+      `<button class="btn small" data-action="open-all">打开全部</button>` +
+      `<button class="btn small" data-action="add">新增会话</button>` +
+      `<button class="btn small danger" data-action="delete-group">删除组</button>` +
+      `</span>` +
       `</div>` +
-      `<div class="session-actions">` +
-      `<button class="btn small" data-action="open">${isOpen ? "关闭" : "打开"}</button>` +
-      `<button class="btn small" data-action="reset">重置</button>` +
-      `<button class="btn small danger" data-action="delete">删除</button>` +
-      `</div>`;
-    item.querySelector('[data-action="open"]').addEventListener("click", () => toggleOpen(s.id));
-    item.querySelector('[data-action="reset"]').addEventListener("click", () => resetHistory(s.id));
-    item.querySelector('[data-action="delete"]').addEventListener("click", () => deleteSession(s.id));
+      `<div class="group-meta">${platformBadge}${confBadge}</div>` +
+      (expanded
+        ? `<div class="group-sessions">${renderGroupSessions(g)}</div>`
+        : "");
+
+    const head = item.querySelector(".group-head");
+    head.addEventListener("click", (e) => {
+      if (e.target.closest("button")) return;
+      toggleGroup(g.id);
+    });
+    item.querySelector('[data-action="open-all"]').addEventListener("click", () => openAll(g.id));
+    item.querySelector('[data-action="add"]').addEventListener("click", () => promptAddSessions(g.id));
+    item.querySelector('[data-action="delete-group"]').addEventListener("click", () => deleteGroup(g.id));
+
+    // 会话行操作
+    item.querySelectorAll(".session-item [data-action]").forEach((btn) => {
+      const sid = btn.closest(".session-item").dataset.id;
+      const action = btn.dataset.action;
+      if (action === "open") btn.addEventListener("click", () => toggleOpen(sid));
+      else if (action === "config") btn.addEventListener("click", () => openSettings(sid));
+      else if (action === "reset") btn.addEventListener("click", () => resetHistory(sid));
+      else if (action === "delete") btn.addEventListener("click", () => deleteSession(sid));
+    });
     list.appendChild(item);
   }
+}
+
+function renderGroupSessions(g) {
+  const sessions = g.sessions || [];
+  if (!sessions.length) return '<div class="empty">组内暂无会话，点「新增会话」添加</div>';
+  return sessions
+    .map((s) => {
+      const v = effectiveView(s.id);
+      const isOpen = openIds.includes(s.id);
+      const overrides = [
+        ["平台", s.platform_id],
+        ["档案", s.conf_id === "" ? "默认(不绑定)" : s.conf_id],
+        ["发送者", s.sender_id || s.sender_name],
+      ].filter(([, val]) => val);
+      const overBadge = overrides.length
+        ? `<span class="badge warn" title="覆盖组配置：${escapeHtml(overrides.map(([k, val]) => `${k}=${val}`).join(", "))}">覆盖${overrides.length}</span>`
+        : "";
+      return (
+        `<div class="session-item" data-id="${escapeHtml(s.id)}">` +
+        `<div class="name">${escapeHtml(s.name || s.id)}</div>` +
+        `<div class="session-meta">` +
+        `<span class="badge">${escapeHtml(platformName(v.platform_id))}</span>` +
+        (v.conf_id ? `<span class="badge conf">${escapeHtml(confName(v.conf_id))}</span>` : "") +
+        overBadge +
+        `</div>` +
+        `<div class="session-actions">` +
+        `<button class="btn small" data-action="open">${isOpen ? "关闭" : "打开"}</button>` +
+        `<button class="btn small" data-action="config">设置</button>` +
+        `<button class="btn small" data-action="reset">重置</button>` +
+        `<button class="btn small danger" data-action="delete">删除</button>` +
+        `</div>` +
+        `</div>`
+      );
+    })
+    .join("");
+}
+
+function toggleGroup(id) {
+  if (expandedGroups.has(id)) expandedGroups.delete(id);
+  else expandedGroups.add(id);
+  renderGroupList();
+}
+
+function openAll(gid) {
+  const g = groups.find((x) => x.id === gid);
+  if (!g) return;
+  for (const s of g.sessions || []) {
+    if (!openIds.includes(s.id)) {
+      openIds.push(s.id);
+      openPanel(s.id);
+    }
+  }
+  renderPanels();
+  renderGroupList();
+}
+
+function promptAddSessions(gid) {
+  const input = document.createElement("input");
+  input.type = "number";
+  input.min = "1";
+  input.max = "500";
+  input.value = "5";
+  openModal({
+    title: "新增会话",
+    content: field("数量", input),
+    okText: "新增",
+    onOk: async () => {
+      const n = parseInt(input.value, 10);
+      if (!Number.isInteger(n) || n < 1) {
+        showModal("数量必须是大于 0 的整数");
+        return;
+      }
+      const created = await bridge.apiPost(
+        `groups/${encodeURIComponent(gid)}/sessions`,
+        { count: n },
+      );
+      await refreshGroups();
+      showRunStatus("ok", `已新增 ${created.length} 个会话`);
+    },
+  });
+}
+
+function deleteGroup(gid) {
+  const g = groups.find((x) => x.id === gid);
+  showModal(
+    `确定删除测试组「${g ? g.name : gid}」及其全部 ${g ? (g.sessions || []).length : 0} 个会话吗？`,
+    {
+      danger: true,
+      onOk: async () => {
+        await bridge.apiPost("groups/delete", { ids: [gid] });
+        for (const s of g.sessions || []) {
+          openIds = openIds.filter((x) => x !== s.id);
+          pinnedIds = pinnedIds.filter((x) => x !== s.id);
+        }
+        renderPanels();
+        await refreshGroups();
+      },
+    },
+  );
+}
+
+function openSettings(sid) {
+  const f = findSession(sid);
+  if (!f) return;
+  const { group, session } = f;
+
+  const selP = document.createElement("select");
+  selP.innerHTML =
+    `<option value="">使用组配置（${escapeHtml(platformName(group.platform_id || "virtual_test"))}）</option>` +
+    `<option value="virtual_test">virtual_test（默认）</option>` +
+    platforms
+      .map(
+        (p) =>
+          `<option value="${escapeHtml(p.id)}">${escapeHtml(p.id)}（${escapeHtml(p.display_name || p.name)}）</option>`,
+      )
+      .join("");
+  selP.value = session.platform_id || "";
+
+  const selC = document.createElement("select");
+  selC.innerHTML =
+    `<option value="">使用组配置（${group.conf_id ? escapeHtml(confName(group.conf_id)) : "默认"}）</option>` +
+    `<option value="__default__">默认配置（不绑定档案）</option>` +
+    confs
+      .filter((c) => c.id !== "default")
+      .map((c) => `<option value="${escapeHtml(c.id)}">${escapeHtml(c.name)}</option>`)
+      .join("");
+  if (session.conf_id === "") selC.value = "__default__";
+  else if (session.conf_id) selC.value = session.conf_id;
+  else selC.value = "";
+
+  const inpId = document.createElement("input");
+  inpId.type = "text";
+  inpId.placeholder = "留空使用组配置";
+  inpId.value = session.sender_id || "";
+
+  const inpName = document.createElement("input");
+  inpName.type = "text";
+  inpName.placeholder = "留空使用组配置";
+  inpName.value = session.sender_name || "";
+
+  const form = document.createElement("div");
+  form.className = "form-col";
+  form.append(
+    field("平台来源（覆盖）", selP),
+    field("配置档案（覆盖）", selC),
+    field("发送者ID", inpId),
+    field("发送者昵称", inpName),
+  );
+
+  openModal({
+    title: `会话配置 · ${s.name || sid}`,
+    content: form,
+    okText: "保存",
+    onOk: async () => {
+      await bridge.apiPost("sessions/update", {
+        id: sid,
+        platform_id: selP.value || null,
+        conf_id: selC.value === "__default__" ? "" : selC.value || null,
+        sender_id: inpId.value.trim() || null,
+        sender_name: inpName.value.trim() || null,
+      });
+      await refreshGroups();
+      refreshPanelHead(sid); // 已打开面板同步标题与徽标（聊天内容保留）
+      showRunStatus("ok", "会话配置已更新");
+    },
+  });
+}
+
+// 会话配置变更后刷新已打开面板的标题与徽标（保留聊天内容与状态）
+function refreshPanelHead(id) {
+  const panel = panelEls.get(id);
+  if (!panel) return;
+  const s = effectiveView(id);
+  const head = panel.querySelector(".panel-head");
+  head.querySelector(".panel-title").textContent = s ? s.name : id;
+  head.querySelectorAll(".badge").forEach((b) => b.remove());
+  if (!s) return;
+  const badges = [
+    [s.group_name, "group-badge", "所属测试组", escapeHtml(s.group_name || "")],
+    [s.platform_id, "platform-badge", "", escapeHtml(platformName(s.platform_id))],
+    [s.conf_id, "conf-badge", "", escapeHtml(confName(s.conf_id))],
+  ];
+  const actions = head.querySelector(".panel-actions");
+  for (const [text, cls, tip, label] of badges) {
+    if (!text) continue;
+    const span = document.createElement("span");
+    span.className = "badge " + cls + (cls === "conf-badge" ? " conf" : "");
+    if (tip) span.title = tip;
+    span.textContent = label;
+    head.insertBefore(span, actions);
+  }
+}
+
+function field(label, input) {
+  const l = document.createElement("label");
+  l.className = "settings-field";
+  const span = document.createElement("span");
+  span.textContent = label;
+  l.appendChild(span);
+  l.appendChild(input);
+  return l;
 }
 
 // ---------- 面板 ----------
@@ -146,7 +428,7 @@ function toggleOpen(id) {
     openPanel(id);
   }
   renderPanels();
-  renderSessionList();
+  renderGroupList();
 }
 
 function openPanel(id) {
@@ -156,19 +438,22 @@ function openPanel(id) {
   panel.dataset.id = id;
   panel.draggable = true;
 
-  const s = sessionById(id);
+  const s = effectiveView(id);
   const confBadge = s && s.conf_id
-    ? `<span class="badge conf">${escapeHtml(confName(s.conf_id))}</span>`
+    ? `<span class="badge conf-badge conf">${escapeHtml(confName(s.conf_id))}</span>`
     : "";
   const platformBadge = s
-    ? `<span class="badge">${escapeHtml(platformName(s.platform_id))}</span>`
+    ? `<span class="badge platform-badge">${escapeHtml(platformName(s.platform_id))}</span>`
+    : "";
+  const groupBadge = s
+    ? `<span class="badge group-badge" title="所属测试组">${escapeHtml(s.group_name || "")}</span>`
     : "";
 
   panel.innerHTML =
     `<div class="panel-head" title="拖拽排序">` +
     `<span class="drag-handle">≡</span>` +
     `<span class="panel-title">${escapeHtml(s ? s.name : id)}</span>` +
-    platformBadge + confBadge +
+    groupBadge + platformBadge + confBadge +
     `<span class="panel-actions">` +
     `<button class="icon-btn" data-action="pin" title="置顶">置顶</button>` +
     `<button class="icon-btn" data-action="close" title="关闭">✕</button>` +
@@ -457,21 +742,22 @@ function resetHistory(id) {
 }
 
 function deleteSession(id) {
-  showModal(`确定删除会话 ${id} 吗？`, {
+  const v = effectiveView(id);
+  showModal(`确定删除会话 ${v ? v.name : id} 吗？`, {
     danger: true,
     onOk: async () => {
       await bridge.apiPost("sessions/delete", { ids: [id] });
       openIds = openIds.filter((x) => x !== id);
       pinnedIds = pinnedIds.filter((x) => x !== id);
       renderPanels();
-      await refreshSessions();
+      await refreshGroups();
     },
   });
 }
 
 // ---------- 创建 ----------
 
-async function createSessions() {
+async function createGroup() {
   const count = parseInt($("create-count").value, 10);
   if (!Number.isInteger(count) || count < 1) {
     showModal("数量必须是大于 0 的整数");
@@ -482,7 +768,8 @@ async function createSessions() {
   const btn = $("btn-create");
   btn.disabled = true;
   try {
-    const created = await bridge.apiPost("sessions", {
+    const group = await bridge.apiPost("groups", {
+      name: $("create-group-name").value,
       count,
       platform_id: platformId && platformId !== "virtual_test" ? platformId : undefined,
       conf_id: confId || undefined,
@@ -490,14 +777,10 @@ async function createSessions() {
       sender_name: $("create-sender-name").value || undefined,
       name_prefix: $("create-name-prefix").value || undefined,
     });
-    await refreshSessions();
-    for (const s of created) {
-      if (!openIds.includes(s.id)) openIds.push(s.id);
-      openPanel(s.id);
-    }
-    renderPanels();
-    renderSessionList();
-    showRunStatus("ok", `已创建并打开 ${created.length} 个会话`);
+    await refreshGroups();
+    expandedGroups.add(group.id);
+    renderGroupList();
+    showRunStatus("ok", `已创建测试组「${group.name}」，含 ${(group.sessions || []).length} 个会话`);
   } catch (err) {
     showModal("创建失败: " + err.message);
   } finally {
@@ -704,12 +987,12 @@ async function loadOptions() {
 
 // ---------- 初始化 ----------
 
-$("btn-create").addEventListener("click", createSessions);
-$("btn-refresh").addEventListener("click", refreshSessions);
+$("btn-create").addEventListener("click", createGroup);
+$("btn-refresh").addEventListener("click", refreshGroups);
 $("btn-run-all").addEventListener("click", sendToAll);
 $("run-text").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.isComposing) sendToAll();
 });
 
 await bridge.ready();
-await Promise.all([loadOptions(), refreshSessions()]);
+await Promise.all([loadOptions(), refreshGroups()]);
