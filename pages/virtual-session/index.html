@@ -74,6 +74,10 @@
                 </label>
               </div>
             </details>
+            <label class="align-toggle" title="启用后所有面板按对话轮次对齐，滑动条可同步滚动全部窗口">
+              <input id="align-toggle" type="checkbox" />
+              轮次对齐
+            </label>
           </div>
           <div id="run-status" class="run-status" hidden></div>
         </section>
@@ -85,6 +89,11 @@
             面板可拖拽排序、可置顶，每个面板可单独发送消息。
           </div>
         </section>
+
+        <div id="align-bar" class="align-bar" hidden>
+          <span id="align-turn-label" class="align-label">轮次 1/1</span>
+          <input id="align-slider" type="range" min="1" max="1" value="1" step="1" />
+        </div>
       </main>
     </div>
 

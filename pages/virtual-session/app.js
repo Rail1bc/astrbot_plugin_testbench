@@ -8,8 +8,13 @@ let sessions = [];
 let platforms = [];
 let confs = [];
 let openIds = [];
+let pinnedIds = [];
 const panelEls = new Map();
+const historyCache = new Map();
 let runBusy = false;
+let alignMode = false;
+let alignTurn = 1;
+const TURN_H = 150;
 
 function escapeHtml(value) {
   if (value === null || value === undefined) return "";
@@ -90,6 +95,7 @@ async function refreshSessions() {
   const removed = openIds.filter((id) => !valid.has(id));
   if (removed.length) {
     openIds = openIds.filter((id) => valid.has(id));
+    pinnedIds = pinnedIds.filter((id) => valid.has(id));
     renderPanels();
   }
   renderSessionList();
@@ -134,6 +140,7 @@ function renderSessionList() {
 function toggleOpen(id) {
   if (openIds.includes(id)) {
     openIds = openIds.filter((x) => x !== id);
+    pinnedIds = pinnedIds.filter((x) => x !== id);
   } else {
     openIds.push(id);
     openPanel(id);
@@ -195,15 +202,24 @@ async function loadHistory(id) {
   const chat = panel.querySelector(".chat");
   try {
     const data = await bridge.apiGet(`sessions/${encodeURIComponent(id)}/history`);
-    renderHistory(panel, data.conversations || []);
+    const conversations = data.conversations || [];
+    historyCache.set(id, conversations);
+    renderChat(panel, conversations);
+    if (alignMode) refreshAlign();
   } catch (err) {
     chat.innerHTML = `<div class="empty">加载历史失败: ${escapeHtml(err.message)}</div>`;
   }
 }
 
+function renderChat(panel, conversations) {
+  if (alignMode) renderAligned(panel, conversations);
+  else renderHistory(panel, conversations);
+}
+
 function renderHistory(panel, conversations) {
   const chat = panel.querySelector(".chat");
   chat.innerHTML = "";
+  chat.classList.remove("aligned");
   let count = 0;
   for (const conv of conversations) {
     for (const msg of conv.history || []) {
@@ -218,6 +234,53 @@ function renderHistory(panel, conversations) {
     chat.appendChild(p);
   }
   chat.scrollTop = chat.scrollHeight;
+}
+
+// 把消息历史按轮次分组：每个 user 发言开启新的一轮，期间的推理/工具调用/回复都属于该轮
+function groupTurns(history) {
+  const turns = [];
+  let cur = null;
+  for (const msg of history || []) {
+    if ((msg.role || "") === "user") {
+      cur = { messages: [] };
+      turns.push(cur);
+    } else if (!cur) {
+      cur = { messages: [] };
+      turns.push(cur);
+    }
+    cur.messages.push(msg);
+  }
+  return turns;
+}
+
+// 轮次对齐模式：每轮固定行高，行内内容超高时行内滚动，保证所有面板按轮次对齐
+function renderAligned(panel, conversations) {
+  const chat = panel.querySelector(".chat");
+  chat.innerHTML = "";
+  chat.classList.add("aligned");
+  let idx = 0;
+  for (const conv of conversations) {
+    for (const turn of groupTurns(conv.history)) {
+      const row = document.createElement("div");
+      row.className = "turn-row";
+      const label = document.createElement("div");
+      label.className = "turn-label";
+      label.textContent = `轮次 ${idx + 1}`;
+      row.appendChild(label);
+      const body = document.createElement("div");
+      body.className = "turn-body";
+      for (const msg of turn.messages) body.appendChild(bubbleFor(msg));
+      row.appendChild(body);
+      chat.appendChild(row);
+      idx++;
+    }
+  }
+  if (!idx) {
+    const p = document.createElement("div");
+    p.className = "empty";
+    p.textContent = "暂无对话历史";
+    chat.appendChild(p);
+  }
 }
 
 function extractText(content) {
@@ -399,6 +462,7 @@ function deleteSession(id) {
     onOk: async () => {
       await bridge.apiPost("sessions/delete", { ids: [id] });
       openIds = openIds.filter((x) => x !== id);
+      pinnedIds = pinnedIds.filter((x) => x !== id);
       renderPanels();
       await refreshSessions();
     },
@@ -443,18 +507,25 @@ async function createSessions() {
 
 // ---------- 面板排序 ----------
 
+function visibleOrder() {
+  return [
+    ...pinnedIds.filter((id) => openIds.includes(id)),
+    ...openIds.filter((id) => !pinnedIds.includes(id)),
+  ];
+}
+
+// 置顶是开关：置顶的面板固定在最前，再次点击取消置顶
 function pin(id) {
-  const from = openIds.indexOf(id);
-  if (from <= 0) return;
-  openIds.splice(from, 1);
-  openIds.unshift(id);
+  const i = pinnedIds.indexOf(id);
+  if (i >= 0) pinnedIds.splice(i, 1);
+  else pinnedIds.unshift(id);
   renderPanels();
 }
 
 function renderPanels() {
   const panelsEl = $("panels");
-  // 按 openIds 顺序调整面板 DOM（appendChild 会移动已有节点，保留聊天状态）
-  for (const id of openIds) {
+  // 置顶面板在最前，其余按打开顺序（appendChild 移动已有节点，保留聊天状态）
+  for (const id of visibleOrder()) {
     const el = panelEls.get(id);
     if (el) panelsEl.appendChild(el);
   }
@@ -464,8 +535,17 @@ function renderPanels() {
       panelEls.delete(id);
     }
   }
+  // 更新置顶按钮的开关视觉状态
+  for (const [id, el] of panelEls) {
+    const btn = el.querySelector('[data-action="pin"]');
+    const isPinned = pinnedIds.includes(id);
+    btn.classList.toggle("active", isPinned);
+    btn.title = isPinned ? "取消置顶" : "置顶";
+  }
   panelsEl.classList.toggle("single", openIds.length === 1);
   $("empty-hint").hidden = openIds.length > 0;
+  $("align-bar").hidden = !alignMode || openIds.length === 0;
+  if (alignMode) refreshAlign();
 }
 
 // 拖拽排序
@@ -491,11 +571,16 @@ panelsEl.addEventListener("drop", (e) => {
   const target = e.target.closest(".panel");
   if (!target || !dragId || target.dataset.id === dragId) return;
   e.preventDefault();
-  const from = openIds.indexOf(dragId);
-  const to = openIds.indexOf(target.dataset.id);
+  const order = visibleOrder();
+  const from = order.indexOf(dragId);
+  const to = order.indexOf(target.dataset.id);
   if (from < 0 || to < 0) return;
-  openIds.splice(from, 1);
-  openIds.splice(openIds.indexOf(target.dataset.id), 0, dragId);
+  order.splice(from, 1);
+  order.splice(order.indexOf(target.dataset.id), 0, dragId);
+  // 回写顺序，同时保持各面板的置顶状态
+  const pinnedSet = new Set(pinnedIds);
+  pinnedIds = order.filter((id) => pinnedSet.has(id));
+  openIds = order;
   renderPanels();
 });
 
@@ -503,6 +588,88 @@ panelsEl.addEventListener("dragend", () => {
   dragId = null;
   document.querySelectorAll(".panel.dragging").forEach((p) => p.classList.remove("dragging"));
 });
+
+// ---------- 轮次对齐 ----------
+
+function alignMaxTurns() {
+  let m = 1;
+  for (const id of openIds) {
+    const panel = panelEls.get(id);
+    if (!panel) continue;
+    m = Math.max(m, panel.querySelectorAll(".turn-row").length);
+  }
+  return m;
+}
+
+// 把统一滑动条定位到指定轮次，同步所有面板的滚动位置
+function setTurn(t, { force = false } = {}) {
+  if (!alignMode) return;
+  const max = alignMaxTurns();
+  t = Math.max(1, Math.min(max, Math.round(t)));
+  if (!force && t === alignTurn) return;
+  alignTurn = t;
+  const top = (t - 1) * TURN_H;
+  for (const [, panel] of panelEls) {
+    const chat = panel.querySelector(".chat");
+    if (chat) chat.scrollTop = top;
+  }
+  $("align-slider").value = String(t);
+  $("align-turn-label").textContent = `轮次 ${t}/${max}`;
+}
+
+function refreshAlign() {
+  if (!alignMode) return;
+  $("align-slider").max = String(alignMaxTurns());
+  setTurn(alignTurn, { force: true });
+}
+
+function applyAlignMode() {
+  alignMode = $("align-toggle").checked;
+  $("panels").classList.toggle("align", alignMode);
+  $("align-bar").hidden = !alignMode || openIds.length === 0;
+  for (const id of openIds) {
+    const panel = panelEls.get(id);
+    if (!panel) continue;
+    renderChat(panel, historyCache.get(id) || []);
+  }
+  if (alignMode) {
+    alignTurn = 1;
+    refreshAlign();
+  }
+}
+
+$("align-toggle").addEventListener("change", applyAlignMode);
+
+$("align-slider").addEventListener("input", () => {
+  setTurn(parseInt($("align-slider").value, 10), { force: true });
+});
+
+// 对齐模式下滚轮同步滚动所有窗口；行内还有可滚动内容时优先行内滚动
+let wheelAccum = 0;
+panelsEl.addEventListener(
+  "wheel",
+  (e) => {
+    if (!alignMode) return;
+    const body = e.target.closest(".turn-body");
+    if (body) {
+      const canDown = body.scrollTop + body.clientHeight < body.scrollHeight - 1;
+      const canUp = body.scrollTop > 0;
+      if ((e.deltaY > 0 && canDown) || (e.deltaY < 0 && canUp)) return;
+    }
+    e.preventDefault();
+    wheelAccum += e.deltaY;
+    const STEP = 60;
+    while (wheelAccum >= STEP) {
+      wheelAccum -= STEP;
+      setTurn(alignTurn + 1);
+    }
+    while (wheelAccum <= -STEP) {
+      wheelAccum += STEP;
+      setTurn(alignTurn - 1);
+    }
+  },
+  { passive: false },
+);
 
 // ---------- 选项加载 ----------
 
