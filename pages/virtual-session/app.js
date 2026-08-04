@@ -1,4 +1,4 @@
-// 虚拟会话测试平台 - 页面脚本
+// 会话测试台 - 页面脚本
 // 通过 window.AstrBotPluginPage bridge 与插件后端通信。
 const bridge = window.AstrBotPluginPage;
 

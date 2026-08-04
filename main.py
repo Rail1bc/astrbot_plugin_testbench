@@ -1,4 +1,4 @@
-"""虚拟会话测试平台插件。
+"""会话测试台插件。
 
 通过插件页面创建与真实会话走完全相同处理路径的虚拟会话，可并发向多个虚拟会话
 发送同一条消息，用于测试插件、提示词、模型与整体稳定性。
@@ -14,7 +14,7 @@ from astrbot.api.web import error_response, json_response, request
 
 from .runner import VirtualSessionManager, VirtualTestRunner, umo_of
 
-PLUGIN_NAME = "astrbot_plugin_virtual_session"
+PLUGIN_NAME = "astrbot_plugin_testbench"
 
 MAX_SESSIONS_PER_BATCH = 500
 

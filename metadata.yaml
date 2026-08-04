@@ -1,8 +1,8 @@
-name: astrbot_plugin_virtual_session # 插件唯一识别名，以 astrbot_plugin_ 前缀开头
-display_name: 虚拟会话测试平台 # 用于展示的名字
+name: astrbot_plugin_testbench # 插件唯一识别名，以 astrbot_plugin_ 前缀开头
+display_name: 会话测试台 # 用于展示的名字
 desc: 在插件页面创建与真实会话走完全相同处理路径的虚拟会话，可并发向 N 个虚拟会话发送消息，用于测试插件、提示词、模型与整体稳定性。 # 插件简短描述
 version: v0.1.0 # 插件版本号
 author: Rail1bc # 作者
-repo: https://github.com/Rail1bc/astrbot_plugin_virtual_session # 插件的仓库地址
+repo: https://github.com/Rail1bc/astrbot_plugin_testbench # 插件的仓库地址
 astrbot_version: ">=4.16" # 插件适配的 AstrBot 版本范围
 support_platforms: # 虚拟会话不依赖具体 IM 适配器，留空表示与平台无关

@@ -29,4 +29,4 @@
 
 ## ❤️ CONTRIBUTING
 
-- [ ] 🥳 我已阅读并同意遵守该项目的 [贡献指南](https://github.com/Rail1bc/astrbot_plugin_virtual_session/blob/main/CONTRIBUTING.md) / I have read and agree to abide by the [CONTRIBUTING](https://github.com/Rail1bc/astrbot_plugin_virtual_session/blob/main/CONTRIBUTING.md) of this project.
+- [ ] 🥳 我已阅读并同意遵守该项目的 [贡献指南](https://github.com/Rail1bc/astrbot_plugin_testbench/blob/main/CONTRIBUTING.md) / I have read and agree to abide by the [CONTRIBUTING](https://github.com/Rail1bc/astrbot_plugin_testbench/blob/main/CONTRIBUTING.md) of this project.

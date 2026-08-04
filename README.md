@@ -1,6 +1,6 @@
 <!-- markdownlint-disable MD041 -->
 
-# 虚拟会话测试平台 (astrbot_plugin_virtual_session)
+# 会话测试台 (astrbot_plugin_testbench)
 
 一个为 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 设计的虚拟会话并发测试插件。
 
@@ -17,9 +17,9 @@
 
 ## 🚀 安装与使用
 
-1. 从本仓库 [Release](https://github.com/Rail1bc/astrbot_plugin_virtual_session/releases) 下载 `astrbot_plugin_virtual_session` 的 `.zip` 文件。
+1. 从本仓库 [Release](https://github.com/Rail1bc/astrbot_plugin_testbench/releases) 下载 `astrbot_plugin_testbench` 的 `.zip` 文件。
 2. 在 AstrBot WebUI 的插件页面中选择「从文件安装」。
-3. 在插件页面中启用插件，进入「虚拟会话测试平台」页面。
+3. 在插件页面中启用插件，进入「会话测试台」页面。
 
 ### 插件页面使用流程
 
@@ -34,7 +34,7 @@
 ## 📂 插件目录与结构
 
 ```text
-data/plugins/astrbot_plugin_virtual_session/
+data/plugins/astrbot_plugin_testbench/
 ├─ main.py               # 插件主入口文件（Star 类 + Web API 后端）
 ├─ runner.py             # 会话管理 + 并发测试运行器
 ├─ virtual_event.py      # 虚拟消息事件（捕获回复，不真实外发）
@@ -52,8 +52,8 @@ data/plugins/astrbot_plugin_virtual_session/
 .venv/Scripts/python.exe -m pytest tests/unit/test_virtual_session_plugin.py -v
 
 # 代码质量检查
-.venv/Scripts/python.exe -m ruff check data/plugins/astrbot_plugin_virtual_session tests/unit/test_virtual_session_plugin.py
-.venv/Scripts/python.exe -m ruff format --check data/plugins/astrbot_plugin_virtual_session tests/unit/test_virtual_session_plugin.py
+.venv/Scripts/python.exe -m ruff check data/plugins/astrbot_plugin_testbench tests/unit/test_virtual_session_plugin.py
+.venv/Scripts/python.exe -m ruff format --check data/plugins/astrbot_plugin_testbench tests/unit/test_virtual_session_plugin.py
 ```
 
 Windows 开发者可直接运行 `run_ruff.bat` 进行格式化与质量检查。
