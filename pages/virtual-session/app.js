@@ -51,6 +51,36 @@ function sessionById(id) {
   return sessions.find((s) => s.id === id);
 }
 
+// ---------- 弹窗（iframe 沙箱禁用原生 alert/confirm，用自绘弹窗替代） ----------
+
+let modalCallback = null;
+
+function showModal(text, { okText = "确定", danger = false, onOk } = {}) {
+  $("modal-text").textContent = text;
+  $("modal-ok").textContent = okText;
+  $("modal-ok").classList.toggle("danger", danger);
+  $("modal-cancel").hidden = !onOk;
+  modalCallback = onOk || null;
+  $("modal-mask").hidden = false;
+}
+
+function hideModal() {
+  $("modal-mask").hidden = true;
+  modalCallback = null;
+}
+
+$("modal-ok").addEventListener("click", () => {
+  const cb = modalCallback;
+  hideModal();
+  if (cb) cb();
+});
+
+$("modal-cancel").addEventListener("click", hideModal);
+
+$("modal-mask").addEventListener("click", (e) => {
+  if (e.target === $("modal-mask")) hideModal();
+});
+
 // ---------- 会话列表 ----------
 
 async function refreshSessions() {
@@ -348,23 +378,31 @@ function showRunStatus(status, text) {
 
 // ---------- 会话操作 ----------
 
-async function resetHistory(id) {
-  if (!confirm(`确定重置会话 ${id} 的对话历史吗？`)) return;
-  const resp = await bridge.apiPost("reset", { ids: [id] });
-  const panel = panelEls.get(id);
-  if (panel) {
-    clearPanelStatus(panel);
-    void loadHistory(id);
-  }
-  showRunStatus("ok", `已重置 ${resp.reset} 个会话的对话历史`);
+function resetHistory(id) {
+  showModal(`确定重置会话 ${id} 的对话历史吗？`, {
+    danger: true,
+    onOk: async () => {
+      const resp = await bridge.apiPost("reset", { ids: [id] });
+      const panel = panelEls.get(id);
+      if (panel) {
+        clearPanelStatus(panel);
+        void loadHistory(id);
+      }
+      showRunStatus("ok", `已重置 ${resp.reset} 个会话的对话历史`);
+    },
+  });
 }
 
-async function deleteSession(id) {
-  if (!confirm(`确定删除会话 ${id} 吗？`)) return;
-  await bridge.apiPost("sessions/delete", { ids: [id] });
-  openIds = openIds.filter((x) => x !== id);
-  renderPanels();
-  await refreshSessions();
+function deleteSession(id) {
+  showModal(`确定删除会话 ${id} 吗？`, {
+    danger: true,
+    onOk: async () => {
+      await bridge.apiPost("sessions/delete", { ids: [id] });
+      openIds = openIds.filter((x) => x !== id);
+      renderPanels();
+      await refreshSessions();
+    },
+  });
 }
 
 // ---------- 创建 ----------
@@ -372,7 +410,7 @@ async function deleteSession(id) {
 async function createSessions() {
   const count = parseInt($("create-count").value, 10);
   if (!Number.isInteger(count) || count < 1) {
-    alert("数量必须是大于 0 的整数");
+    showModal("数量必须是大于 0 的整数");
     return;
   }
   const platformId = $("create-platform").value;
@@ -397,7 +435,7 @@ async function createSessions() {
     renderSessionList();
     showRunStatus("ok", `已创建并打开 ${created.length} 个会话`);
   } catch (err) {
-    alert("创建失败: " + err.message);
+    showModal("创建失败: " + err.message);
   } finally {
     btn.disabled = false;
   }
