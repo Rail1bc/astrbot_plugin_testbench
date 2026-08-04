@@ -159,17 +159,33 @@ class VirtualSessionPlugin(Star):
         return json_response(confs)
 
     async def list_platforms(self):
-        """列出已启用的平台适配器（虚拟会话可模拟其平台上下文）。"""
+        """列出已启用的平台适配器（虚拟会话可模拟其平台上下文）。
+
+        单个适配器元数据读取失败时跳过该适配器，保证单个异常不会导致整个
+        列表接口失败（前端下拉框因此为空）。
+        """
         platforms = []
-        for inst in self.context.platform_manager.platform_insts:
-            meta = inst.meta()
-            platforms.append(
-                {
-                    "id": meta.id,
-                    "name": meta.name,
-                    "display_name": meta.adapter_display_name or meta.name,
-                }
-            )
+        manager = getattr(self.context, "platform_manager", None)
+        insts = getattr(manager, "platform_insts", None) if manager else None
+        if not insts:
+            return json_response(platforms)
+        for inst in insts:
+            try:
+                meta = inst.meta()
+                platform_id = getattr(meta, "id", None)
+                if not platform_id:
+                    continue
+                name = getattr(meta, "name", None)
+                platforms.append(
+                    {
+                        "id": platform_id,
+                        "name": name,
+                        "display_name": getattr(meta, "adapter_display_name", None)
+                        or name,
+                    }
+                )
+            except Exception as e:  # noqa: BLE001
+                self.logger.warning(f"读取平台适配器元数据失败: {e}")
         return json_response(platforms)
 
     # ---------- 测试组 ----------
@@ -205,7 +221,7 @@ class VirtualSessionPlugin(Star):
         return json_response(group)
 
     async def delete_groups(self):
-        """删除测试组，并清理组内会话的配置档案路由。"""
+        """删除测试组，并联动清理组内会话的配置档案路由与原生对话历史。"""
         payload = await request.json(default={})
         ids = payload.get("ids")
         if not isinstance(ids, list) or not ids:
@@ -213,6 +229,7 @@ class VirtualSessionPlugin(Star):
         removed = self.group_mgr.delete_groups(ids)
         sessions = [self.group_mgr.effective(group, s) for group, s in removed]
         await self._clear_conf_routes(sessions)
+        await self._delete_session_conversations(sessions)
         return json_response(
             {
                 "deleted": len(removed),
@@ -290,7 +307,7 @@ class VirtualSessionPlugin(Star):
         return json_response(new_session)
 
     async def delete_sessions(self):
-        """删除虚拟会话，并清理其配置档案路由。"""
+        """删除虚拟会话，并联动清理其配置档案路由与原生对话历史。"""
         payload = await request.json(default={})
         ids = payload.get("ids")
         if not isinstance(ids, list) or not ids:
@@ -298,6 +315,7 @@ class VirtualSessionPlugin(Star):
         removed = self.group_mgr.delete_sessions(ids)
         sessions = [self.group_mgr.effective(group, s) for group, s in removed]
         await self._clear_conf_routes(sessions)
+        await self._delete_session_conversations(sessions)
         return json_response({"deleted": len(sessions)})
 
     async def session_history(self, session_id: str):
@@ -334,14 +352,7 @@ class VirtualSessionPlugin(Star):
         if not isinstance(ids, list) or not ids:
             return error_response("ids 不能为空", status_code=400)
         sessions = self.group_mgr.effective_many(ids)
-        conv_mgr = self.context.conversation_manager
-        reset = 0
-        for session in sessions:
-            try:
-                await conv_mgr.delete_conversations_by_user_id(umo_of(session))
-                reset += 1
-            except Exception as e:  # noqa: BLE001
-                self.logger.warning(f"重置会话 {session['id']} 的对话历史失败: {e}")
+        reset = await self._delete_session_conversations(sessions)
         return json_response({"reset": reset})
 
     # ---------- 测试 ----------
@@ -512,6 +523,18 @@ class VirtualSessionPlugin(Star):
                     parts.append(str(part.get("text") or part.get("content") or ""))
             return "\n".join(p for p in parts if p)
         return ""
+
+    async def _delete_session_conversations(self, sessions: list[dict]) -> int:
+        """级联删除虚拟会话在 AstrBot 原生的对话历史（按 umo），返回成功数。"""
+        conv_mgr = self.context.conversation_manager
+        deleted = 0
+        for session in sessions:
+            try:
+                await conv_mgr.delete_conversations_by_user_id(umo_of(session))
+                deleted += 1
+            except Exception as e:  # noqa: BLE001
+                self.logger.warning(f"删除会话 {session['id']} 的对话历史失败: {e}")
+        return deleted
 
     # ---------- UCR 路由辅助 ----------
 

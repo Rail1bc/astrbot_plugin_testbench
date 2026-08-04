@@ -1038,13 +1038,15 @@ panelsEl.addEventListener("click", (e) => {
 
 async function loadOptions() {
   try {
-    platforms = await listPlatforms();
+    const data = await listPlatforms();
+    platforms = Array.isArray(data) ? data : [];
   } catch (err) {
     console.warn("加载平台列表失败:", err);
     platforms = [];
   }
   try {
-    confs = await listConfs();
+    const data = await listConfs();
+    confs = Array.isArray(data) ? data : [];
   } catch (err) {
     console.warn("加载配置档案失败:", err);
     confs = [];

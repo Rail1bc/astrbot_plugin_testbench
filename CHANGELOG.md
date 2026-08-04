@@ -7,6 +7,11 @@
 
 ## [Unreleased]
 
+### 🐛 Bug Fixes (缺陷修复)
+
+- 修复平台来源下拉框异常无选项的问题：平台列表接口对单个适配器元数据读取失败做容错（跳过该适配器，不拖垮整个接口），前端对返回数据做类型校验，保证至少保留「virtual_test（默认）」选项。
+- 删除测试组 / 会话时联动删除 AstrBot 原生对话历史（按 unified_msg_origin），不再在 WebUI 会话列表中残留虚拟会话的对话数据。
+
 ### 🔧 Refactor (代码结构)
 
 - 代码结构拆分，无行为变化：后端 `runner.py` 拆为数据层 `group_store.py`、统计工具 `stats.py` 与运行器 `runner.py`；前端 `app.js` 拆出 `api.js`（bridge 调用统一封装）与 `align.js`（轮次对齐控制器）。
