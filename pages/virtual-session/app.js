@@ -903,7 +903,7 @@ function deleteSession(id) {
 
 // ---------- 创建 ----------
 
-async function createGroup() {
+async function handleCreateGroup() {
   const count = parseInt($("create-count").value, 10);
   if (!Number.isInteger(count) || count < 1) {
     showModal("数量必须是大于 0 的整数");
@@ -1069,7 +1069,7 @@ async function loadOptions() {
 
 // ---------- 初始化 ----------
 
-$("btn-create").addEventListener("click", createGroup);
+$("btn-create").addEventListener("click", handleCreateGroup);
 $("btn-refresh").addEventListener("click", refreshGroups);
 $("btn-run-all").addEventListener("click", sendToAll);
 $("run-text").addEventListener("keydown", (e) => {
