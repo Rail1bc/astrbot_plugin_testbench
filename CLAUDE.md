@@ -129,9 +129,10 @@ astrbot_plugin_testbench/
 ## 测试与验证
 
 > **开发流程（2026-08-05 起）**：本地**不跑**测试，修改直接提交推送到 `dev` 分支，
-> 由 GitHub Actions 自动把关——`pytest.yml`（57 个测试）+ `ruff-format.yml`
-> 均在 push 到 dev 时触发；dev 验证通过后合并到 `main`，metadata.yaml 变更即触发
-> release.yml 自动发版。本地命令（下面的 pytest/ruff）仅在需要主动排查时使用。
+> 由 GitHub Actions 自动把关——push 到 dev 触发 `pytest.yml`（57 个测试 +
+> 前端 JS 语法检查 `js-check`：node --check 四个页面脚本）+ `ruff-format.yml`；
+> dev 验证通过后合并到 `main`，metadata.yaml 变更即触发 release.yml 自动发版。
+> 本地命令（下面的 pytest/ruff）仅在需要主动排查时使用。
 
 测试随插件仓库维护（`tests/`，可与主仓库无关地推送、供协作者运行）。
 

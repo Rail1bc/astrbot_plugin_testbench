@@ -33,3 +33,22 @@ jobs:
           # 后端测试需要 astrbot（插件运行时依赖，PyPI 包）；
           # 前端静态检查（tests/test_frontend.py）零依赖，任何环境可运行。
           python -m pytest tests/ -q --tb=short
+
+  js-check:
+    name: 前端 JS 语法检查
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v7
+
+      - name: 检查 JS 语法（node --check）
+        run: |
+          set -euo pipefail
+          # ES module import 需 .mjs 后缀才被 node 识别；与本地验证方式一致。
+          for f in app api align chat; do
+            cp "pages/virtual-session/$f.js" "$RUNNER_TEMP/$f.mjs"
+            node --check "$RUNNER_TEMP/$f.mjs"
+          done
