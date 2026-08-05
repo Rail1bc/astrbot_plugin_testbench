@@ -9,42 +9,63 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_DIR = REPO_ROOT  # 插件根目录即仓库根，页面文件在 pages/testbench/
 
+# 页面全部 ES module（入口 app.js + 视图/状态/工具模块）
+_FRONTEND_MODULES = (
+    "app",
+    "api",
+    "align",
+    "chat",
+    "state",
+    "utils",
+    "modal",
+    "group_list",
+)
+
+
+def _read_module(name: str) -> str:
+    return (PLUGIN_DIR / "pages" / "testbench" / f"{name}.js").read_text(
+        encoding="utf-8"
+    )
+
 
 # ---------- 前端脚本静态检查 ----------
 
 
 def test_frontend_no_import_redeclaration():
-    """app.js 的 import 名不得与顶层声明重名。
+    """各 ES module 的 import 名不得与顶层声明重名。
 
     重构拆分 api.js 后曾把本地函数 createGroup 与 import 的 createGroup
     重名，ES module 解析期报 SyntaxError，整页 JS 失效（下拉框因此为空）。
+    前端拆分出多个模块后，对所有模块逐一检查。
     """
     import re
 
-    app_js = (PLUGIN_DIR / "pages" / "testbench" / "app.js").read_text(encoding="utf-8")
+    for name in _FRONTEND_MODULES:
+        src = _read_module(name)
+        imports = set()
+        for match in re.finditer(r"import\s*\{([^}]*)\}\s*from", src):
+            for item in match.group(1).split(","):
+                item = item.strip().split(" as ")[-1].strip()
+                if item:
+                    imports.add(item)
 
-    imports = set()
-    for match in re.finditer(r"import\s*\{([^}]*)\}\s*from", app_js):
-        for name in match.group(1).split(","):
-            name = name.strip().split(" as ")[-1].strip()
-            if name:
-                imports.add(name)
-
-    declarations = set(
-        re.findall(
-            r"^(?:async\s+)?function\s+([A-Za-z_$][\w$]*)",
-            app_js,
-            re.MULTILINE,
+        declarations = set(
+            re.findall(
+                r"^(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)",
+                src,
+                re.MULTILINE,
+            )
+        ) | set(
+            re.findall(
+                r"^(?:export\s+)?(?:const|let|var|class)\s+([A-Za-z_$][\w$]*)",
+                src,
+                re.MULTILINE,
+            )
         )
-    ) | set(
-        re.findall(
-            r"^(?:const|let|var|class)\s+([A-Za-z_$][\w$]*)", app_js, re.MULTILINE
-        )
-    )
 
-    assert imports.isdisjoint(declarations), (
-        f"app.js 存在 import 与顶层声明重名: {sorted(imports & declarations)}"
-    )
+        assert imports.isdisjoint(declarations), (
+            f"{name}.js 存在 import 与顶层声明重名: {sorted(imports & declarations)}"
+        )
 
 
 def test_frontend_bridge_endpoint_has_no_query_string():
@@ -57,7 +78,7 @@ def test_frontend_bridge_endpoint_has_no_query_string():
     """
     import re
 
-    api_js = (PLUGIN_DIR / "pages" / "testbench" / "api.js").read_text(encoding="utf-8")
+    api_js = _read_module("api")
     endpoints = re.findall(r'api(?:Get|Post)\(\s*["`]([^"`]*)["`]', api_js)
     assert endpoints, "未找到任何 bridge 调用"
     for endpoint in endpoints:
@@ -65,16 +86,18 @@ def test_frontend_bridge_endpoint_has_no_query_string():
 
 
 def test_frontend_effective_view_resolves_sender_fields():
-    """app.js 的 effectiveView 返回对象必须含 sender_id / sender_name。
+    """utils.js 的 effectiveView 返回对象必须含 sender_id / sender_name。
 
     曾漏掉这两个字段，导致会话展开配置里发送者 ID / 昵称恒显示「—」——
     effectiveView 是客户端对组配置 + 会话覆盖的解析，缺失字段即无值可显。
+    （前端拆分后 effectiveView 位于 utils.js）
     """
     import re
 
-    app_js = (PLUGIN_DIR / "pages" / "testbench" / "app.js").read_text(encoding="utf-8")
+    utils_js = _read_module("utils")
     match = re.search(
-        r"function effectiveView\(id\)[\s\S]*?return \{([\s\S]*?)\};", app_js
+        r"export function effectiveView\(id\)[\s\S]*?return \{([\s\S]*?)\};",
+        utils_js,
     )
     assert match, "找不到 effectiveView 的 return 对象"
     obj = match.group(1)
@@ -88,14 +111,15 @@ def test_frontend_select_option_builders_are_shared():
     曾有两处内联构建（组编辑弹窗 buildPlatformSelect/buildConfSelect 与会话配置
     弹窗 openSettings）：会话弹窗的档案副本缺少「档案已不存在」占位——会话单独
     绑定的档案被删除后，打开弹窗回落显示「使用组配置」，保存即把绑定静默重置为
-    继承组配置。本检查确保选项映射/过滤只保留共享实现一处。
+    继承组配置。本检查确保选项映射/过滤只保留共享实现一处
+    （拆分后位于 group_list.js 的 platformOptions/confOptions）。
     """
     import re
 
-    app_js = (PLUGIN_DIR / "pages" / "testbench" / "app.js").read_text(encoding="utf-8")
-    assert len(re.findall(r"\.map\(\s*\(p\) =>", app_js)) == 1, (
+    src = _read_module("group_list")
+    assert len(re.findall(r"\.map\(\s*\(p\) =>", src)) == 1, (
         "平台选项映射必须只出现在 platformOptions() 一处"
     )
-    assert app_js.count('confs.filter((c) => c.id !== "default")') == 1, (
+    assert src.count('confs.filter((c) => c.id !== "default")') == 1, (
         "配置档案过滤必须只出现在 confOptions() 一处"
     )

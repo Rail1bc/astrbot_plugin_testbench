@@ -49,6 +49,7 @@
 - 页面目录由 `pages/virtual-session/` 更名为 `pages/testbench/`，与插件名一致，避免与其他插件的页面目录冲突（页面 URL / 数据持久化路径不受影响，旧页面访问 404，需重新打开新页面）。
 - 移除 `.github/workflows/shit-mountain.yml`（门禁步骤被注释、仅在 main 分支触发且无实际产物，保留无价值）。
 - `update_session` 的返回值为死 API 面（调用方已持有内部对象引用），改为返回 `None`；前端 `CONF_DEFAULT` 魔法字符串提取为模块常量，过期注释同步修正。
+- 前端 `app.js` 再次拆分：新增 `state.js`（全部共享可变状态收进 `state` 对象）、`modal.js`（自绘弹窗）、`utils.js`（工具函数与 `effectiveView`/`findSession` 等配置解析）、`group_list.js`（左侧测试组列表与组/会话配置弹窗，经 `createGroupList(env)` 注入视图动作保持模块依赖单向）；app.js 缩减为面板 / 发送 / 会话操作 / 排序 / 初始化入口，行为不变。
 - 前端平台 / 配置档案下拉的选项构建收敛为 `platformOptions()` / `confOptions()` 共享辅助（组编辑与会话配置两个弹窗复用），消除重复实现，并让「档案已不存在」占位逻辑只保留一份。
 - `update_group` 的路由同步改为按会话 id 配对旧 / 新会话，不再依赖两个会话列表的顺序一致（原按位置 `zip` 属隐含假设）。
 

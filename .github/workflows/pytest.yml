@@ -48,7 +48,8 @@ jobs:
         run: |
           set -euo pipefail
           # ES module import 需 .mjs 后缀才被 node 识别；与本地验证方式一致。
-          for f in app api align chat; do
+          # 前端已拆分为多模块：入口 app.js + api/align/chat/state/utils/modal/group_list。
+          for f in app api align chat state utils modal group_list; do
             cp "pages/testbench/$f.js" "$RUNNER_TEMP/$f.mjs"
             node --check "$RUNNER_TEMP/$f.mjs"
           done

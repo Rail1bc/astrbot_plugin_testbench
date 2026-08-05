@@ -37,7 +37,11 @@ astrbot_plugin_testbench/
 ├─ pyproject.toml       # 插件仓库自包含的 ruff / pytest 配置（不依赖主仓库）
 ├─ pages/testbench/
 │  ├─ index.html        # 页面骨架（表单/面板的静态 HTML，select 初始为空或仅默认项）
-│  ├─ app.js            # 页面主逻辑（1118 行，ES module）
+│  ├─ app.js            # 页面入口（面板/发送/会话操作/排序/初始化，组装子模块）
+│  ├─ state.js          # 全部共享可变状态（state 对象，各模块经它读写）
+│  ├─ modal.js          # 自绘弹窗（openModal/showModal/hideModal）
+│  ├─ utils.js          # 工具函数与最终配置解析（effectiveView/findSession 等）
+│  ├─ group_list.js     # 左侧测试组列表与组/会话配置弹窗（createGroupList(env)）
 │  ├─ api.js            # bridge 调用的统一封装（listPlatforms/listConfs/...）
 │  ├─ align.js          # 轮次对齐控制器（createAlignController，依赖注入）
 │  ├─ chat.js           # 聊天内容渲染（createChatRenderer：气泡/思维链/轮次分组）
@@ -93,8 +97,12 @@ astrbot_plugin_testbench/
 ### 前端（pages/testbench/）
 
 - `api.js`：`window.AstrBotPluginPage` bridge 的 `apiGet`/`apiPost` 统一封装。bridge 的响应解析是 `response.data?.data ?? response.data`（json_response 的 body 直接作为 data）。
+- `state.js`：全部共享可变状态收进一个 `state` 对象（groups/platforms/confs/openIds/pinnedIds/panelEls/historyCache/runBusy/expandedGroups/expandedSessions）。ES module 顶层绑定无法跨模块共享可变值，故集中到叶子模块，各模块从 `state` 读写，保持依赖单向。
+- `utils.js`：纯工具与配置解析（`escapeHtml`/`statusText`/`confName`/`platformName`/`findSession`/`effectiveView`），唯一依赖 `state`。`effectiveView` 是后端 `effective()` 的客户端镜像（曾漏 sender 字段导致显示「—」，有防回归测试）。
+- `modal.js`：自绘弹窗（iframe 沙箱禁用原生 alert/confirm），回调状态 `modalCallback` 封装在模块内部，对外只暴露 `openModal`/`showModal`/`hideModal`。
+- `group_list.js`：左侧测试组列表与组/会话配置弹窗。`createGroupList(env)` 依赖注入视图动作（toggleOpen/openAll/deleteSession/renderPanels/showRunStatus/updateRunOverview），本模块不 import app.js，模块依赖保持单向。`platformOptions()`/`confOptions()` 是平台/档案下拉选项的共享构建（含「档案已不存在」占位，防静默丢绑定）。
 - `chat.js`：`createChatRenderer(alignGetter)` 集中聊天内容渲染（气泡 `bubbleFor` / 思维链 `reasoningSection` / 轮次分组 `groupTurns` 与对齐渲染 `renderAligned`）。align 以 getter 注入（渲染时才取），避免与 `createAlignController` 互相创建的循环依赖；`app.js` 提供 `renderChat` 包装函数注入 align 控制器并传给 align.js 的 env。
-- `app.js` 分区：弹窗（iframe 沙箱禁用原生 alert/confirm，用自绘弹窗）→ 测试组列表 → 面板 → 发送 → 会话操作 → 面板排序 → 轮次对齐 → 选项加载 → 初始化。`loadOptions()` 拉取 platforms/confs（下拉框由各弹窗动态构建）；`refreshGroups()` 渲染左侧单一列表；`pollRun()` 轮询测试状态；`updateRunOverview()` 在群发栏实时显示当前打开的会话数与按测试组的分布。
+- `app.js` 分区：面板（openPanel/loadHistory/历史 JSON 编辑/重新生成）→ 发送（pollRun/sendToOne/sendToAll/updateRunOverview）→ 会话操作（重置/删除）→ 面板排序（renderPanels/拖拽/置顶）→ 选项加载 → 初始化（组装 align/chat/group_list，绑定全局事件）。`loadOptions()` 拉取 platforms/confs 写入 `state`；`refreshGroups()` 来自 group_list（刷新左侧列表并清理失效面板）。
 - 左侧布局：最左为 `.ui-rail` UI 窄条（方形按钮，当前 1 个「会话列表」按钮，点击折叠/展开侧栏，为后续扩展预留）；侧栏只有一个列表——「＋ 新建测试组」块（点击创建默认配置组并弹编辑弹窗）+ 测试组块（可展开组内会话）。组头操作：打开全部 / ＋新增 / ✎编辑 / ✕删除；会话行头点击展开配置（`renderSessionConfig` 每行显示有效值 + 「已修改/继承组」chip，`sessionOverrides` 统计已单独修改的项），会话操作按钮：打开 / 删除（配置修改走展开配置中的「编辑配置」弹窗，「重置」在已打开会话的面板页眉）。
 - 群发栏（`.run-bar`）位于工作区**下方**（面板在上、群发在右下），`#align-bar` 位于面板与群发栏之间；`.workspace` 为 flex 列布局，`workspace-body` flex:1。
 - 面板页眉为多行 flex 布局：标题与徽标包在 `.panel-info`（`flex-wrap: wrap`）内随内容换行撑开页眉，`.panel-actions` 的「编辑 / 重置 / 置顶 / 关闭」按钮始终第一行右对齐；`refreshPanelHead()` / `openPanel()` 都维护该结构。
@@ -151,10 +159,12 @@ cd /e/AstrBot && .venv/Scripts/python.exe -m ruff check data/plugins/astrbot_plu
 
 CI（`.github/workflows/pytest.yml`）：ubuntu + Python 3.12，`pip install astrbot pytest pytest-asyncio` 后跑 `pytest tests/ -q`，随 push/PR 触发。
 
-前端 ES module 语法检查（node 不认 .js 里的 import，须复制为 .mjs）：
+前端 ES module 语法检查（node 不认 .js 里的 import，须复制为 .mjs；页面全部 8 个模块逐一检查，与 CI js-check 一致）：
 
 ```bash
-cp app.js "$TEMP/app.mjs" && node --check "$TEMP/app.mjs"   # 同理 api.js / align.js
+for f in app api align chat state utils modal group_list; do
+  cp "$f.js" "$TEMP/$f.mjs" && node --check "$TEMP/$f.mjs"
+done
 ```
 
 测试设施（tests/test_backend.py 内定义）：`FakeContext`（可注入 queue/ucr/conv_mgr/platform_mgr）、`FakeUCR`、`FakeConvManager`、`FakePlatformManager`/`FakePlatformInst`、`call_handler`/`make_plugin_request`（绑定 PluginRequest 调 handler）、`_add_history`（造对话历史）。
