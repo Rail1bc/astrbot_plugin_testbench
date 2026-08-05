@@ -179,6 +179,14 @@ export function createTestsetList(env) {
     return state.testsets.find((t) => t.id === state.selectedTestsetId) || null;
   }
 
+  // 编辑窗口按钮在未选中任何测试集时也可见；此时点击要给明确指引，
+  // 而不是静默无效（曾出现：点「＋ 添加消息」能加行，但保存被挡住无任何反馈）
+  function requireSelected() {
+    const ts = currentSelected();
+    if (!ts) showModal("请先在左侧选择或创建一个测试集");
+    return ts;
+  }
+
   function renderTestsetEditor() {
     dirty = false;
     const ts = currentSelected();
@@ -377,7 +385,7 @@ export function createTestsetList(env) {
   }
 
   async function saveEditor() {
-    const ts = currentSelected();
+    const ts = requireSelected();
     if (!ts) return;
     const name = $("ts-name").value.trim() || "测试集";
     const { messages, batchRanges } = collectEditorRows();
@@ -394,7 +402,7 @@ export function createTestsetList(env) {
   }
 
   function runSelected() {
-    const ts = currentSelected();
+    const ts = requireSelected();
     if (!ts) return;
     if (dirty) {
       showModal("当前测试集有未保存的修改。是否先保存再运行？", {
@@ -412,7 +420,7 @@ export function createTestsetList(env) {
   // ---------- 导出 / 导入 ----------
 
   function exportTestset() {
-    const ts = currentSelected();
+    const ts = requireSelected();
     if (!ts) return;
     const doExport = () => {
       const { messages, batchRanges } = collectEditorRows();
@@ -697,6 +705,10 @@ export function createTestsetList(env) {
     if (state.selectedTestsetId) deleteTestset(state.selectedTestsetId);
   });
   $("btn-ts-add-msg").addEventListener("click", () => {
+    if (!currentSelected()) {
+      showModal("请先在左侧选择或创建一个测试集，再添加消息");
+      return;
+    }
     markDirty();
     addMsgRow();
   });
