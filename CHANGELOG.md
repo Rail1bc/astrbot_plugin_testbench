@@ -22,6 +22,7 @@
 
 ### 🐛 Bug Fixes (缺陷修复)
 
+- 修复前端模块化拆分引入的整页初始化中止问题：`app.js` 在 `createGroupList` 解构声明之前就引用了 `refreshGroups`（const 解构绑定的暂时性死区），模块求值即抛 `ReferenceError: can't access lexical declaration 'refreshGroups' before initialization`，后续初始化全部不执行——左侧窄条按钮失效、测试组列表只剩静态刷新按钮、无「＋ 新建测试组」入口。现把静态控件绑定移到解构声明之后，并新增防回归静态测试 `test_frontend_no_use_before_declaration`（检查各模块顶格语句不得引用先于其声明的 const/let 绑定；`node --check` 只查语法发现不了此类运行时顺序错误）。
 - 修复新创建（从未发过消息）或历史被重置 / 删除后的会话编辑历史保存失败的问题：`save_history` 不再对不存在的 `conversation_id` 报「不存在」错误，而是按整体替换语义新建占位对话（带编辑器里的历史内容，id 由系统重新生成）。
 - 修复群发 / 单发 / 重新生成完成后会话窗口不刷新、状态停留在「正在并发发送给 x 个会话…」的问题：`runStatus` 把查询串 `?test_id=...` 拼进了 bridge 端点，而父窗口会拒绝含 `?` 的端点，导致状态轮询恒失败、前端永不触发会话刷新（历史实际已写入，刷新页面重开会话可见）。改为通过 `apiGet` 的第二个参数传递查询参数。
 - 优化「轮次对齐」模式的滚动性能：原实现每收到一次 scroll 事件就对其他全部面板强制读高 + 写 `scrollTop`（无差异也写），且写入触发的 scroll 事件级联回写，多面板时造成布局抖动与滚动卡顿。改为按帧（`requestAnimationFrame`）合并同步，且仅对滚动位置有差异的面板写入。

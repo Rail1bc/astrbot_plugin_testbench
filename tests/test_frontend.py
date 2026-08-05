@@ -123,3 +123,55 @@ def test_frontend_select_option_builders_are_shared():
     assert src.count('confs.filter((c) => c.id !== "default")') == 1, (
         "配置档案过滤必须只出现在 confOptions() 一处"
     )
+
+
+def test_frontend_no_use_before_declaration():
+    """模块级 const/let 绑定不得在声明语句之前被顶层语句引用。
+
+    node --check 只查语法，发现不了「引用先于声明」的运行时错误：模块求值时抛
+    ReferenceError: can't access lexical declaration 'x' before initialization，
+    页面初始化整体中止。拆分后曾把 $("btn-refresh") 绑定放在 createGroupList
+    解构之前——refreshGroups 是 const 解构绑定，处暂时性死区，页面只剩静态骨架
+    （窄条按钮失效、测试组列表不渲染）。只检查顶格（列 0）语句：函数体内的引用
+    在调用时才求值，不受暂时性死区影响。
+    """
+    import re
+
+    binding_re = re.compile(
+        r"^(?:export\s+)?(?:const|let)\s+"
+        r"(?:\{([^}]*)\}|([A-Za-z_$][\w$]*))\s*(?:=|:)"
+    )
+    string_re = re.compile(r'"[^"]*"|\'[^\']*\'|`[^`]*`')
+    ident_re = re.compile(r"[A-Za-z_$][\w$]*")
+
+    for name in _FRONTEND_MODULES:
+        lines = _read_module(name).splitlines()
+        bindings = {}  # 绑定名 -> 声明行号（1-based）
+        for i, line in enumerate(lines, 1):
+            m = binding_re.match(line)
+            if not m:
+                continue
+            if m.group(2):
+                names = [m.group(2)]
+            else:
+                names = [
+                    part.strip().split(" as ")[-1].split(":")[-1].strip()
+                    for part in m.group(1).split(",")
+                    if part.strip()
+                ]
+            for n in names:
+                bindings[n] = i
+        for binding, decl_line in bindings.items():
+            for i in range(1, decl_line):
+                line = lines[i - 1]
+                if (
+                    not line.strip()
+                    or line[0].isspace()
+                    or line.startswith(("import", "export", "//", "*", "#", "/*"))
+                ):
+                    continue
+                if binding in ident_re.findall(string_re.sub("", line)):
+                    raise AssertionError(
+                        f"{name}.js:{i} 顶层引用了 {binding}，但其 const/let 声明在"
+                        f"第 {decl_line} 行（暂时性死区，模块求值即抛 ReferenceError）"
+                    )

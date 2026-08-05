@@ -527,19 +527,6 @@ async function loadOptions() {
 
 // ---------- 初始化 ----------
 
-$("btn-refresh").addEventListener("click", refreshGroups);
-$("btn-run-all").addEventListener("click", sendToAll);
-$("run-text").addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && !e.isComposing) sendToAll();
-});
-
-// UI 窄条：会话列表按钮折叠/展开左侧列表（为后续扩展的其他视图预留）
-const railSessionBtn = document.querySelector('.rail-btn[data-view="sessions"]');
-railSessionBtn.addEventListener("click", () => {
-  const collapsed = document.body.classList.toggle("sidebar-collapsed");
-  railSessionBtn.classList.toggle("active", !collapsed);
-});
-
 const align = createAlignController({
   getOpenIds: () => state.openIds,
   getPanelEls: () => state.panelEls,
@@ -558,6 +545,21 @@ const { refreshGroups, renderGroupList } = createGroupList({
   renderPanels,
   showRunStatus,
   updateRunOverview,
+});
+
+// 静态控件绑定须放在 createGroupList 解构之后：refreshGroups 是 const 解构
+// 绑定，提前引用会触发暂时性死区（ReferenceError），模块求值即中止初始化
+$("btn-refresh").addEventListener("click", refreshGroups);
+$("btn-run-all").addEventListener("click", sendToAll);
+$("run-text").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.isComposing) sendToAll();
+});
+
+// UI 窄条：会话列表按钮折叠/展开左侧列表（为后续扩展的其他视图预留）
+const railSessionBtn = document.querySelector('.rail-btn[data-view="sessions"]');
+railSessionBtn.addEventListener("click", () => {
+  const collapsed = document.body.classList.toggle("sidebar-collapsed");
+  railSessionBtn.classList.toggle("active", !collapsed);
 });
 
 await ready();

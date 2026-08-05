@@ -179,3 +179,4 @@ done
 6. **Windows 路径**：venv 在 `E:\AstrBot\.venv\Scripts\python.exe`（不是 `bin/`）；git bash 里可用 `/e/AstrBot` 风格路径。
 7. **metadata.yaml 版本**：未经用户明确批准不得 bump；发布包由 `.github/workflows/release.yml` 构建，须排除 `data/`（v0.2.1 曾误打包本地运行数据）。
 8. **按钮点击无反应先查 JS 运行时错误**：点击处理函数内抛 ReferenceError（如引用未定义变量）会静默失效——弹窗根本没打开、无任何可见反馈，浏览器控制台有报错；node --check / pytest 都发现不了。曾因此导致会话「配置 / 编辑配置」按钮长期无效（`openSettings` 的弹窗标题用了未定义的 `s`，作用域内实为 `session`，v0.3.0 引入）。
+9. **顶层语句引用先于 const/let 声明 → 整页初始化中止（暂时性死区）**：`node --check` 只查语法，发现不了「引用先于声明」的顺序错误。模块求值时抛 `ReferenceError: can't access lexical declaration 'x' before initialization`，此后的初始化代码全部不执行（页面只剩静态骨架、按钮绑定全部失效）。拆分 app.js 后曾把 `$("btn-refresh").addEventListener("click", refreshGroups)` 放在 `const { refreshGroups, renderGroupList } = createGroupList(...)` 之前（拆分前 refreshGroups 是可提升的 function 声明，拆分后变成 const 解构绑定）。教训：**模块级 `const`/`let` 的引用必须位于声明之后**；函数体内的引用不受影响（调用时才求值）。`test_frontend_no_use_before_declaration` 是防回归测试——它只查顶格（列 0）语句，避免对函数体内引用的误报。
