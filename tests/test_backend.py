@@ -24,6 +24,7 @@ pytest.importorskip("astrbot")
 import astrbot_plugin_testbench.assertions as asrt_mod  # noqa: E402
 import astrbot_plugin_testbench.event_bus as eb_mod  # noqa: E402
 import astrbot_plugin_testbench.group_store as gs_mod  # noqa: E402
+import astrbot_plugin_testbench.history_ops as hops_mod  # noqa: E402
 import astrbot_plugin_testbench.main as main_mod  # noqa: E402
 import astrbot_plugin_testbench.runner as runner_mod  # noqa: E402
 import astrbot_plugin_testbench.stats as stats_mod  # noqa: E402
@@ -1980,6 +1981,80 @@ async def test_plugin_regenerate_history_empty_user_text(tmp_path):
     assert resp.status_code == 400
 
 
+@pytest.mark.asyncio
+async def test_plugin_regenerate_history_with_conversation_id(tmp_path):
+    """多对话历史：conversation_id 定位到指定对话截断并重发，其他对话不受影响。"""
+    queue = asyncio.Queue()
+    context = FakeContext(queue)
+    plugin = main_mod.VirtualSessionPlugin(context)
+    plugin.group_mgr = VirtualGroupManager(data_dir=tmp_path)
+    group = plugin.group_mgr.create_group("组A", count=1)
+    session = group["sessions"][0]
+    umo = umo_of(plugin.group_mgr.effective(group, session))
+    context.conversation_manager.add_history(
+        umo,
+        "对话一",
+        [
+            {"role": "user", "content": "旧问"},
+            {"role": "assistant", "content": "旧答"},
+        ],
+    )
+    context.conversation_manager.add_history(
+        umo,
+        "对话二",
+        [
+            {"role": "user", "content": "新问"},
+            {"role": "assistant", "content": "新答"},
+        ],
+    )
+    convs = await context.conversation_manager.get_conversations(umo)
+    old_cid, new_cid = convs[0].cid, convs[1].cid
+
+    received = []
+
+    async def handler(event):
+        received.append(event.message_str)
+        event.cleanup_temporary_local_files()
+
+    task = asyncio.create_task(consume(queue, handler))
+    try:
+        # 对非当前对话（对话一）重新生成第 2 条 → 定位该对话截断重发"旧问"
+        resp = await call_handler(
+            plugin.regenerate_history,
+            {"id": session["id"], "index": 1, "conversation_id": old_cid},
+        )
+        await asyncio.sleep(0.05)
+    finally:
+        task.cancel()
+    assert resp.status_code == 200
+    convs = await context.conversation_manager.get_conversations(umo)
+    by_cid = {c.cid: c for c in convs}
+    assert json.loads(by_cid[old_cid].history) == []
+    assert received == ["旧问"]
+    # 对话二（当前对话）不受影响
+    assert json.loads(by_cid[new_cid].history) == [
+        {"role": "user", "content": "新问"},
+        {"role": "assistant", "content": "新答"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_plugin_regenerate_history_bad_conversation_id(tmp_path):
+    """conversation_id 类型不合法时拒绝（400），而非静默忽略。"""
+    queue = asyncio.Queue()
+    context = FakeContext(queue)
+    plugin = main_mod.VirtualSessionPlugin(context)
+    plugin.group_mgr = VirtualGroupManager(data_dir=tmp_path)
+    group = plugin.group_mgr.create_group("组A", count=1)
+    session = group["sessions"][0]
+
+    resp = await call_handler(
+        plugin.regenerate_history,
+        {"id": session["id"], "index": 0, "conversation_id": 123},
+    )
+    assert resp.status_code == 400
+
+
 # ---------- 统计 ----------
 
 
@@ -2007,10 +2082,10 @@ def test_main_module_importable():
 
 def test_msg_text_parts_array():
     """_msg_text 对 content 为 parts 数组（字符串/对象混合）的提取。"""
-    plugin_cls = main_mod.VirtualSessionPlugin
-    assert plugin_cls._msg_text({"content": "纯字符串"}) == "纯字符串"
-    assert plugin_cls._msg_text({"content": None}) == ""
-    assert plugin_cls._msg_text({}) == ""
+    ops_cls = hops_mod.HistoryOps
+    assert ops_cls._msg_text({"content": "纯字符串"}) == "纯字符串"
+    assert ops_cls._msg_text({"content": None}) == ""
+    assert ops_cls._msg_text({}) == ""
     msg = {
         "content": [
             "纯文本段",
@@ -2020,7 +2095,7 @@ def test_msg_text_parts_array():
             {"text": "末尾段"},
         ]
     }
-    assert plugin_cls._msg_text(msg) == "纯文本段\n对象文本段\ncontent 键\n末尾段"
+    assert ops_cls._msg_text(msg) == "纯文本段\n对象文本段\ncontent 键\n末尾段"
 
 
 def test_session_history_endpoint(tmp_path):
@@ -3048,3 +3123,29 @@ async def test_testset_runner_publishes_run_events():
     assert testset_events[0]["run"]["status"] == "running"
     assert testset_events[-1]["run"]["status"] == "done"
     assert testset_events[-1]["run"]["steps"][0]["status"] == "done"
+
+
+@pytest.mark.asyncio
+async def test_testset_runner_drive_exception_publishes_terminal_event(monkeypatch):
+    """_drive 内部异常：run 置 error 且必须广播终态快照，前端才不会停在 running。"""
+    bus = RecordingBus()
+
+    async def boom(self, run):
+        raise RuntimeError("驱动段异常")
+
+    monkeypatch.setattr(TestsetRunner, "_drive_segments", boom)
+    tsr = TestsetRunner(FakeContext(), VirtualTestRunner(FakeContext()), event_bus=bus)
+    testset = _make_testset("ts_err", "内部异常", [("问", None)])
+    run_id = tsr.start_run(testset, [make_session(1)])
+    rec = await wait_testset_done(tsr, run_id)
+
+    assert rec["status"] == "error"
+    assert rec["error"] == "运行器内部异常"
+    assert rec["finished_at"] is not None
+    # 终态快照必须已广播（旧实现缺失：页面会一直停在 running）
+    testset_events = [e for e in bus.events if e["type"] == "testset"]
+    assert testset_events, "未发布 testset 运行快照"
+    assert testset_events[-1]["run"]["status"] == "error"
+    assert testset_events[-1]["run"]["error"] == "运行器内部异常"
+    # 步骤保持在 pending（异常发生在段驱动前），但 run 已落终态
+    assert testset_events[-1]["run"]["steps"][0]["status"] == "pending"

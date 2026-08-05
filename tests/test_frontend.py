@@ -9,7 +9,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_DIR = REPO_ROOT  # 插件根目录即仓库根，页面文件在 pages/testbench/
 
-# 页面全部 ES module（入口 app.js + 视图/状态/工具模块）
+# 页面全部 ES module（入口 app.js + 视图/状态/工具模块；events.js 事件驱动反馈层、
+# testset_run.js 测试集运行编排、testset_editor.js 测试集编辑器为拆分后新增模块）
 _FRONTEND_MODULES = (
     "app",
     "api",
@@ -20,6 +21,9 @@ _FRONTEND_MODULES = (
     "modal",
     "group_list",
     "testset_list",
+    "testset_editor",
+    "events",
+    "testset_run",
 )
 
 
@@ -242,7 +246,7 @@ def test_frontend_pending_status_labels():
     PENDING_STATUS_TEXT 与后端 runner 条目状态一一对应；缺任一键/文案，
     重叠场景下的状态显示就会不完整（如只剩「已入队」）。
     """
-    src = _read_module("app")
+    src = _read_module("events")
     for key, label in (
         ("submitted", "已入队"),
         ("waiting_llm", "排队等待 LLM"),
@@ -261,12 +265,13 @@ def test_frontend_pending_hides_done_after_history_refresh():
     （historyRefreshedAt），renderPendingStrip 过滤掉 status=="done" 且
     完成于该时刻之前的条目（回复已在气泡中，条内只留完成后的短暂过渡）。
     """
-    src = _read_module("app")
-    assert "historyRefreshedAt" in src, "缺少 historyRefreshedAt 记录历史刷新时刻"
-    assert "historyRefreshedAt.set(id, Date.now())" in src, (
+    app_js = _read_module("app")
+    events_js = _read_module("events")
+    assert "historyRefreshedAt" in app_js, "缺少 historyRefreshedAt 记录历史刷新时刻"
+    assert "historyRefreshedAt.set(id, Date.now())" in app_js, (
         "loadHistory 成功路径必须记录刷新时刻"
     )
-    assert "status_at" in src, "renderPendingStrip 未按 status_at 过滤已完成条目"
+    assert "status_at" in events_js, "renderPendingStrip 未按 status_at 过滤已完成条目"
 
 
 def test_frontend_rail_has_testset_view():
@@ -306,20 +311,22 @@ def test_frontend_testset_export_import_and_group_target():
 
     导出须带 format/version 信封（为未来「测试集市场」下载兼容）；导入复用现有
     createTestset 端点（无新后端接口）；运行弹窗须支持按测试组多选目标，并把
-    勾选组解析为会话 id 列表后交给 runTestset。
+    勾选组解析为会话 id 列表后交给 runTestset。拆分后导出 / 导入在
+    testset_editor.js，运行弹窗在 testset_list.js。
     """
-    src = _read_module("testset_list")
-    assert "astrbot-testbench-testset" in src, "导出信封缺少 format 标识"
-    assert "version: EXPORT_VERSION" in src, "导出信封缺少 version"
-    assert "format: EXPORT_FORMAT" in src, "导出信封未序列化 format"
-    assert "createTestset({" in src, "导入未复用 createTestset 端点"
-    assert "选择测试组" in src, "运行弹窗缺少「选择测试组」目标选项"
-    assert "env.runTestset(testset, ids)" in src, (
+    editor_js = _read_module("testset_editor")
+    list_js = _read_module("testset_list")
+    assert "astrbot-testbench-testset" in editor_js, "导出信封缺少 format 标识"
+    assert "version: EXPORT_VERSION" in editor_js, "导出信封缺少 version"
+    assert "format: EXPORT_FORMAT" in editor_js, "导出信封未序列化 format"
+    assert "createTestset({" in editor_js, "导入未复用 createTestset 端点"
+    assert "选择测试组" in list_js, "运行弹窗缺少「选择测试组」目标选项"
+    assert "env.runTestset(testset, ids)" in list_js, (
         "运行未把目标会话 id 列表交给 runTestset"
     )
     # 组多选 → 会话 id 解析：勾选 data-gid checkbox，展开为该组全部会话 id
-    assert "input[data-gid]:checked" in src, "组多选缺少按 data-gid 收集勾选态"
-    assert "selectedGroupSessionIds" in src, "缺少把测试组解析为会话 id 列表的函数"
+    assert "input[data-gid]:checked" in list_js, "组多选缺少按 data-gid 收集勾选态"
+    assert "selectedGroupSessionIds" in list_js, "缺少把测试组解析为会话 id 列表的函数"
 
 
 def test_frontend_testset_run_is_backend_driven():
@@ -330,12 +337,14 @@ def test_frontend_testset_run_is_backend_driven():
     handleTestsetEvent 消费 /events 的 testset 事件推进进度，而不是轮询
     pollTestsetRun。
     """
-    src = _read_module("app")
-    assert "runTestsetApi(" in src, "app.js 未调用 runTestsetApi 启动测试集运行"
+    src = _read_module("testset_run")
+    assert "runTestsetApi(" in src, "testset_run.js 未调用 runTestsetApi 启动测试集运行"
     assert "handleTestsetEvent" in src, (
-        "app.js 未实现 testset 事件推进 handleTestsetEvent"
+        "testset_run.js 未实现 testset 事件推进 handleTestsetEvent"
     )
-    assert "pollTestsetRun(" not in src, "app.js 仍轮询 pollTestsetRun（已改事件驱动）"
+    assert "pollTestsetRun(" not in src, (
+        "testset_run.js 仍轮询 pollTestsetRun（已改事件驱动）"
+    )
 
 
 def test_frontend_testset_summary_counts_assertion_failures():
@@ -345,7 +354,7 @@ def test_frontend_testset_summary_counts_assertion_failures():
     失败——断言失败只落在结果单元格、不改会话 status，总结若只数
     status=="error" 就永远显示「错误 0」，误导用户以为断言全过。
     """
-    src = _read_module("app")
+    src = _read_module("testset_run")
     assert "assertFails" in src, "总结未计算断言未通过数量"
     assert "条断言未通过" in src, "总结文案未包含断言未通过计数"
     # 表格行尾计数也要标注断言 ✗（与「错误 N」的 status 语义区分）
@@ -358,9 +367,9 @@ def test_frontend_no_parse_int_on_user_input():
     parseInt("1.5") → 1：用户填 1.5 会被静默截断成 1（数量、断言最少/最多字数
     都会悄悄改值）。须用 Number()（配合 Number.isInteger 拒绝小数），解析失败
     报错而不是截断。曾有三处 parseInt：group_list.js 新增会话数量 / 组会话数量、
-    testset_list.js min_len/max_len 断言值。
+    testset_editor.js min_len/max_len 断言值（拆分后位于编辑器模块）。
     """
-    for name in ("group_list", "testset_list"):
+    for name in ("group_list", "testset_list", "testset_editor"):
         assert "parseInt(" not in _read_module(name), (
             f"{name}.js 仍用 parseInt 解析用户输入（会静默截断小数）"
         )
@@ -388,11 +397,12 @@ def test_frontend_event_driven_feedback():
     testConsumers 注册表接收 session_done / test_done 事件。
     """
     app_js = _read_module("app")
+    events_js = _read_module("events")
     api_js = _read_module("api")
-    assert "function applySessionFeedback(" in app_js, (
+    assert "function applySessionFeedback(" in events_js, (
         "缺少统一逐会话反馈 applySessionFeedback（手动/测试集共用）"
     )
-    assert "const testConsumers = new Map()" in app_js, (
+    assert "const testConsumers = new Map()" in events_js, (
         "缺少手动运行消费者注册表 testConsumers"
     )
     assert "startPolling(" not in app_js, (
@@ -413,14 +423,16 @@ def test_frontend_event_driven_robustness():
     - 暂存报告有上限，超出丢最旧（防内存无界增长）。
     """
     app_js = _read_module("app")
-    assert "`${runId}:${i}`" in app_js, "步骤去重键未带 runId 前缀（并发运行会互污染）"
-    assert "testConsumers.delete(tid)" in app_js, (
+    events_js = _read_module("events")
+    run_js = _read_module("testset_run")
+    assert "`${runId}:${i}`" in run_js, "步骤去重键未带 runId 前缀（并发运行会互污染）"
+    assert "testConsumers.delete(tid)" in events_js, (
         "reconcile 失败时未释放 consumer（泄漏）"
     )
     assert "const historySeq = new Map()" in app_js, "缺少历史刷新序号守卫 historySeq"
     assert "historySeq.get(id) !== seq" in app_js, "历史刷新未丢弃乱序迟到响应"
-    assert "const MAX_STASHED_REPORTS = 20" in app_js, "缺少暂存报告上限常量"
-    assert "Object.keys(state.runReports)" in app_js, "报告暂存缺少有界清理"
+    assert "const MAX_STASHED_REPORTS = 20" in run_js, "缺少暂存报告上限常量"
+    assert "Object.keys(state.runReports)" in run_js, "报告暂存缺少有界清理"
 
 
 def test_frontend_report_on_demand():
@@ -431,16 +443,17 @@ def test_frontend_report_on_demand():
     函数体内不得直接调用 showTestsetResults（只能暂存），弹窗只出现在
     viewTestsetRun（最近运行「查看」）与「查看报告」按钮两处按需路径。
     """
-    import re
-
     html = _read_html()
     app_js = _read_module("app")
+    run_js = _read_module("testset_run")
     assert 'id="btn-view-report"' in html, "index.html 缺少「查看报告」按钮"
-    assert "runReports" in app_js, "app.js 缺少运行报告暂存 runReports"
-    assert "state.runReports[runId] = run" in app_js, "终态未把报告暂存进 runReports"
+    assert "runReports" in run_js, "testset_run.js 缺少运行报告暂存 runReports"
+    assert "state.runReports[runId] = run" in run_js, "终态未把报告暂存进 runReports"
     assert '$("btn-view-report")' in app_js, "「查看报告」按钮未绑定"
-    match = re.search(r"function handleTestsetEvent\([^)]*\)[\s\S]*?\n\}", app_js)
-    assert match, "找不到 handleTestsetEvent 函数体"
-    assert "showTestsetResults" not in match.group(0), (
+    # handleTestsetEvent 与 showTestsetResults 是工厂内顺序定义的两个函数；
+    # 前者函数体（到后者定义前）不得直接调用 showTestsetResults（只能暂存）
+    start = run_js.index("function handleTestsetEvent(")
+    end = run_js.index("function showTestsetResults(", start)
+    assert "showTestsetResults" not in run_js[start:end], (
         "handleTestsetEvent 直接弹结果表格（应改为暂存 + 按需查看）"
     )

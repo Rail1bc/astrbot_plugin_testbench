@@ -18,6 +18,7 @@ import {
   confName,
   effectiveView,
   escapeHtml,
+  field,
   findSession,
   platformName,
 } from "./utils.js";
@@ -477,16 +478,6 @@ export function createGroupList(env) {
       span.textContent = label;
       info.appendChild(span);
     }
-  }
-
-  function field(label, input) {
-    const l = document.createElement("label");
-    l.className = "settings-field";
-    const span = document.createElement("span");
-    span.textContent = label;
-    l.appendChild(span);
-    l.appendChild(input);
-    return l;
   }
 
   return { refreshGroups, renderGroupList };

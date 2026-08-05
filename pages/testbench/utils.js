@@ -4,6 +4,17 @@
 // 展开配置里发送者 ID / 昵称恒显示「—」。
 import { state } from "./state.js";
 
+// 设置表单字段：label.settings-field 包裹「字段名 + 控件」（弹窗表单的通用行结构）
+export function field(label, input) {
+  const l = document.createElement("label");
+  l.className = "settings-field";
+  const span = document.createElement("span");
+  span.textContent = label;
+  l.appendChild(span);
+  l.appendChild(input);
+  return l;
+}
+
 export function escapeHtml(value) {
   if (value === null || value === undefined) return "";
   return String(value)

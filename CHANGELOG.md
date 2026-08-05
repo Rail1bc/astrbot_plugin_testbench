@@ -33,6 +33,8 @@
 
 ### 🐛 Bug Fixes (缺陷修复)
 
+- 修复测试集运行内部异常时前端进度卡死的问题：后端 `_drive` 的异常路径原先只把 run 置为 error、不广播事件，而前端单槽进度完全靠事件流推进（终态事件驱动取消按钮隐藏 / 「查看报告」按钮出现），收不到终态事件会一直停留在「运行中」且无法恢复。现异常路径同样发布终态 `testset` 事件。
+- 重新生成（regenerate）支持按对话定位轮次：`regenerate_history` 接受可选 `conversation_id`，在指定对话内定位该轮（多对话历史下全局索引相对当前对话是错的，必须按对话取值）；`conversation_id` 非字符串时 400。
 - 修复并发测试集运行污染前端单槽进度状态的问题：前端进度是单槽状态（`activeRunId` / 取消按钮 / 步骤去重集合只支持一个运行），两个运行同时进行时事件流会互相污染、完成步骤可能被误跳过。现 `run_testset` 入口以 `has_active_run()` 守卫拒绝并发启动（400「已有测试集运行中」）；测试集步骤去重键同时带 runId 前缀，不同运行的同一序号步骤互不干扰（纵深防御）。
 - 修复断线对账时测试运行记录已被清理（404）导致消费者泄漏的问题：`reconcileEvents` 对查询失败一律跳过重试，而记录被 prune 后 404 永远不会恢复——`testConsumers` 中的条目永久残留。现失败即释放该消费者。
 - 修复暂存报告无界增长的问题：`state.runReports` 只增不减，长时间使用会持续堆积内存。现只保留最近 20 份报告，超出丢弃最旧（`MAX_STASHED_REPORTS`）。
@@ -93,6 +95,9 @@
 - `update_group` 的路由同步改为按会话 id 配对旧 / 新会话，不再依赖两个会话列表的顺序一致（原按位置 `zip` 属隐含假设）。
 - 测试集运行不再选「逐条 / 批量」模式：`run_testset` 请求体移除 `mode` 字段，仅 `{testset_id, sessions}`，发送节奏由测试集内 `batch_ranges` 决定（段驱动，语义见「批量发送范围」）。
 - 前端三个轮询器（`pollRun` / `pollTestsetRun` / `pollPending`）曾收敛为共享 `startPolling` 辅助（busy 标志跳过重叠 tick、fn 抛错只记日志），后随事件驱动改造整体移除（见「行为变更」）。
+- 前端 `app.js` 再次拆分（纯结构，行为不变）：拆出 `events.js`（事件驱动反馈层 `createEventController(env)`——`connectEvents` 订阅 SSE / `handleEvent` 分发 / `registerTestConsumer` 逐会话消费者 / `applySessionFeedback` 统一反馈 / `reconcileEvents` 断线对账，测试集事件经 `setTestsetEvent` 转交 testset_run 模块避免循环 import）与 `testset_run.js`（测试集运行编排视图 `createTestsetRunController(env)`——`runTestset` / `handleTestsetEvent` / `showTestsetResults` / `viewTestsetRun` / `abortTestsetRun` / `runTestsetFromBar`）。
+- 前端 `testset_list.js` 拆出 `testset_editor.js`（右侧测试集编辑窗口 `createTestsetEditor(env)`：消息行 `renderMsgRow` / 反向收集 `collectEditorRows` / 断言规则 `RULE_TYPES` / 批量段 / 脏标记 / 保存 / 导出 / 导入）；编辑器与列表互相引用、直接 import 会成环，列表侧函数（`formatTime` / `openTestsetRun` / `deleteTestset` / `doSelect` / `refreshTestsets`）经 `setDeps` 延迟注入。
+- 后端 `main.py` 拆出 `history_ops.py`（会话对话历史操作 `HistoryOps`：`save_history` / `regenerate_history` / `copy_history` / `delete_session_conversations`），main.py 保留路由装配与薄委托（`_ROUTES` 的 getattr 要求 handler 名字仍在 Star 上）；`group_mgr` 以 getter 延迟获取——测试重新绑定 `plugin.group_mgr` 后仍指向新管理器。
 
 ---
 

@@ -31,12 +31,12 @@ export function createChatRenderer(alignGetter) {
     chat.innerHTML = "";
     chat.classList.remove("aligned");
     let count = 0;
-    let idx = 0;
     const ctx = { toolNames: {} };
     for (const conv of conversations) {
+      let idx = 0;
       for (const msg of conv.history || []) {
         count++;
-        chat.appendChild(bubbleFor(msg, idx, ctx));
+        chat.appendChild(bubbleFor(msg, idx, conv.cid, ctx));
         idx++;
       }
     }
@@ -72,14 +72,14 @@ export function createChatRenderer(alignGetter) {
     chat.innerHTML = "";
     chat.classList.add("aligned");
     let count = 0;
-    let idx = 0;
     const ctx = { toolNames: {} };
     for (const conv of conversations) {
+      let idx = 0;
       for (const turn of groupTurns(conv.history)) {
         const wrap = document.createElement("div");
         wrap.className = "turn-wrap";
         for (const msg of turn.messages) {
-          wrap.appendChild(bubbleFor(msg, idx, ctx));
+          wrap.appendChild(bubbleFor(msg, idx, conv.cid, ctx));
           idx++;
         }
         chat.appendChild(wrap);
@@ -199,12 +199,13 @@ export function createChatRenderer(alignGetter) {
     return wrap;
   }
 
-  function bubbleFor(msg, index, ctx) {
+  function bubbleFor(msg, index, convId, ctx) {
     const role = msg.role || "";
     const { reasoning, text } = extractParts(msg.content);
     const tools = Array.isArray(msg.tool_calls) ? msg.tool_calls : null;
     const el = document.createElement("div");
     el.dataset.index = String(index);
+    el.dataset.conv = convId || "";
     if (role === "user") {
       el.className = "msg user";
       el.textContent = text || "（空消息）";

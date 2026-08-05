@@ -118,6 +118,9 @@ class TestsetRunner:
             if run["status"] == "running":
                 run["status"] = "error"
                 run["error"] = "运行器内部异常"
+                # 终态必须广播：前端的单槽进度靠事件流推进，异常路径若不发布，
+                # 页面会一直停留在 running 且无法恢复。
+                self._publish_run(run_id)
         finally:
             run["finished_at"] = time.time()
 

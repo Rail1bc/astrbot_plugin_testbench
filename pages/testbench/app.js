@@ -5,26 +5,22 @@
 // 会话操作、面板排序与初始化，并组装各子模块。
 import { createChatRenderer } from "./chat.js";
 import { createAlignController } from "./align.js";
+import { createEventController } from "./events.js";
 import { createGroupList } from "./group_list.js";
 import { createTestsetList } from "./testset_list.js";
+import { createTestsetRunController } from "./testset_run.js";
 import {
-  abortTestsetRun as abortTestsetRunApi,
   cloneSession as cloneSessionApi,
   deleteSessions,
   deriveSession as deriveSessionApi,
   getHistory,
-  getPending,
   listConfs,
   listPlatforms,
   ready,
   regenerateHistory,
   resetSessions,
-  runStatus,
   runTest,
-  runTestset as runTestsetApi,
-  runTestsetStatus,
   saveHistory,
-  subscribeEvents,
 } from "./api.js";
 import { openModal, showModal } from "./modal.js";
 import { state } from "./state.js";
@@ -32,6 +28,7 @@ import {
   confName,
   effectiveView,
   escapeHtml,
+  field,
   platformName,
   statusText,
 } from "./utils.js";
@@ -149,7 +146,7 @@ async function loadHistory(id) {
     state.historyCache.set(id, conversations);
     renderChat(panel, conversations);
     // 记录本次成功刷新时刻：完成的消息刷入历史后即从在途条移除
-    historyRefreshedAt.set(id, Date.now());
+    state.historyRefreshedAt.set(id, Date.now());
     if (align.isAlignMode()) align.reflowAlign();
   } catch (err) {
     if (historySeq.get(id) !== seq) return; // 迟到失败同样丢弃，不覆盖较新内容
@@ -208,12 +205,12 @@ async function openHistoryEditor(id) {
   });
 }
 
-async function regenerateMsg(id, index) {
+async function regenerateMsg(id, index, conversationId) {
   const panel = state.panelEls.get(id);
   try {
-    const resp = await regenerateHistory({ id, index });
+    const resp = await regenerateHistory({ id, index, conversation_id: conversationId || undefined });
     if (panel) panelStatus(panel, "warn", "重新生成中…");
-    registerTestConsumer(
+    events.registerTestConsumer(
       resp.test_id,
       (r) => {
         const p = state.panelEls.get(id);
@@ -251,77 +248,8 @@ function clearPanelStatus(panel) {
 }
 
 // ---------- 发送（事件驱动） ----------
-
-// 手动群发 / 单发的消费者注册表：test_id -> {onSession, onAll, seen, finished}。
-// /events 的 session_done / test_done 事件经 handleEvent 分发到这里（替代旧的
-// pollRun 轮询回调）；seen 去重保证每个会话的结果只反馈一次（断线对账重放不重复）。
-const testConsumers = new Map();
-
-function registerTestConsumer(testId, onSession, onAll) {
-  testConsumers.set(testId, { onSession, onAll, seen: new Set(), finished: false });
-}
-
-// 统一的逐会话反馈：手动群发与测试集运行共用（面板显示回复耗时 + 逐会话历史刷新）
-function applySessionFeedback(s) {
-  const panel = state.panelEls.get(s.session_id);
-  if (panel) {
-    if (s.status === "ok") {
-      panelStatus(panel, "ok", `回复成功（${s.duration}s）`);
-    } else {
-      panelStatus(
-        panel,
-        s.status === "error" ? "error" : "warn",
-        statusText(s.status) + (s.error ? `：${s.error}` : ""),
-      );
-    }
-  }
-  void loadHistory(s.session_id);
-}
-
-// 按会话重建各面板在途条（pending 事件是全量快照，一次替换再逐面板渲染）
-function renderAllPendingStrips() {
-  let changed = false;
-  for (const [id, el] of state.panelEls) {
-    const entries = [...state.pendingEntries.values()].filter(
-      (e) => e.session_id === id,
-    );
-    if (renderPendingStrip(el, entries)) changed = true;
-  }
-  if (changed && align.isAlignMode()) align.reflowAlign();
-}
-
-// SSE 事件分发：pending（在途快照）/ session_done / test_done / testset
-function handleEvent(ev) {
-  if (ev.type === "pending") {
-    state.pendingEntries.clear();
-    for (const e of ev.entries || []) state.pendingEntries.set(e.entry_id, e);
-    renderAllPendingStrips();
-    return;
-  }
-  if (ev.type === "session_done") {
-    const cons = testConsumers.get(ev.test_id);
-    if (cons && !cons.seen.has(ev.session_id)) {
-      cons.seen.add(ev.session_id);
-      try {
-        cons.onSession(ev.summary);
-      } catch (err) {
-        console.error("会话结果刷新失败:", err);
-      }
-    }
-    return;
-  }
-  if (ev.type === "test_done") {
-    const cons = testConsumers.get(ev.test_id);
-    if (cons) {
-      testConsumers.delete(ev.test_id);
-      cons.onAll(ev.record);
-    }
-    return;
-  }
-  if (ev.type === "testset") {
-    handleTestsetEvent(ev.run_id, ev.run);
-  }
-}
+// 逐会话反馈（面板状态 + 历史刷新）与消费者注册收敛在 events.js（applySessionFeedback /
+// registerTestConsumer）；sendToOne / sendToAll 只负责启动投递并挂接消费者。
 
 async function sendToOne(id, text) {
   text = (text || "").trim();
@@ -332,7 +260,7 @@ async function sendToOne(id, text) {
   panelStatus(panel, "warn", "发送中…");
   try {
     const resp = await runTest({ sessions: [id], text });
-    registerTestConsumer(resp.test_id, applySessionFeedback, () => {});
+    events.registerTestConsumer(resp.test_id, events.applySessionFeedback, () => {});
   } catch (err) {
     panelStatus(panel, "error", "发送失败: " + err.message);
   }
@@ -355,9 +283,9 @@ async function sendToAll() {
   showRunStatus("warn", `正在并发发送给 ${ids.length} 个会话…`);
   try {
     const resp = await runTest({ sessions: ids, text });
-    registerTestConsumer(
+    events.registerTestConsumer(
       resp.test_id,
-      applySessionFeedback,
+      events.applySessionFeedback,
       (record) => {
         const s = record.stats || {};
         const ok = record.results.filter((r) => r.status === "ok").length;
@@ -382,351 +310,7 @@ function showRunStatus(status, text) {
   el.textContent = text;
 }
 
-// ---------- 测试集运行（后端驱动） ----------
-
-// 测试集运行由后端后台任务驱动（离开页面不中断），前端只负责启动；
-// 进度经 /events 事件流推送（handleTestsetEvent），记录可经「最近运行」找回，
-// 运行中/结束后均可点「查看」看结果表格。
-
-async function runTestset(testset, ids) {
-  try {
-    const resp = await runTestsetApi({ testset_id: testset.id, sessions: ids });
-    state.activeRunId = resp.run_id;
-    state.testsetReportedSteps.clear();
-    $("btn-abort-run").hidden = false;
-    const segText = segmentSummary(testset);
-    showRunStatus(
-      "warn",
-      `测试集「${testset.name}」已启动（${resp.steps} 步${segText}），后台运行中…`,
-    );
-  } catch (err) {
-    showRunStatus("error", "启动测试集运行失败: " + err.message);
-  }
-}
-
-// 批量发送范围的启动文案：如「，含批量段 1-2、4」；无批量段返回空串
-function segmentSummary(testset) {
-  const ranges = testset.batch_ranges || [];
-  if (!ranges.length) return "";
-  const parts = ranges.map(([s, e]) => (s === e ? `${s + 1}` : `${s + 1}-${e + 1}`));
-  return `，含批量段 ${parts.join("、")}`;
-}
-
-// 进度文案：当前步在某批量段内 → 显示段范围；否则显示第 i/N 步
-function segmentLabel(run, idx) {
-  for (const [s, e] of run.batch_ranges || []) {
-    if (idx >= s && idx <= e) return `第 ${s + 1}–${e + 1} 步（批量）`;
-  }
-  return `第 ${idx + 1}/${run.steps.length} 步`;
-}
-
-// 暂存报告上限：超出丢弃最旧（防 runReports 无界增长——只增不减的 Map 会
-// 随长时间使用持续堆积内存）
-const MAX_STASHED_REPORTS = 20;
-
-// 测试集运行进度：由 /events 的 testset 事件（完整 run 快照）驱动。
-// 新完成的步骤经 applySessionFeedback 逐会话反馈（与手动群发同路径）；
-// 终态不自动弹窗，报告暂存 state.runReports 供「查看报告」按需查看。
-function handleTestsetEvent(runId, run) {
-  const name = run.testset_name || "测试集";
-  if (run.status === "running") {
-    state.activeRunId = runId;
-    $("btn-abort-run").hidden = false;
-    const idx = Math.max(0, run.current_step);
-    const stepText = run.steps[idx] ? run.steps[idx].text : "";
-    showRunStatus(
-      "warn",
-      `测试集「${name}」运行中：${segmentLabel(run, idx)} — ${stepText}`,
-    );
-    // 新完成的步骤 → 逐会话反馈（面板耗时 + 逐会话历史刷新，与手动群发一致）。
-    // 去重键带 runId 前缀：不同运行的同一序号步骤互不污染（同一集合被并发/
-    // 历史残留的运行共用时不会误跳过新运行的完成步骤）
-    (run.steps || []).forEach((step, i) => {
-      const key = `${runId}:${i}`;
-      if (step.status === "done" && !state.testsetReportedSteps.has(key)) {
-        state.testsetReportedSteps.add(key);
-        for (const r of step.results || []) applySessionFeedback(r);
-      }
-    });
-    return;
-  }
-  // 终态：不自动弹窗，报告暂存供按需查看
-  state.activeRunId = null;
-  state.testsetReportedSteps.clear();
-  $("btn-abort-run").hidden = true;
-  state.runReports[runId] = run;
-  state.latestReportRunId = runId;
-  // 报告无界增长防护：只保留最近 MAX_STASHED_REPORTS 份，超出丢弃最旧
-  const keys = Object.keys(state.runReports);
-  while (keys.length > MAX_STASHED_REPORTS) delete state.runReports[keys.shift()];
-  $("btn-view-report").hidden = false;
-  const failSteps = run.steps.filter((s) => s.status === "error").length;
-  // 断言未通过（✗）与步骤/会话错误是两回事：断言失败只落在结果单元格，
-  // 不改变会话 status——总结必须单独计数，否则出现「表格 3 个 ✗ 但总结错误 0」的误导
-  const assertFails = (run.steps || []).reduce(
-    (n, s) => n + (s.results || []).filter((r) => r.assertion && !r.assertion.pass).length,
-    0,
-  );
-  const doneCount = run.steps.filter((s) => s.status === "done").length;
-  const assertText = assertFails ? `，${assertFails} 条断言未通过` : "";
-  const summary =
-    run.status === "done"
-      ? `测试集「${name}」运行完成（${run.steps.length} 步${assertText}）`
-      : run.status === "cancelled"
-        ? `测试集「${name}」已取消：当前步骤已完成，共完成 ${doneCount} 步`
-        : `测试集「${name}」运行出错${failSteps ? `（${failSteps} 步失败）` : ""}${assertText}`;
-  showRunStatus(run.status === "done" ? "ok" : "error", summary);
-  for (const sid of state.openIds) void loadHistory(sid);
-  void refreshTestsets();
-}
-
-// 结果表格弹窗：行=步骤（文本 + 失败原因），列=会话（状态 + 耗时 + 断言 ✓/✗），
-// 行尾为该步 ok/no_reply/error 计数
-function showTestsetResults(run) {
-  const sessions = run.sessions || [];
-  const table = document.createElement("table");
-  table.className = "testset-results";
-  const head = document.createElement("thead");
-  head.innerHTML =
-    `<tr><th>步骤</th>` +
-    sessions.map((s) => `<th class="cell-session">${escapeHtml(s.name || s.id)}</th>`).join("") +
-    `<th>结果</th></tr>`;
-  const body = document.createElement("tbody");
-  body.innerHTML = (run.steps || [])
-    .map((step, i) => {
-      const cells = sessions
-        .map((s) => {
-          const r = (step.results || []).find((x) => x.session_id === s.id);
-          if (!r) return `<td class="cell-session">—</td>`;
-          const dur = r.duration != null ? `（${r.duration}s）` : "";
-          const assertion = r.assertion
-            ? `<span class="${r.assertion.pass ? "assert-pass" : "assert-fail"}">${r.assertion.pass ? "✓" : "✗"}</span>`
-            : "";
-          return (
-            `<td class="cell-session">` +
-            escapeHtml(statusText(r.status)) + dur + assertion +
-            `</td>`
-          );
-        })
-        .join("");
-      const ok = (step.results || []).filter((r) => r.status === "ok").length;
-      const noReply = (step.results || []).filter((r) => r.status === "no_reply").length;
-      const err = (step.results || []).filter((r) => r.status === "error").length;
-      const assertFail = (step.results || []).filter(
-        (r) => r.assertion && !r.assertion.pass,
-      ).length;
-      const stepErr = step.error
-        ? `<div class="cell-err">失败：${escapeHtml(step.error)}</div>`
-        : "";
-      const batchBadge = (run.batch_ranges || []).some(([s, e]) => i >= s && i <= e)
-        ? '<span class="badge conf">批量</span> '
-        : "";
-      return (
-        `<tr>` +
-        `<td class="cell-step">${batchBadge}${escapeHtml(step.text)}${stepErr}</td>` +
-        cells +
-        `<td>成功 ${ok} / 无回复 ${noReply} / 错误 ${err}${assertFail ? ` / 断言 ✗ ${assertFail}` : ""}</td>` +
-        `</tr>`
-      );
-    })
-    .join("");
-  table.append(head, body);
-  openModal({
-    title: `测试集结果 · ${run.testset_name || ""}`,
-    content: table,
-    okText: "关闭",
-    wide: true,
-  });
-}
-
-// 「最近运行」点查看：运行中则一次性重建进度（后续由事件流推送），否则直接展示结果表格
-async function viewTestsetRun(runId) {
-  let run;
-  try {
-    run = await runTestsetStatus(runId);
-  } catch (err) {
-    showRunStatus("warn", "该测试集运行记录已过期");
-    void refreshTestsets();
-    return;
-  }
-  if (run.status === "running") {
-    state.activeRunId = runId;
-    state.testsetReportedSteps.clear();
-    handleTestsetEvent(runId, run);
-  } else {
-    showTestsetResults(run);
-  }
-}
-
-async function abortTestsetRun(runId) {
-  if (!runId) return;
-  try {
-    await abortTestsetRunApi(runId);
-    showRunStatus("warn", "已请求取消：当前步骤完成即止，后续步骤不再发送");
-  } catch (err) {
-    showRunStatus("error", "取消失败: " + err.message);
-  }
-}
-
-// 群发栏「执行测试」：目标即已打开的会话
-function runTestsetFromBar() {
-  const tsId = $("run-testset").value;
-  if (!tsId) {
-    showRunStatus("warn", "请先选择测试集");
-    return;
-  }
-  if (!state.openIds.length) {
-    showRunStatus("warn", "请先在左侧打开至少一个会话");
-    return;
-  }
-  const ts = state.testsets.find((t) => t.id === tsId);
-  if (!ts) return;
-  if (!(ts.messages || []).length) {
-    showRunStatus("warn", "该测试集没有消息，请先在测试集窗口中编辑");
-    return;
-  }
-  runTestset(ts, state.openIds.slice());
-}
-
-// ---------- 在途消息（面板实时状态条） ----------
-
-// 在途消息的状态文案（与后端 runner 的条目状态一一对应）
-const PENDING_STATUS_TEXT = {
-  submitted: "已入队",
-  waiting_llm: "排队等待 LLM",
-  llm: "LLM 生成中",
-  done: "完成",
-};
-
-// 各会话最近一次成功刷新历史的时刻（epoch 毫秒）：完成的消息一旦刷入历史
-// （气泡可见）即从在途条移除——条内只保留真正在途与完成后的短暂过渡
-const historyRefreshedAt = new Map();
-
-// 渲染单个面板的在途消息条：显示正在处理与排队中的消息及其当前阶段；
-// 已完成且已刷入会话历史的消息不再展示（历史气泡即完成指示）。
-// 返回是否发生变化（供调用方决定是否重排对齐高度）
-function renderPendingStrip(panel, entries) {
-  const el = panel.querySelector(".panel-pending");
-  if (!el) return false;
-  const refreshedAt = historyRefreshedAt.get(panel.dataset.id) || 0;
-  // status_at 为后端 epoch 秒，historyRefreshedAt 为 epoch 毫秒；条目
-  // 完成于最近一次历史刷新之前 ⇒ 回复已在气泡中，无需再展示
-  const visible = entries
-    .filter((e) => e.status !== "done" || (e.status_at || 0) * 1000 > refreshedAt)
-    .sort((a, b) => (a.created_at || 0) - (b.created_at || 0));
-  const key = visible.map((e) => `${e.entry_id}:${e.status}`).join(",");
-  if (key === el.dataset.pendingKey) return false;
-  el.dataset.pendingKey = key;
-  if (!visible.length) {
-    el.hidden = true;
-    el.innerHTML = "";
-    return true;
-  }
-  el.hidden = false;
-  el.innerHTML = visible
-    .map((e) => {
-      const text =
-        e.text && e.text.length > 24 ? e.text.slice(0, 24) + "…" : e.text || "";
-      const label = PENDING_STATUS_TEXT[e.status] || e.status;
-      return (
-        `<span class="pending-item pending-${escapeHtml(e.status)}">` +
-        `<span class="pending-text" title="${escapeHtml(e.text)}">${escapeHtml(text)}</span>` +
-        `<span class="pending-state">${escapeHtml(label)}</span>` +
-        `</span>`
-      );
-    })
-    .join("");
-  return true;
-}
-
-// ---------- 事件流连接与快照对账 ----------
-
-// 订阅 /events 并做一次快照对账：订阅建立后（流已 open）用一次性接口取回
-// 当前权威状态，补上订阅前/断线期间丢失的事件（事件均为全量快照，幂等覆盖）
-async function connectEvents() {
-  await subscribeEvents(handleEvent, () => {
-    // 断线：延迟重连；丢的事件由 reconcileEvents 的一次性取回兜底
-    setTimeout(() => {
-      void connectEvents().catch((err) => console.error("重连事件流失败:", err));
-    }, 3000);
-  });
-  void reconcileEvents();
-}
-
-async function reconcileEvents() {
-  // 1. 在途条目快照（单发/群发/重新生成/测试集共用）
-  let entries = [];
-  try {
-    const data = await getPending();
-    entries = Array.isArray(data.pending) ? data.pending : [];
-  } catch (err) {
-    console.warn("拉取在途条目失败:", err);
-  }
-  state.pendingEntries.clear();
-  for (const e of entries) state.pendingEntries.set(e.entry_id, e);
-  renderAllPendingStrips();
-  // 2. 在途条目带 test_id：逐测试一次性取回结果，喂给已注册消费者（seen 去重）
-  const testIds = [...new Set(entries.map((e) => e.test_id).filter(Boolean))];
-  for (const tid of testIds) {
-    const cons = testConsumers.get(tid);
-    if (!cons) continue;
-    let rec;
-    try {
-      rec = await runStatus(tid);
-    } catch (err) {
-      // 记录已被清理（404）：consumer 永远等不到 test_done，须释放防 Map 泄漏
-      testConsumers.delete(tid);
-      continue;
-    }
-    for (const r of rec.results || []) {
-      if (cons.seen.has(r.session_id)) continue;
-      cons.seen.add(r.session_id);
-      try {
-        cons.onSession(r);
-      } catch (err) {
-        console.error("会话结果刷新失败:", err);
-      }
-    }
-    if (rec.done && !cons.finished) {
-      cons.finished = true;
-      testConsumers.delete(tid);
-      cons.onAll(rec);
-    }
-  }
-  // 3. 测试集运行进度（页面重开找回 / 断线期间推进的步骤）
-  if (state.activeRunId) {
-    try {
-      const run = await runTestsetStatus(state.activeRunId);
-      handleTestsetEvent(run.run_id, run);
-    } catch (err) {
-      console.warn("拉取测试集运行进度失败:", err);
-    }
-  }
-}
-
-// 群发栏实时显示：当前打开的会话总数 + 按所属测试组的分布
-function updateRunOverview() {
-  const el = $("run-overview");
-  if (!state.openIds.length) {
-    el.hidden = true;
-    return;
-  }
-  const counts = new Map();
-  for (const id of state.openIds) {
-    const v = effectiveView(id);
-    if (!v) continue;
-    const name = v.group_name || "未分组";
-    counts.set(name, (counts.get(name) || 0) + 1);
-  }
-  let html = `<span class="overview-total">当前会话:${state.openIds.length}</span>`;
-  for (const [name, n] of counts) {
-    html += `<span class="overview-item">${escapeHtml(name)}:${n}</span>`;
-  }
-  el.hidden = false;
-  el.innerHTML = html;
-}
-
-// ---------- 会话操作 ----------
+// ---------- 会话操作 ----------// ---------- 会话操作 ----------
 
 function resetHistory(id) {
   showModal(`确定重置会话 ${id} 的对话历史吗？`, {
@@ -877,28 +461,25 @@ function deriveSession(id) {
     group && Array.isArray(group.sessions) && group.sessions.length
       ? group.sessions.length
       : 3;
-  const wrap = document.createElement("div");
-  wrap.className = "form-col";
-  const p = document.createElement("p");
-  p.textContent =
-    "基于当前会话的历史创建全新测试组（继承当前组的平台/档案/发送者配置），组内每个会话的历史都与它一致，可分别改配置测试。";
-  const nameInput = document.createElement("input");
-  nameInput.type = "text";
-  nameInput.value = defaultName;
-  const countInput = document.createElement("input");
-  countInput.type = "number";
-  countInput.min = "1";
-  countInput.max = "500";
-  countInput.value = String(defaultCount);
-  wrap.append(p, nameInput, countInput);
-  openModal({
-    title: "衍生测试组",
-    content: wrap,
-    okText: "创建",
-    onOk: async () => {
-      const name = nameInput.value.trim();
+  promptFormDialog(
+    "衍生测试组",
+    "基于当前会话的历史创建全新测试组（继承当前组的平台/档案/发送者配置），组内每个会话的历史都与它一致，可分别改配置测试。",
+    [
+      { name: "name", label: "测试组名称", value: defaultName },
+      {
+        name: "count",
+        label: "会话数量",
+        type: "number",
+        min: 1,
+        max: 500,
+        value: defaultCount,
+      },
+    ],
+    "创建",
+    async (inputs) => {
+      const name = inputs.name.value.trim();
       if (!name) throw new Error("测试组名称不能为空");
-      const n = Number(countInput.value);
+      const n = Number(inputs.count.value);
       if (!Number.isInteger(n) || n < 1 || n > 500) {
         throw new Error("会话数量必须是 1-500 的整数");
       }
@@ -909,33 +490,52 @@ function deriveSession(id) {
         `已创建测试组「${name}」：${resp.session_ids.length} 个会话，历史与当前会话一致`,
       );
     },
-  });
+  );
 }
 
-// 数字输入弹窗：克隆数量等单输入场景的通用表单
-function promptCountDialog(title, message, defaultValue, onOk) {
+// 表单弹窗：p 说明 + 带标签输入字段（field），onOk 接收 {name: 输入元素}。
+// 校验失败（throw）则停留在弹窗。单输入（克隆数量）与多输入（衍生）共用。
+function promptFormDialog(title, message, fields, okText, onOk) {
   const wrap = document.createElement("div");
   wrap.className = "form-col";
   const p = document.createElement("p");
   p.textContent = message;
-  const input = document.createElement("input");
-  input.type = "number";
-  input.min = "1";
-  input.max = "500";
-  input.value = String(defaultValue);
-  wrap.append(p, input);
+  wrap.append(p);
+  const inputs = {};
+  for (const f of fields) {
+    const input = document.createElement("input");
+    input.type = f.type || "text";
+    if (f.min) input.min = String(f.min);
+    if (f.max) input.max = String(f.max);
+    input.value = String(f.value ?? "");
+    inputs[f.name] = input;
+    wrap.append(field(f.label, input));
+  }
   openModal({
     title,
     content: wrap,
-    okText: "确定",
-    onOk: () => {
-      const n = Number(input.value);
+    okText,
+    onOk: () => onOk(inputs),
+  });
+}
+
+// 数字输入弹窗：克隆数量等单输入场景的便捷封装
+function promptCountDialog(title, message, defaultValue, onOk) {
+  promptFormDialog(
+    title,
+    message,
+    [
+      { name: "count", label: "数量", type: "number", min: 1, max: 500, value: defaultValue },
+    ],
+    "确定",
+    (inputs) => {
+      const n = Number(inputs.count.value);
       if (!Number.isInteger(n) || n < 1 || n > 500) {
         throw new Error("数量必须是 1-500 的整数");
       }
       return onOk(n);
     },
-  });
+  );
 }
 
 // ---------- 面板排序 ----------
@@ -1039,7 +639,11 @@ panelsEl.addEventListener("click", (e) => {
   if (!msgEl) return;
   const index = parseInt(msgEl.dataset.index, 10);
   if (Number.isNaN(index)) return;
-  void regenerateMsg(btn.closest(".panel").dataset.id, index);
+  void regenerateMsg(
+    btn.closest(".panel").dataset.id,
+    index,
+    msgEl.dataset.conv || null,
+  );
 });
 
 // ---------- 选项加载 ----------
@@ -1074,22 +678,43 @@ align.attachEvents();
 
 const chat = createChatRenderer(() => align);
 
+// 测试集运行编排与事件驱动反馈：两模块交叉依赖（事件流把 testset 事件转发给
+// testset_run，testset_run 的逐会话反馈回调给 events）经 wireControllers 装配，
+// 用延迟 getter 避开 events ↔ testset_run 互相 import 的循环依赖
+const testsetRun = createTestsetRunController({
+  showRunStatus,
+  loadHistory,
+});
+const events = createEventController({
+  loadHistory,
+  panelStatus,
+  getAlign: () => align,
+});
+
 const { refreshGroups, renderGroupList } = createGroupList({
   toggleOpen,
   openAll,
   deleteSession,
   renderPanels,
   showRunStatus,
-  updateRunOverview,
+  updateRunOverview: testsetRun.updateRunOverview,
 });
 
 const { refreshTestsets } = createTestsetList({
   showRunStatus,
-  runTestset,
-  viewTestsetRun,
+  runTestset: testsetRun.runTestset,
+  viewTestsetRun: testsetRun.viewTestsetRun,
   // 选中测试集 → 右侧自动切到「测试集」视图（showView 是函数声明，可提升）
   switchToTestsets: () => showView("testsets"),
 });
+
+// 装配交叉依赖。须放在全部控制器创建之后（函数体内引用，延迟求值）
+function wireControllers() {
+  testsetRun.setApplySessionFeedback(() => events.applySessionFeedback);
+  testsetRun.setRefreshTestsets(() => refreshTestsets);
+  events.setTestsetEvent(() => testsetRun.handleTestsetEvent);
+}
+wireControllers();
 
 // 静态控件绑定须放在 createGroupList / createTestsetList 解构之后：
 // refreshGroups / refreshTestsets 是 const 解构绑定，提前引用会触发暂时性
@@ -1097,13 +722,13 @@ const { refreshTestsets } = createTestsetList({
 $("btn-refresh").addEventListener("click", refreshGroups);
 $("btn-refresh-testsets").addEventListener("click", refreshTestsets);
 $("btn-run-all").addEventListener("click", sendToAll);
-$("btn-abort-run").addEventListener("click", () => abortTestsetRun(state.activeRunId));
+$("btn-abort-run").addEventListener("click", () => testsetRun.abortTestsetRun(state.activeRunId));
 // 「查看报告」：测试集结果不自动弹窗，暂存后由用户按需查看（最近一次完成/取消的运行）
 $("btn-view-report").addEventListener("click", () => {
   const run = state.latestReportRunId && state.runReports[state.latestReportRunId];
-  if (run) showTestsetResults(run);
+  if (run) testsetRun.showTestsetResults(run);
 });
-$("btn-run-testset").addEventListener("click", runTestsetFromBar);
+$("btn-run-testset").addEventListener("click", () => testsetRun.runTestsetFromBar());
 $("run-testset").addEventListener("change", () => {
   $("btn-run-testset").disabled = !$("run-testset").value;
 });
@@ -1144,4 +769,4 @@ await ready();
 // allSettled：三个初始化步骤相互独立，任一失败不阻塞其余步骤与事件流连接
 // （各步骤内部已自行降级，见 refreshGroups / refreshTestsets 的 catch）
 await Promise.allSettled([loadOptions(), refreshGroups(), refreshTestsets()]);
-void connectEvents();
+void events.connectEvents();
