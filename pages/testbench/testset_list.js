@@ -419,11 +419,11 @@ export function createTestsetList(env) {
 
   async function saveEditor() {
     const ts = requireSelected();
-    if (!ts) return;
+    if (!ts) return false;
     const err = validateEditorRows();
     if (err) {
       showModal(err);
-      return;
+      return false;
     }
     const name = $("ts-name").value.trim() || "测试集";
     const { messages, batchRanges } = collectEditorRows();
@@ -434,8 +434,10 @@ export function createTestsetList(env) {
       dirty = false;
       await refreshTestsets();
       showRunStatus("ok", "测试集已保存");
+      return true;
     } catch (err) {
       showRunStatus("error", "保存失败: " + err.message);
+      return false;
     }
   }
 
@@ -445,7 +447,8 @@ export function createTestsetList(env) {
     if (dirty) {
       showModal("当前测试集有未保存的修改。是否先保存再运行？", {
         onOk: async () => {
-          await saveEditor();
+          // 保存失败中止：继续运行会跑旧版本内容，与编辑器显示不一致
+          if (!(await saveEditor())) return;
           const fresh = currentSelected();
           if (fresh) openTestsetRun(fresh);
         },
@@ -487,8 +490,8 @@ export function createTestsetList(env) {
     if (dirty) {
       showModal("当前测试集有未保存的修改。是否先保存再导出？", {
         onOk: async () => {
-          await saveEditor();
-          doExport();
+          // 保存失败中止：导出的会是编辑器里未保存的内容，与「先保存」承诺不符
+          if (await saveEditor()) doExport();
         },
       });
       return;

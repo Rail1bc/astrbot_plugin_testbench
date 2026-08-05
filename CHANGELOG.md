@@ -60,6 +60,12 @@
 - 修复批量段收集中途取消导致已发步骤结果丢失的问题：批量段内消息已全部发出后用户点「取消」，收集循环因 `run.status != "running"` 提前 break——已发出的步骤永远卡在 running 状态、结果不落定。现取消后仍把已发出的段内步骤全部收完（abort 只停止后续未发出的消息，语义与单步段一致）。
 - 修复 `run_test` 对非字符串 text 静默强制转换的问题：`text=None` 会按 `str(text)` 发成字符串 `"None"`、数字会发成其十进制表示——错误类型的数据被悄悄当成消息投递。现要求 `text` 必须是字符串，否则 400。
 - 修复普通测试轮询在运行记录被清理后 interval 永久泄漏的问题：`pollRun` 对查询失败一律 `return` 下轮重试，而运行记录被 prune（完成后 10 分钟）后 404 永远不会恢复——定时器空转永不停止。现遇 404（`未找到`）即停止轮询；瞬时网络错误仍下轮重试。
+- 修复组列表刷新失败拖垮页面初始化的问题：`refreshGroups` 原先无 try/catch，`listGroups` 任一瞬时失败会让初始化 `Promise.all` 整体拒绝、`pollPending()` 永不启动（在途消息条全部失效，只能刷新页面）。现失败降级（组列表清空 + 状态条提示，与 `refreshTestsets` 一致），初始化改用 `Promise.allSettled` 隔离各步失败。
+- 修复 `list_providers` 非防御式读取的问题：单个 Provider 的 `meta()` / `get_model()` 抛异常会使整个接口 500（前端 Provider 下拉为空）。现与 `list_platforms` 一致逐调用防护——`meta()` 失败跳过该 Provider，`get_model()` 失败降级为 None，均不拖垮接口。
+- 修复测试集创建 / 更新的空消息校验文案误导的问题：空消息序列现为合法输入（先建命名条目、再在窗口里加消息），报错文案「messages 必须是非空消息数组」与实际语义矛盾，改为「messages 必须是消息数组」。
+- 修复 `send_streaming` 以已耗尽生成器调用基类 `super().send_streaming()` 的脆弱行为：基类实现不消费生成器（只置 `_has_send_oper` 并上报 Metric），空流路径全靠这次调用偶然补上发送标记；现显式置位 `_has_send_oper`（与真实适配器 tg/lark 一致），移除 super() 调用与其多余 Metric 任务。
+- 修复测试集运行记录清理后后台任务继续驱动的孤儿问题：`_prune_runs` 对超过 1 小时的悬挂运行只移除记录不取消任务，后台仍在真实投递测试消息且用户无法查询 / 中止；现清理时一并 `task.cancel()`。
+- 修复测试集编辑窗口「先保存再导出 / 运行」在保存失败后仍继续的问题：`saveEditor` 吞掉自身错误不返回结果，导出 / 运行在保存失败后仍执行（导出的是编辑器未保存内容、运行的是旧版本）。现 `saveEditor` 返回成功标志，失败即中止后续动作。
 
 ### 🔧 Refactor (代码结构)
 
@@ -74,6 +80,7 @@
 - 前端平台 / 配置档案下拉的选项构建收敛为 `platformOptions()` / `confOptions()` 共享辅助（组编辑与会话配置两个弹窗复用），消除重复实现，并让「档案已不存在」占位逻辑只保留一份。
 - `update_group` 的路由同步改为按会话 id 配对旧 / 新会话，不再依赖两个会话列表的顺序一致（原按位置 `zip` 属隐含假设）。
 - 测试集运行不再选「逐条 / 批量」模式：`run_testset` 请求体移除 `mode` 字段，仅 `{testset_id, sessions}`，发送节奏由测试集内 `batch_ranges` 决定（段驱动，语义见「批量发送范围」）。
+- 前端三个轮询器（`pollRun` / `pollTestsetRun` / `pollPending`）收敛为共享 `startPolling` 辅助：busy 标志跳过上一轮未完成时的重叠 tick（慢后端下不再堆积请求），fn 抛错只记日志不中断轮询；行为不变。
 
 ---
 

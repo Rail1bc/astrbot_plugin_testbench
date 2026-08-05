@@ -360,3 +360,27 @@ def test_frontend_no_parse_int_on_user_input():
         assert "parseInt(" not in _read_module(name), (
             f"{name}.js 仍用 parseInt 解析用户输入（会静默截断小数）"
         )
+
+
+def test_frontend_refresh_groups_defensive():
+    """组列表刷新须捕获失败并降级，初始化不被单点失败阻塞。
+
+    refreshGroups 曾无 try/catch：初始化 Promise.all 中任一 reject 会让
+    pollPending() 永不执行（在途消息条全部失效）。须：refreshGroups 内部捕获
+    降级（错误文案可见），且初始化改用 Promise.allSettled 隔离各步失败。
+    """
+    gl_js = _read_module("group_list")
+    app_js = _read_module("app")
+    assert "加载测试组失败" in gl_js, "refreshGroups 缺少失败降级文案"
+    assert "Promise.allSettled" in app_js, "初始化未用 Promise.allSettled 隔离失败"
+
+
+def test_frontend_polling_helper():
+    """轮询须经共享 startPolling 辅助，避免慢后端下请求堆积。
+
+    三个轮询器（pollRun / pollTestsetRun / pollPending）曾各自 setInterval
+    async tick：tick 耗时超间隔时下一轮重叠发起请求。startPolling 用 busy 标志
+    跳过重叠 tick，轮询辅助只此一处实现。
+    """
+    src = _read_module("app")
+    assert "function startPolling(" in src, "缺少共享轮询辅助 startPolling"

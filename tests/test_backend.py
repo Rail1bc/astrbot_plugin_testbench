@@ -123,6 +123,23 @@ async def test_send_streaming_reasoning_separated():
 
 
 @pytest.mark.asyncio
+async def test_send_streaming_empty_stream_marks_finished_and_sets_send_oper():
+    async def gen():
+        if False:  # 使函数成为空 async generator（永不产出）
+            yield
+
+    ev = VirtualMessageEvent.create(
+        session_id="vs_1", sender_id="u1", sender_name="用户1", text="hi"
+    )
+    await ev.send_streaming(gen())
+    assert ev.done_event.is_set()
+    assert ev.finished_at is not None
+    assert ev.result_summary()["status"] == "no_reply"
+    # 空流不调 send()，_has_send_oper 须显式置位，避免 stage.py 二次触发 LLM
+    assert ev._has_send_oper is True
+
+
+@pytest.mark.asyncio
 async def test_pipeline_done_signal():
     ev = VirtualMessageEvent.create(
         session_id="vs_1", sender_id="u1", sender_name="用户1", text="hi"
@@ -482,6 +499,8 @@ class FakeProvider:
         current_model: str | None = None,
         config: dict | None = None,
         raise_models: bool = False,
+        raise_meta: bool = False,
+        raise_get_model: bool = False,
     ) -> None:
         self._id = provider_id
         self._type = provider_type
@@ -489,8 +508,12 @@ class FakeProvider:
         self._current_model = current_model
         self.provider_config = config
         self._raise_models = raise_models
+        self._raise_meta = raise_meta
+        self._raise_get_model = raise_get_model
 
     def meta(self):
+        if self._raise_meta:
+            raise RuntimeError("broken meta")
         return SimpleNamespace(id=self._id, type=self._type)
 
     async def get_models(self) -> list[str]:
@@ -499,6 +522,8 @@ class FakeProvider:
         return list(self._models)
 
     def get_model(self) -> str | None:
+        if self._raise_get_model:
+            raise RuntimeError("broken get_model")
         return self._current_model
 
 
@@ -1276,6 +1301,28 @@ async def test_plugin_list_providers_models_failure(tmp_path):
     assert resp.status_code == 200
     body = json.loads(resp.body)
     assert body[0]["models"] == []
+
+
+@pytest.mark.asyncio
+async def test_plugin_list_providers_meta_and_get_model_failure(tmp_path):
+    # meta 抛异常的 provider 被跳过（不 500）；get_model 抛异常时降级为 None
+    context = FakeContext(
+        providers=[
+            FakeProvider("prov_bad_meta", "openai", raise_meta=True),
+            FakeProvider("prov_bad_model", "anthropic", raise_get_model=True),
+            FakeProvider("prov_ok", "deepseek", models=["m1"], current_model="m1"),
+        ]
+    )
+    plugin = main_mod.VirtualSessionPlugin(context)
+    plugin.group_mgr = VirtualGroupManager(data_dir=tmp_path)
+
+    resp = await plugin.list_providers()
+    assert resp.status_code == 200
+    body = json.loads(resp.body)
+    assert [p["id"] for p in body] == ["prov_bad_model", "prov_ok"]
+    assert body[0]["current_model"] is None  # get_model 失败降级
+    assert body[0]["models"] == []
+    assert body[1]["current_model"] == "m1"
 
 
 @pytest.mark.asyncio
@@ -2484,6 +2531,45 @@ async def test_testset_runner_batch_segment_abort_collects_started():
     assert all(s["test_id"] for s in rec["steps"])
 
 
+def test_testset_runner_segments_edge_cases():
+    # _segments 是纯切分：单条批量段 [i,i] 与完全平铺 [[0,n-1]] 的边界
+    tsr = TestsetRunner(FakeContext(), VirtualTestRunner(FakeContext()))
+    run = {"steps": [{} for _ in range(4)], "batch_ranges": [[1, 1]]}
+    assert tsr._segments(run) == [
+        ([0], False),
+        ([1], True),
+        ([2], False),
+        ([3], False),
+    ]
+    run = {"steps": [{} for _ in range(3)], "batch_ranges": [[0, 2]]}
+    assert tsr._segments(run) == [([0, 1, 2], True)]
+    run = {"steps": [{} for _ in range(3)], "batch_ranges": []}
+    assert tsr._segments(run) == [([0], False), ([1], False), ([2], False)]
+
+
+def test_testset_runner_list_runs_limit():
+    context = FakeContext()
+    tsr = TestsetRunner(context, VirtualTestRunner(context))
+    now = time.time()
+    base = {
+        "run_id": "",
+        "testset_id": "ts",
+        "testset_name": "",
+        "batch_ranges": [],
+        "status": "done",
+        "current_step": -1,
+        "steps": [],
+        "started_at": 0,
+        "finished_at": None,
+        "error": None,
+    }
+    tsr._runs = {
+        f"tr_{i}": dict(base, run_id=f"tr_{i}", started_at=now + i) for i in range(3)
+    }
+    runs = tsr.list_runs(limit=2)
+    assert [r["run_id"] for r in runs] == ["tr_2", "tr_1"]  # 倒序 + limit 截断
+
+
 def test_testset_runner_list_runs_and_prune():
     context = FakeContext()
     tsr = TestsetRunner(context, VirtualTestRunner(context))
@@ -2564,6 +2650,25 @@ async def test_plugin_testset_crud(tmp_path):
     resp = await call_handler(plugin.delete_testsets, {"ids": [ts["id"]]})
     assert json.loads(resp.body)["deleted"] == 1
     assert len(plugin.testset_store.list_testsets()) == 0
+
+
+@pytest.mark.asyncio
+async def test_plugin_testset_update_empty_messages(tmp_path):
+    # 已存在测试集允许整体替换为空消息序列（清空内容、保留命名条目）
+    plugin = main_mod.VirtualSessionPlugin(FakeContext())
+    plugin.testset_store = TestsetStore(data_dir=tmp_path)
+    ts = plugin.testset_store.create_testset("T", [{"text": "m1"}, {"text": "m2"}])
+
+    resp = await call_handler(
+        plugin.update_testset,
+        {"name": "清空", "messages": []},
+        ts["id"],
+    )
+    assert resp.status_code == 200
+    body = json.loads(resp.body)
+    assert body["name"] == "清空"
+    assert body["messages"] == []
+    assert body["batch_ranges"] == []
 
 
 @pytest.mark.asyncio

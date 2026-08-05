@@ -137,6 +137,9 @@ class VirtualMessageEvent(AstrMessageEvent):
         squash_plain() 再交给 send()；reasoning 与 audio_chunk 单独处理，
         与 webchat 事件的约定一致。
         """
+        # 显式置位发送操作标记（与真实适配器 tg/lark 一致）：空流路径不调
+        # send()，若不置位，stage.py 会把空回复当作未回复再次触发 LLM。
+        self._has_send_oper = True
         buffer: MessageChain | None = None
         reasoning_parts: list[str] = []
         async for chain in generator:
@@ -158,7 +161,9 @@ class VirtualMessageEvent(AstrMessageEvent):
         else:
             # 流式输出为空时也标记完成，避免运行器等待超时
             self._mark_finished()
-        await super().send_streaming(generator, use_fallback)
+        # 不再调用 super().send_streaming()：基类实现不消费 generator（只置
+        # _has_send_oper 并上报 Metric），传已耗尽的 generator 依赖其实现细节，
+        # 且对虚拟事件上报 Metric 是无意义噪音。
 
     def cleanup_temporary_local_files(self) -> None:
         """pipeline 执行完毕的信号（由 PipelineScheduler.execute 的 finally 调用）。"""

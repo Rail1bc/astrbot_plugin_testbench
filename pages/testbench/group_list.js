@@ -41,16 +41,23 @@ export function createGroupList(env) {
   } = env;
 
   async function refreshGroups() {
-    const data = await listGroups();
-    state.groups = data.groups || [];
-    // 清理已被删除的会话面板
-    const valid = new Set();
-    for (const g of state.groups) for (const s of g.sessions || []) valid.add(s.id);
-    const removed = state.openIds.filter((id) => !valid.has(id));
-    if (removed.length) {
-      state.openIds = state.openIds.filter((id) => valid.has(id));
-      state.pinnedIds = state.pinnedIds.filter((id) => valid.has(id));
-      renderPanels();
+    try {
+      const data = await listGroups();
+      state.groups = data.groups || [];
+      // 清理已被删除的会话面板
+      const valid = new Set();
+      for (const g of state.groups) for (const s of g.sessions || []) valid.add(s.id);
+      const removed = state.openIds.filter((id) => !valid.has(id));
+      if (removed.length) {
+        state.openIds = state.openIds.filter((id) => valid.has(id));
+        state.pinnedIds = state.pinnedIds.filter((id) => valid.has(id));
+        renderPanels();
+      }
+    } catch (err) {
+      // 与 refreshTestsets 一致降级：瞬态失败不阻塞初始化（否则 init 的
+      // Promise.all 被拒，pollPending 永不启动），列表留待用户点刷新重试
+      state.groups = [];
+      showRunStatus("error", "加载测试组失败: " + err.message);
     }
     renderGroupList();
     updateRunOverview();

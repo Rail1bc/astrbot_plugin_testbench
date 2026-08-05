@@ -235,7 +235,11 @@ class TestsetRunner:
             if run["status"] == "running":
                 if now - run["started_at"] > STALE_RUN_TIMEOUT:
                     self._runs.pop(run_id, None)
-                    self._tasks.pop(run_id, None)
+                    task = self._tasks.pop(run_id, None)
+                    if task is not None:
+                        # 停止孤儿驱动：运行记录已移除，无法再查询/中止，
+                        # 若不禁用，后台任务会继续驱动真实测试消息。
+                        task.cancel()
             elif now - (run["finished_at"] or now) > DONE_RUN_KEEP_SECONDS:
                 self._runs.pop(run_id, None)
                 self._tasks.pop(run_id, None)

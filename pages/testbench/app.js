@@ -243,11 +243,31 @@ function clearPanelStatus(panel) {
 
 // ---------- 发送 ----------
 
+// 轮询不重叠：上一轮 await 未完成时跳过本 tick（慢后端下避免请求堆积）；
+// fn 抛错只记日志不中断轮询。runNow 为 true 时立即执行首轮。返回 timer 供停止。
+function startPolling(fn, ms, runNow = true) {
+  let busy = false;
+  async function run() {
+    if (busy) return;
+    busy = true;
+    try {
+      await fn();
+    } catch (err) {
+      console.error("轮询任务出错:", err);
+    } finally {
+      busy = false;
+    }
+  }
+  const timer = setInterval(run, ms);
+  if (runNow) void run();
+  return timer;
+}
+
 // 轮询测试运行状态：每个会话完成时回调 onSession（单独刷新），全部完成回调 onAll
 function pollRun(testId, onSession, onAll) {
   const seen = new Set();
   let stopped = false;
-  const timer = setInterval(tick, 1000);
+  const timer = startPolling(tick, 1000);
   async function tick() {
     if (stopped) return;
     let record;
@@ -277,7 +297,6 @@ function pollRun(testId, onSession, onAll) {
       onAll(record);
     }
   }
-  void tick();
 }
 
 async function sendToOne(id, text) {
@@ -414,7 +433,7 @@ function pollTestsetRun(runId) {
   if (testsetPollTimer) clearInterval(testsetPollTimer);
   let stopped = false;
   let doneSteps = 0;
-  const timer = setInterval(tick, 1000);
+  const timer = startPolling(tick, 1000);
   testsetPollTimer = timer;
   async function tick() {
     if (stopped) return;
@@ -472,7 +491,6 @@ function pollTestsetRun(runId) {
     $("btn-abort-run").hidden = true;
     if (status) showRunStatus(status, text);
   }
-  void tick();
 }
 
 // 结果表格弹窗：行=步骤（文本 + 失败原因），列=会话（状态 + 耗时 + 断言 ✓/✗），
@@ -637,7 +655,8 @@ function renderPendingStrip(panel, entries) {
 
 // 全局轮询在途消息：一次查询，按会话分发到各面板（单发/群发/重新生成共用）
 function pollPending() {
-  setInterval(async () => {
+  // runNow=false 保持原行为：1s 后首轮（初始化时各面板可能尚未就绪）
+  startPolling(async () => {
     let pending = [];
     try {
       const data = await getPending();
@@ -652,7 +671,7 @@ function pollPending() {
       }
     }
     if (changed && align.isAlignMode()) align.reflowAlign();
-  }, 1000);
+  }, 1000, false);
 }
 
 // 群发栏实时显示：当前打开的会话总数 + 按所属测试组的分布
@@ -1087,5 +1106,7 @@ document.querySelectorAll(".rail-btn").forEach((btn) => {
 });
 
 await ready();
-await Promise.all([loadOptions(), refreshGroups(), refreshTestsets()]);
+// allSettled：三个初始化步骤相互独立，任一失败不阻塞其余步骤与在途轮询
+// （各步骤内部已自行降级，见 refreshGroups / refreshTestsets 的 catch）
+await Promise.allSettled([loadOptions(), refreshGroups(), refreshTestsets()]);
 pollPending();
