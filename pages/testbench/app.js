@@ -128,6 +128,8 @@ async function loadHistory(id) {
     const conversations = data.conversations || [];
     state.historyCache.set(id, conversations);
     renderChat(panel, conversations);
+    // 记录本次成功刷新时刻：完成的消息刷入历史后即从在途条移除
+    historyRefreshedAt.set(id, Date.now());
     if (align.isAlignMode()) align.reflowAlign();
   } catch (err) {
     chat.innerHTML = `<div class="empty">加载历史失败: ${escapeHtml(err.message)}</div>`;
@@ -361,22 +363,32 @@ const PENDING_STATUS_TEXT = {
   done: "完成",
 };
 
+// 各会话最近一次成功刷新历史的时刻（epoch 毫秒）：完成的消息一旦刷入历史
+// （气泡可见）即从在途条移除——条内只保留真正在途与完成后的短暂过渡
+const historyRefreshedAt = new Map();
+
 // 渲染单个面板的在途消息条：显示正在处理与排队中的消息及其当前阶段；
+// 已完成且已刷入会话历史的消息不再展示（历史气泡即完成指示）。
 // 返回是否发生变化（供轮询器决定是否重排对齐高度）
 function renderPendingStrip(panel, entries) {
   const el = panel.querySelector(".panel-pending");
   if (!el) return false;
-  entries.sort((a, b) => (a.created_at || 0) - (b.created_at || 0));
-  const key = entries.map((e) => `${e.entry_id}:${e.status}`).join(",");
+  const refreshedAt = historyRefreshedAt.get(panel.dataset.id) || 0;
+  // status_at 为后端 epoch 秒，historyRefreshedAt 为 epoch 毫秒；条目
+  // 完成于最近一次历史刷新之前 ⇒ 回复已在气泡中，无需再展示
+  const visible = entries
+    .filter((e) => e.status !== "done" || (e.status_at || 0) * 1000 > refreshedAt)
+    .sort((a, b) => (a.created_at || 0) - (b.created_at || 0));
+  const key = visible.map((e) => `${e.entry_id}:${e.status}`).join(",");
   if (key === el.dataset.pendingKey) return false;
   el.dataset.pendingKey = key;
-  if (!entries.length) {
+  if (!visible.length) {
     el.hidden = true;
     el.innerHTML = "";
     return true;
   }
   el.hidden = false;
-  el.innerHTML = entries
+  el.innerHTML = visible
     .map((e) => {
       const text =
         e.text && e.text.length > 24 ? e.text.slice(0, 24) + "…" : e.text || "";

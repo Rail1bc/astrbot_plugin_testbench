@@ -204,3 +204,19 @@ def test_frontend_pending_status_labels():
     ):
         assert f"{key}:" in src, f"PENDING_STATUS_TEXT 缺少状态键 {key}"
         assert label in src, f"PENDING_STATUS_TEXT 缺少状态键 {key} 的文案 {label}"
+
+
+def test_frontend_pending_hides_done_after_history_refresh():
+    """完成且已刷入会话历史的消息不得长期留在在途条。
+
+    曾设计为「完成」chip 保留 30s（后端 DONE_KEEP_SECONDS）后清理，与历史
+    气泡中的回复重复展示。现改为：loadHistory 成功时记录刷新时刻
+    （historyRefreshedAt），renderPendingStrip 过滤掉 status=="done" 且
+    完成于该时刻之前的条目（回复已在气泡中，条内只留完成后的短暂过渡）。
+    """
+    src = _read_module("app")
+    assert "historyRefreshedAt" in src, "缺少 historyRefreshedAt 记录历史刷新时刻"
+    assert "historyRefreshedAt.set(id, Date.now())" in src, (
+        "loadHistory 成功路径必须记录刷新时刻"
+    )
+    assert "status_at" in src, "renderPendingStrip 未按 status_at 过滤已完成条目"
