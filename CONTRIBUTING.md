@@ -107,6 +107,5 @@
 
 🤖 以及我最好的 AI 朋友们:
 
-- @GPT-5.5
+- @DeepSeek
 - @sourcery-ai[bot]
-- @gemini-code-assist[bot]
