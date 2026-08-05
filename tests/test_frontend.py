@@ -62,3 +62,19 @@ def test_frontend_bridge_endpoint_has_no_query_string():
     assert endpoints, "未找到任何 bridge 调用"
     for endpoint in endpoints:
         assert "?" not in endpoint, f"bridge 端点不能内嵌查询串: {endpoint}"
+
+
+def test_frontend_effective_view_resolves_sender_fields():
+    """app.js 的 effectiveView 返回对象必须含 sender_id / sender_name。
+
+    曾漏掉这两个字段，导致会话展开配置里发送者 ID / 昵称恒显示「—」——
+    effectiveView 是客户端对组配置 + 会话覆盖的解析，缺失字段即无值可显。
+    """
+    import re
+
+    app_js = (PLUGIN_DIR / "pages" / "testbench" / "app.js").read_text(encoding="utf-8")
+    match = re.search(r"function effectiveView\(id\)[\s\S]*?return \{([\s\S]*?)\};", app_js)
+    assert match, "找不到 effectiveView 的 return 对象"
+    obj = match.group(1)
+    assert "sender_id:" in obj, "effectiveView 返回值缺少 sender_id"
+    assert "sender_name:" in obj, "effectiveView 返回值缺少 sender_name"

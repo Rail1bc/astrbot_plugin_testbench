@@ -95,6 +95,8 @@ function effectiveView(id) {
     name: session.name || session.id,
     platform_id: session.platform_id || group.platform_id || "webchat",
     conf_id: confId,
+    sender_id: session.sender_id || group.sender_id || "testbench",
+    sender_name: session.sender_name || group.sender_name || "测试台",
     group_name: group.name,
   };
 }
