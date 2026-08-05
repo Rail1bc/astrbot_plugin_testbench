@@ -132,12 +132,19 @@ function openAll(gid) {
   renderGroupList();
 }
 
+// 各会话历史刷新序号：并发请求（群发反馈/测试集步骤/手动刷新）可能乱序返回，
+// 只采纳最后一次发起的响应，丢弃乱序迟到的旧快照（防历史回退与旧错误覆盖新内容）
+const historySeq = new Map();
+
 async function loadHistory(id) {
   const panel = state.panelEls.get(id);
   if (!panel) return;
   const chat = panel.querySelector(".chat");
+  const seq = (historySeq.get(id) || 0) + 1;
+  historySeq.set(id, seq);
   try {
     const data = await getHistory(id);
+    if (historySeq.get(id) !== seq) return; // 已有更新的刷新在途，丢弃本次迟到响应
     const conversations = data.conversations || [];
     state.historyCache.set(id, conversations);
     renderChat(panel, conversations);
@@ -145,6 +152,7 @@ async function loadHistory(id) {
     historyRefreshedAt.set(id, Date.now());
     if (align.isAlignMode()) align.reflowAlign();
   } catch (err) {
+    if (historySeq.get(id) !== seq) return; // 迟到失败同样丢弃，不覆盖较新内容
     chat.innerHTML = `<div class="empty">加载历史失败: ${escapeHtml(err.message)}</div>`;
   }
 }
@@ -412,6 +420,10 @@ function segmentLabel(run, idx) {
   return `第 ${idx + 1}/${run.steps.length} 步`;
 }
 
+// 暂存报告上限：超出丢弃最旧（防 runReports 无界增长——只增不减的 Map 会
+// 随长时间使用持续堆积内存）
+const MAX_STASHED_REPORTS = 20;
+
 // 测试集运行进度：由 /events 的 testset 事件（完整 run 快照）驱动。
 // 新完成的步骤经 applySessionFeedback 逐会话反馈（与手动群发同路径）；
 // 终态不自动弹窗，报告暂存 state.runReports 供「查看报告」按需查看。
@@ -426,10 +438,13 @@ function handleTestsetEvent(runId, run) {
       "warn",
       `测试集「${name}」运行中：${segmentLabel(run, idx)} — ${stepText}`,
     );
-    // 新完成的步骤 → 逐会话反馈（面板耗时 + 逐会话历史刷新，与手动群发一致）
+    // 新完成的步骤 → 逐会话反馈（面板耗时 + 逐会话历史刷新，与手动群发一致）。
+    // 去重键带 runId 前缀：不同运行的同一序号步骤互不污染（同一集合被并发/
+    // 历史残留的运行共用时不会误跳过新运行的完成步骤）
     (run.steps || []).forEach((step, i) => {
-      if (step.status === "done" && !state.testsetReportedSteps.has(i)) {
-        state.testsetReportedSteps.add(i);
+      const key = `${runId}:${i}`;
+      if (step.status === "done" && !state.testsetReportedSteps.has(key)) {
+        state.testsetReportedSteps.add(key);
         for (const r of step.results || []) applySessionFeedback(r);
       }
     });
@@ -441,6 +456,9 @@ function handleTestsetEvent(runId, run) {
   $("btn-abort-run").hidden = true;
   state.runReports[runId] = run;
   state.latestReportRunId = runId;
+  // 报告无界增长防护：只保留最近 MAX_STASHED_REPORTS 份，超出丢弃最旧
+  const keys = Object.keys(state.runReports);
+  while (keys.length > MAX_STASHED_REPORTS) delete state.runReports[keys.shift()];
   $("btn-view-report").hidden = false;
   const failSteps = run.steps.filter((s) => s.status === "error").length;
   // 断言未通过（✗）与步骤/会话错误是两回事：断言失败只落在结果单元格，
@@ -656,7 +674,9 @@ async function reconcileEvents() {
     try {
       rec = await runStatus(tid);
     } catch (err) {
-      continue; // 运行记录已被清理，忽略
+      // 记录已被清理（404）：consumer 永远等不到 test_done，须释放防 Map 泄漏
+      testConsumers.delete(tid);
+      continue;
     }
     for (const r of rec.results || []) {
       if (cons.seen.has(r.session_id)) continue;

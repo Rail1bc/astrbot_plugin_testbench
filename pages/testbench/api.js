@@ -132,14 +132,3 @@ export async function subscribeEvents(onEvent, onError) {
   });
   return eventSub;
 }
-
-export async function unsubscribeEvents() {
-  if (eventSub) {
-    try {
-      await bridge.unsubscribeSSE(eventSub);
-    } catch (err) {
-      console.error("退订事件流失败:", err);
-    }
-  }
-  eventSub = null;
-}

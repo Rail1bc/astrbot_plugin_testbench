@@ -228,6 +228,14 @@ class TestsetRunner:
     def status(self, run_id: str) -> dict | None:
         return self._runs.get(run_id)
 
+    def has_active_run(self) -> bool:
+        """是否存在运行中的测试集运行。
+
+        前端进度是单槽状态（activeRunId / 取消按钮 / 去重集合都只支持一个
+        运行），故同一时刻只允许一个测试集运行，由 run_testset 入口守卫。
+        """
+        return any(r["status"] == "running" for r in self._runs.values())
+
     def list_runs(self, limit: int = 10) -> list[dict]:
         """最近运行摘要（按开始时间倒序）。"""
         self._prune_runs()

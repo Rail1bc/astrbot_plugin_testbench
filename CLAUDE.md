@@ -117,6 +117,7 @@ astrbot_plugin_testbench/
   - 全部段结束后：`run.status = 有 error 步 ? "error" : "done"`（仅当未 abort）。
   - 单步超时安全阀 `TESTSET_STEP_TIMEOUT = 600`；运行记录按 `DONE_RUN_KEEP_SECONDS`（10min）/ `STALE_RUN_TIMEOUT`（1h）清理，`start_run` 与 `list_runs` 时 `_prune_runs()`。
   - `status(run_id)` / `list_runs(limit=10)`（倒序摘要，页面重开找回；摘要无 mode 字段）/ `abort(run_id)`。
+  - **单运行守卫**：`has_active_run()` 供 `run_testset` 入口拒绝并发启动（400「已有测试集运行中」）——前端进度是单槽状态（activeRunId / 取消按钮 / 步骤去重集合只支持一个运行），两个运行的事件流会互相污染。
 
 ### 事件驱动（event_bus.py + /events SSE）
 
@@ -128,7 +129,7 @@ astrbot_plugin_testbench/
 
 ### 前端（pages/testbench/）
 
-- `api.js`：`window.AstrBotPluginPage` bridge 的 `apiGet`/`apiPost` 统一封装（bridge 的响应解析是 `response.data?.data ?? response.data`）+ `subscribeEvents`/`unsubscribeEvents`（`subscribeSSE("events")` 的单一全局订阅封装，断线时自动置空，由页面延迟重连）。
+- `api.js`：`window.AstrBotPluginPage` bridge 的 `apiGet`/`apiPost` 统一封装（bridge 的响应解析是 `response.data?.data ?? response.data`）+ `subscribeEvents`（`subscribeSSE("events")` 的单一全局订阅封装，断线时自动置空，由页面延迟重连）。
 - `state.js`：全部共享可变状态收进一个 `state` 对象（groups/platforms/confs/openIds/pinnedIds/panelEls/historyCache/expandedGroups/expandedSessions/testsets/selectedTestsetId/activeRunId/pendingEntries/runReports/latestReportRunId/testsetReportedSteps）。ES module 顶层绑定无法跨模块共享可变值，故集中到叶子模块，各模块从 `state` 读写，保持依赖单向。
 - `utils.js`：纯工具与配置解析（`escapeHtml`/`statusText`/`confName`/`platformName`/`findSession`/`effectiveView`），唯一依赖 `state`。`effectiveView` 是后端 `effective()` 的客户端镜像（曾漏 sender 字段导致显示「—」，有防回归测试）。
 - `modal.js`：自绘弹窗（iframe 沙箱禁用原生 alert/confirm），回调状态 `modalCallback` 封装在模块内部，对外只暴露 `openModal`/`showModal`/`hideModal`。
@@ -186,15 +187,15 @@ astrbot_plugin_testbench/
 ## 测试与验证
 
 > **开发流程（2026-08-05 起）**：本地**不跑**测试，修改直接提交推送到 `dev` 分支，
-> 由 GitHub Actions 自动把关——push 到 dev 触发 `pytest.yml`（143 个测试 +
+> 由 GitHub Actions 自动把关——push 到 dev 触发 `pytest.yml`（145 个测试 +
 > 前端 JS 语法检查 `js-check`：node --check 九个页面脚本）+ `ruff-format.yml`；
 > dev 验证通过后合并到 `main`，metadata.yaml 变更即触发 release.yml 自动发版。
 > 本地命令（下面的 pytest/ruff）仅在需要主动排查时使用。
 
 测试随插件仓库维护（`tests/`，可与主仓库无关地推送、供协作者运行）。
 
-- `tests/test_backend.py`：后端单元测试（124 个），需要 astrbot（PyPI 包，插件运行时依赖）。以 **namespace package** 加载插件：`sys.path.insert(0, str(REPO_ROOT.parent))` 后 `import astrbot_plugin_testbench.*`——插件模块用相对导入（`from .group_store import ...`），必须按包加载，这与 AstrBot 在 data/plugins 下加载插件的方式一致。未安装 astrbot 时整组跳过（`pytest.importorskip`）。
-- `tests/test_frontend.py`：前端脚本静态检查（19 个），零依赖，任何环境可运行。
+- `tests/test_backend.py`：后端单元测试（125 个），需要 astrbot（PyPI 包，插件运行时依赖）。以 **namespace package** 加载插件：`sys.path.insert(0, str(REPO_ROOT.parent))` 后 `import astrbot_plugin_testbench.*`——插件模块用相对导入（`from .group_store import ...`），必须按包加载，这与 AstrBot 在 data/plugins 下加载插件的方式一致。未安装 astrbot 时整组跳过（`pytest.importorskip`）。
+- `tests/test_frontend.py`：前端脚本静态检查（20 个），零依赖，任何环境可运行。
 
 本地运行（用主仓库 venv，bash cwd 不稳定，命令先 `cd /e/AstrBot` 或 `git -C` 插件目录）：
 

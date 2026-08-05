@@ -2827,6 +2827,40 @@ async def test_plugin_run_testset_ok(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_plugin_run_testset_rejects_concurrent_run(tmp_path):
+    """并发测试集运行守卫：已有运行中时启动新运行返回 400。
+
+    前端进度是单槽状态（activeRunId / 取消按钮 / 步骤去重集合只支持一个
+    运行），两个运行的事件流会互相污染，故 run_testset 入口必须拒绝。
+    """
+    queue = asyncio.Queue()
+    plugin = main_mod.VirtualSessionPlugin(FakeContext(queue))
+    plugin.group_mgr = VirtualGroupManager(data_dir=tmp_path)
+    plugin.testset_store = TestsetStore(data_dir=tmp_path)
+    group = plugin.group_mgr.create_group("组A", count=1)
+    sid = group["sessions"][0]["id"]
+    ts = plugin.testset_store.create_testset("T", [{"text": "m1"}])
+
+    # 不消费队列启动运行 → 步骤悬挂，run 保持 running
+    resp = await call_handler(
+        plugin.run_testset, {"testset_id": ts["id"], "sessions": [sid]}
+    )
+    assert resp.status_code == 200
+    assert plugin.testset_runner.has_active_run() is True
+
+    # 已有运行中 → 第二个运行被拒绝（400）
+    resp2 = await call_handler(
+        plugin.run_testset, {"testset_id": ts["id"], "sessions": [sid]}
+    )
+    assert resp2.status_code == 400
+
+    # 收尾：放行悬挂的 _await_event（事件入队但无人消费，消息已清理即完成）
+    while not queue.empty():
+        queue.get_nowait().cleanup_temporary_local_files()
+    await asyncio.sleep(0.01)
+
+
+@pytest.mark.asyncio
 async def test_plugin_testset_run_status_abort_runs(tmp_path):
     queue = asyncio.Queue()
     plugin = main_mod.VirtualSessionPlugin(FakeContext(queue))

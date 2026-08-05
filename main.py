@@ -782,6 +782,13 @@ class VirtualSessionPlugin(Star):
             found = {s["id"] for s in session_objs}
             missing = [sid for sid in requested if sid not in found]
             return error_response(f"未找到指定的虚拟会话: {missing}", status_code=404)
+        if self.testset_runner.has_active_run():
+            # 前端进度是单槽状态，同时只允许一个测试集运行，防止两个运行的
+            # 事件流互相污染 activeRunId / 步骤去重集合
+            return error_response(
+                "已有测试集运行中，请先等待其完成或取消后再启动新的运行",
+                status_code=400,
+            )
         run_id = self.testset_runner.start_run(testset, session_objs)
         return json_response({"run_id": run_id, "steps": len(testset["messages"])})
 

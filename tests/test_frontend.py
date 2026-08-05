@@ -400,7 +400,27 @@ def test_frontend_event_driven_feedback():
     )
     assert "setInterval(" not in app_js, "app.js 仍含 setInterval 轮询"
     assert "subscribeEvents(" in api_js, "api.js 缺少 SSE 订阅封装 subscribeEvents"
-    assert "unsubscribeEvents(" in api_js, "api.js 缺少 SSE 退订封装 unsubscribeEvents"
+
+
+def test_frontend_event_driven_robustness():
+    """事件驱动的健壮性修复：并发/历史残留不互相污染，状态有界、不泄漏。
+
+    对应代码审查 HIGH（并发测试集运行污染前端单槽状态）与 MEDIUM（reconcile
+    404 时 consumer 泄漏、runReports 无界增长、历史刷新乱序）修复：
+    - 测试集步骤去重键带 runId 前缀（不同运行同序号步骤互不干扰）；
+    - reconcile 拉取失败时释放 consumer（防 Map 永久泄漏）；
+    - 历史刷新带序号，乱序迟到响应被丢弃（防历史回退）；
+    - 暂存报告有上限，超出丢最旧（防内存无界增长）。
+    """
+    app_js = _read_module("app")
+    assert "`${runId}:${i}`" in app_js, "步骤去重键未带 runId 前缀（并发运行会互污染）"
+    assert "testConsumers.delete(tid)" in app_js, (
+        "reconcile 失败时未释放 consumer（泄漏）"
+    )
+    assert "const historySeq = new Map()" in app_js, "缺少历史刷新序号守卫 historySeq"
+    assert "historySeq.get(id) !== seq" in app_js, "历史刷新未丢弃乱序迟到响应"
+    assert "const MAX_STASHED_REPORTS = 20" in app_js, "缺少暂存报告上限常量"
+    assert "Object.keys(state.runReports)" in app_js, "报告暂存缺少有界清理"
 
 
 def test_frontend_report_on_demand():
