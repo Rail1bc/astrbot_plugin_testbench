@@ -662,7 +662,7 @@ async function openHistoryEditor(id) {
   const hint = document.createElement("p");
   hint.className = "hint";
   hint.textContent =
-    "保存将用此 JSON 完全替换对话历史：未列出的对话会被删除，不带 conversation_id 的对象会新建对话。仅建议有能力的用户修改；改坏可用会话的「重置」恢复。";
+    "保存将用此 JSON 完全替换对话历史：未列出的对话会被删除，不带 conversation_id 的对象会新建对话，conversation_id 在库中已不存在的对象也会新建占位对话。仅建议有能力的用户修改；改坏可用会话的「重置」恢复。";
   const wrap = document.createElement("div");
   wrap.className = "form-col";
   wrap.append(ta, hint);

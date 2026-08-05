@@ -370,6 +370,9 @@ class VirtualSessionPlugin(Star):
 
         - 带已存在 ``conversation_id`` 的对话更新其内容（历史与标题）；
         - 不带 ``conversation_id`` 的对象新建对话；
+        - 带不存在的 ``conversation_id``（会话从未产生对话，或历史被重置/
+          删除后编辑器仍是旧 JSON）同样新建对话——按整体替换语义落盘，
+          而不是报错导致保存失败；
         - 数据库中未被列出的对话将被删除。
 
         语义与原生对话管理的一致：编辑器展示完整结构，保存即整体替换，
@@ -416,18 +419,19 @@ class VirtualSessionPlugin(Star):
         existing = await conv_mgr.get_conversations(umo)
         existing_cids = {conv.cid for conv in existing}
 
-        # 引用了不存在的 conversation_id 时报错，避免把笔误静默变成新建对话
-        for item in normalized:
-            if item["cid"] and item["cid"] not in existing_cids:
-                return error_response(
-                    f"conversation_id {item['cid']} 不存在", status_code=400
-                )
-
         for item in normalized:
             if item["cid"]:
-                await conv_mgr.update_conversation(
-                    umo, item["cid"], history=item["history"], title=item["title"]
-                )
+                if item["cid"] in existing_cids:
+                    await conv_mgr.update_conversation(
+                        umo, item["cid"], history=item["history"], title=item["title"]
+                    )
+                else:
+                    # 引用的 conversation_id 在库中不存在：会话从未产生过对话，
+                    # 或历史被重置/删除后编辑器里仍是旧 JSON。按整体替换语义
+                    # 新建占位对话（新生成 id），而不是报错导致保存失败。
+                    await conv_mgr.new_conversation(
+                        umo, content=item["history"], title=item["title"]
+                    )
             else:
                 await conv_mgr.new_conversation(
                     umo, content=item["history"], title=item["title"]

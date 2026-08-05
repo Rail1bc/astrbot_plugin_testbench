@@ -1100,7 +1100,8 @@ async def test_plugin_save_history_invalid(tmp_path):
     )
     assert resp.status_code == 400
 
-    # 引用了不存在的 conversation_id
+    # 引用了不存在的 conversation_id 不再报错（占位新建，见
+    # test_plugin_save_history_creates_placeholder_for_missing_cid）
     resp = await call_handler(
         plugin.save_history,
         {
@@ -1113,8 +1114,39 @@ async def test_plugin_save_history_invalid(tmp_path):
             ],
         },
     )
-    assert resp.status_code == 400
-    assert "no_such_cid" in json.loads(resp.body)["message"]
+    assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_plugin_save_history_creates_placeholder_for_missing_cid(tmp_path):
+    """会话从未产生对话（或历史被重置/删除）时，引用不存在的 conversation_id
+    按整体替换语义新建占位对话，而不是报错。"""
+    conv_mgr = FakeConvManager()
+    plugin = main_mod.VirtualSessionPlugin(FakeContext(conv_mgr=conv_mgr))
+    plugin.group_mgr = VirtualGroupManager(data_dir=tmp_path)
+    group = plugin.group_mgr.create_group("组A", count=1)
+    session = group["sessions"][0]
+    umo = umo_of(plugin.group_mgr.effective(group, session))
+    assert await conv_mgr.get_conversations(umo) == []
+
+    resp = await call_handler(
+        plugin.save_history,
+        {
+            "id": session["id"],
+            "conversations": [
+                {
+                    "conversation_id": "phantom_cid",
+                    "title": "占位对话",
+                    "history": [{"role": "user", "content": "你好"}],
+                }
+            ],
+        },
+    )
+    assert resp.status_code == 200
+    convs = await conv_mgr.get_conversations(umo)
+    assert len(convs) == 1
+    assert convs[0].title == "占位对话"
+    assert json.loads(convs[0].history) == [{"role": "user", "content": "你好"}]
 
 
 @pytest.mark.asyncio

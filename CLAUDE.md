@@ -111,7 +111,7 @@ astrbot_plugin_testbench/
 | POST | /sessions/update | update_session | 会话配置覆盖（null 恢复继承组配置） |
 | POST | /sessions/delete | delete_sessions | 删会话 + 联动清理 |
 | GET | /sessions/\<id\>/history | session_history | 对话历史（LLM 上下文消息列表） |
-| POST | /sessions/history/save | save_history | 整体替换对话历史（带 cid 更新、无 cid 新建、未列出删除；JSON 编辑器保存） |
+| POST | /sessions/history/save | save_history | 整体替换对话历史（带 cid 更新、无 cid 新建、带不存在的 cid 也新建占位对话、未列出删除；JSON 编辑器保存） |
 | POST | /sessions/history/regenerate | regenerate_history | 截断该轮之后历史并重发该轮 user 消息 |
 | POST | /reset | reset_sessions | 重置会话对话历史 |
 | POST | /test/run | run_test | 投递消息，立即返回 test_id |
