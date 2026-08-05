@@ -15,7 +15,7 @@
 ### 消息处理路径（核心机制）
 
 ```
-页面 (pages/virtual-session/)  ->  Web API (main.py)  ->  VirtualTestRunner.start()
+页面 (pages/testbench/)  ->  Web API (main.py)  ->  VirtualTestRunner.start()
   -> context.get_event_queue()  ->  EventBus -> PipelineScheduler.execute()
   -> 完整 pipeline（唤醒检查→白名单→会话状态→限流→内容安全→预处理→插件+LLM→装饰→回复）
   -> VirtualMessageEvent.send()/send_streaming() 捕获回复（不外发）
@@ -35,7 +35,7 @@ astrbot_plugin_testbench/
 ├─ stats.py             # 耗时统计纯函数（duration_stats：min/max/avg/p50/p95）
 ├─ virtual_event.py     # VirtualMessageEvent：捕获 send/流式结果，携带完成信号
 ├─ pyproject.toml       # 插件仓库自包含的 ruff / pytest 配置（不依赖主仓库）
-├─ pages/virtual-session/
+├─ pages/testbench/
 │  ├─ index.html        # 页面骨架（表单/面板的静态 HTML，select 初始为空或仅默认项）
 │  ├─ app.js            # 页面主逻辑（1118 行，ES module）
 │  ├─ api.js            # bridge 调用的统一封装（listPlatforms/listConfs/...）
@@ -90,7 +90,7 @@ astrbot_plugin_testbench/
 - `status(test_id)` 返回 `{total, done, results[], stats}`，前端轮询实现逐会话独立刷新。
 - 运行记录保存在内存 `self._runs`，完成超过 10 分钟自动清理。
 
-### 前端（pages/virtual-session/）
+### 前端（pages/testbench/）
 
 - `api.js`：`window.AstrBotPluginPage` bridge 的 `apiGet`/`apiPost` 统一封装。bridge 的响应解析是 `response.data?.data ?? response.data`（json_response 的 body 直接作为 data）。
 - `chat.js`：`createChatRenderer(alignGetter)` 集中聊天内容渲染（气泡 `bubbleFor` / 思维链 `reasoningSection` / 轮次分组 `groupTurns` 与对齐渲染 `renderAligned`）。align 以 getter 注入（渲染时才取），避免与 `createAlignController` 互相创建的循环依赖；`app.js` 提供 `renderChat` 包装函数注入 align 控制器并传给 align.js 的 env。
@@ -132,14 +132,14 @@ astrbot_plugin_testbench/
 ## 测试与验证
 
 > **开发流程（2026-08-05 起）**：本地**不跑**测试，修改直接提交推送到 `dev` 分支，
-> 由 GitHub Actions 自动把关——push 到 dev 触发 `pytest.yml`（63 个测试 +
+> 由 GitHub Actions 自动把关——push 到 dev 触发 `pytest.yml`（77 个测试 +
 > 前端 JS 语法检查 `js-check`：node --check 四个页面脚本）+ `ruff-format.yml`；
 > dev 验证通过后合并到 `main`，metadata.yaml 变更即触发 release.yml 自动发版。
 > 本地命令（下面的 pytest/ruff）仅在需要主动排查时使用。
 
 测试随插件仓库维护（`tests/`，可与主仓库无关地推送、供协作者运行）。
 
-- `tests/test_backend.py`：后端单元测试（61 个），需要 astrbot（PyPI 包，插件运行时依赖）。以 **namespace package** 加载插件：`sys.path.insert(0, str(REPO_ROOT.parent))` 后 `import astrbot_plugin_testbench.*`——插件模块用相对导入（`from .group_store import ...`），必须按包加载，这与 AstrBot 在 data/plugins 下加载插件的方式一致。未安装 astrbot 时整组跳过（`pytest.importorskip`）。
+- `tests/test_backend.py`：后端单元测试（75 个），需要 astrbot（PyPI 包，插件运行时依赖）。以 **namespace package** 加载插件：`sys.path.insert(0, str(REPO_ROOT.parent))` 后 `import astrbot_plugin_testbench.*`——插件模块用相对导入（`from .group_store import ...`），必须按包加载，这与 AstrBot 在 data/plugins 下加载插件的方式一致。未安装 astrbot 时整组跳过（`pytest.importorskip`）。
 - `tests/test_frontend.py`：前端脚本静态检查（2 个），零依赖，任何环境可运行。
 
 本地运行（用主仓库 venv，bash cwd 不稳定，命令先 `cd /e/AstrBot` 或 `git -C` 插件目录）：

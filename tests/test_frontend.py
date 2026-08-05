@@ -7,7 +7,7 @@
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-PLUGIN_DIR = REPO_ROOT  # 插件根目录即仓库根，页面文件在 pages/virtual-session/
+PLUGIN_DIR = REPO_ROOT  # 插件根目录即仓库根，页面文件在 pages/testbench/
 
 
 # ---------- 前端脚本静态检查 ----------
@@ -21,9 +21,7 @@ def test_frontend_no_import_redeclaration():
     """
     import re
 
-    app_js = (PLUGIN_DIR / "pages" / "virtual-session" / "app.js").read_text(
-        encoding="utf-8"
-    )
+    app_js = (PLUGIN_DIR / "pages" / "testbench" / "app.js").read_text(encoding="utf-8")
 
     imports = set()
     for match in re.finditer(r"import\s*\{([^}]*)\}\s*from", app_js):
@@ -59,9 +57,7 @@ def test_frontend_bridge_endpoint_has_no_query_string():
     """
     import re
 
-    api_js = (PLUGIN_DIR / "pages" / "virtual-session" / "api.js").read_text(
-        encoding="utf-8"
-    )
+    api_js = (PLUGIN_DIR / "pages" / "testbench" / "api.js").read_text(encoding="utf-8")
     endpoints = re.findall(r'api(?:Get|Post)\(\s*["`]([^"`]*)["`]', api_js)
     assert endpoints, "未找到任何 bridge 调用"
     for endpoint in endpoints:

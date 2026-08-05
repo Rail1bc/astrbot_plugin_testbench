@@ -160,7 +160,7 @@ export function createChatRenderer(alignGetter) {
         el.appendChild(document.createTextNode("…"));
       }
     }
-    // 悬停操作：重新生成（仅 user 发言）；整体历史的编辑走面板头部的「历史」JSON 编辑器
+    // 悬停操作：重新生成（仅 user 发言）；整体历史的编辑走面板头部的「编辑」JSON 编辑器
     if (role === "user") {
       const actions = document.createElement("div");
       actions.className = "msg-actions";

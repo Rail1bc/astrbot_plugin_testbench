@@ -35,6 +35,10 @@ let expandedSessions = new Set();
 
 const MAX_SESSIONS = 500;
 
+// 配置档案下拉中代表「显式使用默认配置档案（不绑定）」的哨兵值；
+// 与后端约定：保存时映射为 conf_id=""，"" 表示不绑定档案而非继承组配置。
+const CONF_DEFAULT = "__default__";
+
 function escapeHtml(value) {
   if (value === null || value === undefined) return "";
   return String(value)
@@ -234,7 +238,7 @@ function renderGroupList() {
     item.querySelector('[data-action="edit"]').addEventListener("click", () => openGroupSettings(g.id));
     item.querySelector('[data-action="delete-group"]').addEventListener("click", () => deleteGroup(g.id));
 
-    // 会话行：头部点击展开配置，按钮走各自操作
+    // 会话行：头部点击展开配置；行内操作按钮（打开/删除）走各自处理
     item.querySelectorAll(".session-item").forEach((sItem) => {
       const sid = sItem.dataset.id;
       const sHead = sItem.querySelector(".session-head");
@@ -522,12 +526,12 @@ function openSettings(sid) {
   const selC = document.createElement("select");
   selC.innerHTML =
     `<option value="">使用组配置（${group.conf_id ? escapeHtml(confName(group.conf_id)) : "默认"}）</option>` +
-    `<option value="__default__">默认配置（不绑定档案）</option>` +
+    `<option value="${CONF_DEFAULT}">默认配置（不绑定档案）</option>` +
     confs
       .filter((c) => c.id !== "default")
       .map((c) => `<option value="${escapeHtml(c.id)}">${escapeHtml(c.name)}</option>`)
       .join("");
-  if (session.conf_id === "") selC.value = "__default__";
+  if (session.conf_id === "") selC.value = CONF_DEFAULT;
   else if (session.conf_id) selC.value = session.conf_id;
   else selC.value = "";
 
@@ -558,7 +562,7 @@ function openSettings(sid) {
       await updateSession({
         id: sid,
         platform_id: selP.value || null,
-        conf_id: selC.value === "__default__" ? "" : selC.value || null,
+        conf_id: selC.value === CONF_DEFAULT ? "" : selC.value || null,
         sender_id: inpId.value.trim() || null,
         sender_name: inpName.value.trim() || null,
       });

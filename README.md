@@ -47,7 +47,7 @@ data/plugins/astrbot_plugin_testbench/
 ├─ metadata.yaml         # 插件元数据信息
 ├─ CHANGELOG.md          # 更新日志
 ├─ README.md             # 插件说明文档
-├─ pages/virtual-session/ # 插件页面（前端：app.js / api.js / align.js / style.css）
+├─ pages/testbench/ # 插件页面（前端：app.js / api.js / align.js / style.css）
 └─ .github/              # GitHub 工作流与协作模板
 ```
 

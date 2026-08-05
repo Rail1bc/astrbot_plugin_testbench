@@ -49,6 +49,6 @@ jobs:
           set -euo pipefail
           # ES module import 需 .mjs 后缀才被 node 识别；与本地验证方式一致。
           for f in app api align chat; do
-            cp "pages/virtual-session/$f.js" "$RUNNER_TEMP/$f.mjs"
+            cp "pages/testbench/$f.js" "$RUNNER_TEMP/$f.mjs"
             node --check "$RUNNER_TEMP/$f.mjs"
           done

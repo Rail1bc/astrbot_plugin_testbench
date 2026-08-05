@@ -31,6 +31,12 @@
 
 - 修复 `run_ruff.bat` 找不到虚拟环境激活脚本的问题：脚本查找的目录名 `venv` 实际为 `.venv`（带点前缀），此前运行恒在 STEP 2 失败。
 - 修复会话「配置 / 编辑配置」按钮无效的问题：`openSettings` 构建弹窗标题时引用了作用域内不存在的变量 `s`（解构出的名称是 `session`），点击按钮即在计算模板字符串时抛 ReferenceError、弹窗无法打开；该问题自 v0.3.0（测试组模型重构）引入，此前会话配置一直无法在弹窗中修改。
+- 修复平台来源变更时未级联清理旧 umo 下 AstrBot 原生对话历史的问题：`update_session` / `update_group` 修改平台来源后，WebUI 会话列表中仍残留旧来源的对话数据，与删除组 / 会话的级联清理语义不一致。
+- 修复带配置档案（conf_id）的并发测试在 pipeline 悬挂时永久占用 UCR 临时路由锁的问题：原实现无限等待所有会话完成，此后所有带 conf_id 的测试会永久阻塞；现改为 1 小时安全阀超时强制恢复路由并释放锁（不改变「不设总超时」的测试语义）。
+- 修复测试运行器异常路径路由锁泄漏：事件构造 / 入队 / 任务创建任一步抛错时锁不再永久占用；同时清理创建超过 1 小时的悬挂运行记录，避免内存累积。
+- 修复 `save_history` 对同一失效 `conversation_id` 重复引用时新建多个重复占位对话的问题：现首次新建后其余引用复用同一占位对话。
+- 修复 `list_confs` 对配置档案对象缺键（id/name/path）直接报 500 的问题：改为防御式读取，与 `list_platforms` 的容错风格一致。
+- 修复 `update_group` / `update_session` 在配置未实际变化（如仅改组名 / 发送者）时也重写 UCR 配置档案路由的问题：仅在平台或配置档案实际变化时才同步路由。
 
 ### 🔧 Refactor (代码结构)
 
@@ -38,6 +44,9 @@
 - 插件仓库新增自包含 `pyproject.toml`（ruff / pytest 配置与主仓库口径一致，line-length 88、target py312），任何环境在仓库内直接 `ruff check .` / `pytest` 结果一致；同步修复测试代码的 ASYNC109 告警（`wait_run_done` 的 `timeout` 参数更名），并清理 `list_providers` 对 `prov.meta()` 的重复调用。
 - UCR 配置档案路由操作收敛到 `conf_routes.py`：持久路由（创建/删除组与会话、会话配置变更）与 runner 临时路由（测试运行时指定 conf_id）共用同一套 umo → conf_id 操作，消除两处实现对 UCR API 的双份维护；行为不变。
 - 前端 `app.js` 拆出 `chat.js`（`createChatRenderer`）：气泡 / 思维链 / 轮次分组与对齐渲染集中到独立模块，align 控制器以 getter 注入（渲染时才取），避免与 `createAlignController` 互相创建的循环依赖；行为不变。
+- 页面目录由 `pages/virtual-session/` 更名为 `pages/testbench/`，与插件名一致，避免与其他插件的页面目录冲突（页面 URL / 数据持久化路径不受影响，旧页面访问 404，需重新打开新页面）。
+- 移除 `.github/workflows/shit-mountain.yml`（门禁步骤被注释、仅在 main 分支触发且无实际产物，保留无价值）。
+- `update_session` 的返回值为死 API 面（调用方已持有内部对象引用），改为返回 `None`；前端 `CONF_DEFAULT` 魔法字符串提取为模块常量，过期注释同步修正。
 
 ---
 
