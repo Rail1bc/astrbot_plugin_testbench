@@ -8,7 +8,7 @@
 
 - **版本**：v0.3.0（metadata.yaml 中的版本号，未经用户批准不得擅自 bump）
 - **兼容范围**：`astrbot_version: ">=4.16"`
-- **独立 git 仓库**：remote `git@github.com:Rail1bc/astrbot_plugin_testbench.git`，**默认分支 `main`**（不是 AstrBot 主仓库的 `dev`）
+- **独立 git 仓库**：remote `git@github.com:Rail1bc/astrbot_plugin_testbench.git`；**开发在 `dev` 分支，`main` 仅用于发布**（release.yml 只在 main 上 metadata.yaml 变更时触发自动发版）
 - **无第三方依赖**：只依赖 AstrBot 公共 API（`astrbot.api.*`），不需要 requirements.txt
 - **核心卖点**：虚拟会话与真实会话走**完全相同的处理路径**（不是模拟），只是把消息注入点从平台适配器换成了插件侧直接入队
 
@@ -127,6 +127,11 @@ astrbot_plugin_testbench/
 统一用 `astrbot.api.web` 的 `json_response` / `error_response` / `request`。
 
 ## 测试与验证
+
+> **开发流程（2026-08-05 起）**：本地**不跑**测试，修改直接提交推送到 `dev` 分支，
+> 由 GitHub Actions 自动把关——`pytest.yml`（57 个测试）+ `ruff-format.yml`
+> 均在 push 到 dev 时触发；dev 验证通过后合并到 `main`，metadata.yaml 变更即触发
+> release.yml 自动发版。本地命令（下面的 pytest/ruff）仅在需要主动排查时使用。
 
 测试随插件仓库维护（`tests/`，可与主仓库无关地推送、供协作者运行）。
 
