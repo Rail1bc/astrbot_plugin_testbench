@@ -2,8 +2,8 @@
 
 把一条消息投递到多个虚拟会话，完全交由 AstrBot 原生 pipeline 处理：与真实
 平台一致，不设总超时、不分批投递，事件入队后后台逐个等待会话完成并记录，
-前端轮询 ``status()`` 即可实现「每个会话窗口独立刷新」。回复由事件自身的
-send()/send_streaming() 捕获。
+逐会话结果经事件总线广播（/events SSE 事件流）实时推送前端，``status()``
+供断线对账一次性取回。回复由事件自身的 send()/send_streaming() 捕获。
 """
 
 from __future__ import annotations
@@ -103,7 +103,7 @@ class VirtualTestRunner:
             assertion: 可选，回复断言规则（见 assertions.py），随结果评估返回。
 
         Returns:
-            test_id，用于轮询 status()。
+            test_id，用于查询 status()（实时结果经事件流推送）。
         """
         if not sessions:
             raise ValueError("sessions 不能为空")
@@ -206,7 +206,7 @@ class VirtualTestRunner:
             self._publish_pending()
 
     def pending_entries(self) -> list[dict]:
-        """返回全部在途条目（含刚完成、仍处展示保留期的条目），供前端轮询。"""
+        """返回全部在途条目（含刚完成、仍处展示保留期的条目），供断线对账取回。"""
         return list(self._pending.values())
 
     def _enqueue(self, test_id: str, events: list[VirtualMessageEvent]) -> None:

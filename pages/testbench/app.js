@@ -586,7 +586,7 @@ const historyRefreshedAt = new Map();
 
 // 渲染单个面板的在途消息条：显示正在处理与排队中的消息及其当前阶段；
 // 已完成且已刷入会话历史的消息不再展示（历史气泡即完成指示）。
-// 返回是否发生变化（供轮询器决定是否重排对齐高度）
+// 返回是否发生变化（供调用方决定是否重排对齐高度）
 function renderPendingStrip(panel, entries) {
   const el = panel.querySelector(".panel-pending");
   if (!el) return false;

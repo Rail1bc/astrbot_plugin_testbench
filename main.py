@@ -101,7 +101,7 @@ _ROUTES: tuple[tuple[str, str, list[str], str], ...] = (
         "/test/run",
         "run_test",
         ["POST"],
-        "向多个虚拟会话投递消息（立即返回 test_id，结果轮询 status 接口）",
+        "向多个虚拟会话投递消息（立即返回 test_id，结果经 status 接口查询）",
     ),
     (
         "/test/run/status",
@@ -139,7 +139,7 @@ _ROUTES: tuple[tuple[str, str, list[str], str], ...] = (
         "/testsets/run",
         "run_testset",
         ["POST"],
-        "启动测试集运行（后端后台任务驱动，立即返回 run_id，结果轮询 status）",
+        "启动测试集运行（后端后台任务驱动，立即返回 run_id，进度经 status 查询）",
     ),
     (
         "/testsets/run/status",
@@ -569,7 +569,7 @@ class VirtualSessionPlugin(Star):
     # ---------- 测试 ----------
 
     async def run_test(self):
-        """向多个虚拟会话投递同一条消息，立即返回 test_id（结果轮询 status 接口）。
+        """向多个虚拟会话投递同一条消息，立即返回 test_id（结果经 status 接口查询）。
 
         与真实平台一致：不设总超时、不分批投递，完全由 AstrBot 原生 pipeline 处理。
         """
@@ -757,11 +757,11 @@ class VirtualSessionPlugin(Star):
         return json_response({"deleted": deleted})
 
     async def run_testset(self):
-        """启动测试集运行（后端后台任务驱动，立即返回 run_id，结果轮询 status）。
+        """启动测试集运行（后端后台任务驱动，立即返回 run_id，进度经 status 查询）。
 
         测试集运行是耗时操作、可能与页面生命周期解耦：发送节奏由测试集内的
         批量发送范围决定（段内重叠、段外逐条），后台任务按段驱动，离开页面
-        不影响执行；运行记录可经 ``/testsets/run/status`` 轮询、
+        不影响执行；运行记录可经 ``/testsets/run/status`` 查询、
         ``/testsets/runs`` 找回、``abort`` 取消。
         """
         payload = await request.json(default={})

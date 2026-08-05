@@ -54,8 +54,7 @@ export function createGroupList(env) {
         renderPanels();
       }
     } catch (err) {
-      // 与 refreshTestsets 一致降级：瞬态失败不阻塞初始化（否则 init 的
-      // Promise.all 被拒，pollPending 永不启动），列表留待用户点刷新重试
+      // 与 refreshTestsets 一致降级：瞬态失败不阻塞初始化，列表留待用户点刷新重试
       state.groups = [];
       showRunStatus("error", "加载测试组失败: " + err.message);
     }
