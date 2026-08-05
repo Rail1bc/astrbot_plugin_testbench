@@ -844,7 +844,7 @@ function deriveSession(id) {
     onOk: async () => {
       const name = nameInput.value.trim();
       if (!name) throw new Error("测试组名称不能为空");
-      const n = parseInt(countInput.value, 10);
+      const n = Number(countInput.value);
       if (!Number.isInteger(n) || n < 1 || n > 500) {
         throw new Error("会话数量必须是 1-500 的整数");
       }
@@ -875,7 +875,7 @@ function promptCountDialog(title, message, defaultValue, onOk) {
     content: wrap,
     okText: "确定",
     onOk: () => {
-      const n = parseInt(input.value, 10);
+      const n = Number(input.value);
       if (!Number.isInteger(n) || n < 1 || n > 500) {
         throw new Error("数量必须是 1-500 的整数");
       }
