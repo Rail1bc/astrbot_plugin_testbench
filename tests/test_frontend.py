@@ -73,8 +73,29 @@ def test_frontend_effective_view_resolves_sender_fields():
     import re
 
     app_js = (PLUGIN_DIR / "pages" / "testbench" / "app.js").read_text(encoding="utf-8")
-    match = re.search(r"function effectiveView\(id\)[\s\S]*?return \{([\s\S]*?)\};", app_js)
+    match = re.search(
+        r"function effectiveView\(id\)[\s\S]*?return \{([\s\S]*?)\};", app_js
+    )
     assert match, "找不到 effectiveView 的 return 对象"
     obj = match.group(1)
     assert "sender_id:" in obj, "effectiveView 返回值缺少 sender_id"
     assert "sender_name:" in obj, "effectiveView 返回值缺少 sender_name"
+
+
+def test_frontend_select_option_builders_are_shared():
+    """平台/档案下拉的选项构建必须收敛到共享辅助函数。
+
+    曾有两处内联构建（组编辑弹窗 buildPlatformSelect/buildConfSelect 与会话配置
+    弹窗 openSettings）：会话弹窗的档案副本缺少「档案已不存在」占位——会话单独
+    绑定的档案被删除后，打开弹窗回落显示「使用组配置」，保存即把绑定静默重置为
+    继承组配置。本检查确保选项映射/过滤只保留共享实现一处。
+    """
+    import re
+
+    app_js = (PLUGIN_DIR / "pages" / "testbench" / "app.js").read_text(encoding="utf-8")
+    assert len(re.findall(r"\.map\(\s*\(p\) =>", app_js)) == 1, (
+        "平台选项映射必须只出现在 platformOptions() 一处"
+    )
+    assert app_js.count('confs.filter((c) => c.id !== "default")') == 1, (
+        "配置档案过滤必须只出现在 confOptions() 一处"
+    )

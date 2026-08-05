@@ -269,7 +269,13 @@ class VirtualSessionPlugin(Star):
         if updated is None:
             return error_response("未找到该测试组", status_code=404)
 
-        for old, session in zip(old_sessions, updated["sessions"]):
+        # 按 id 配对旧/新会话，不依赖两列表顺序一致（update_group 当前不改会话结构，
+        # 但按位置 zip 属隐含假设，未来组内新增/重排会话时会错位）
+        old_by_id = {s["id"]: s for s in old_sessions}
+        for session in updated["sessions"]:
+            old = old_by_id.get(session["id"])
+            if old is None:
+                continue
             new = self.group_mgr.effective(updated, session)
             platform_changed = old["platform_id"] != new["platform_id"]
             conf_changed = old["conf_id"] != new["conf_id"]

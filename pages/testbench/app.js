@@ -412,30 +412,38 @@ async function handleAddGroup() {
   }
 }
 
+// 平台下拉的选项片段（真实平台列表；「默认」前缀项由各调用方自行决定）
+function platformOptions() {
+  return platforms
+    .map(
+      (p) =>
+        `<option value="${escapeHtml(p.id)}">${escapeHtml(p.id)}（${escapeHtml(p.display_name || p.name)}）</option>`,
+    )
+    .join("");
+}
+
+// 配置档案下拉的选项数组：排除 default 档案；已绑定但已被删除的档案保留占位选项，
+// 避免保存时静默丢失绑定。组编辑与会话配置弹窗共用，占位逻辑只保留此处一份。
+function confOptions(current) {
+  const options = confs.filter((c) => c.id !== "default");
+  if (current && !options.some((c) => c.id === current)) {
+    options.unshift({ id: current, name: `${current}（档案已不存在）` });
+  }
+  return options;
+}
+
 function buildPlatformSelect(current) {
   const sel = document.createElement("select");
-  sel.innerHTML =
-    `<option value="">默认（webchat）</option>` +
-    platforms
-      .map(
-        (p) =>
-          `<option value="${escapeHtml(p.id)}">${escapeHtml(p.id)}（${escapeHtml(p.display_name || p.name)}）</option>`,
-      )
-      .join("");
+  sel.innerHTML = `<option value="">默认（webchat）</option>` + platformOptions();
   if (current) sel.value = current;
   return sel;
 }
 
 function buildConfSelect(current) {
-  const options = confs.filter((c) => c.id !== "default");
-  // 已绑定的档案若已被删除，保留占位选项，避免保存时静默丢失绑定
-  if (current && !options.some((c) => c.id === current)) {
-    options.unshift({ id: current, name: `${current}（档案已不存在）` });
-  }
   const sel = document.createElement("select");
   sel.innerHTML =
     `<option value="">默认配置</option>` +
-    options
+    confOptions(current)
       .map((c) => `<option value="${escapeHtml(c.id)}">${escapeHtml(c.name)}</option>`)
       .join("");
   if (current) sel.value = current;
@@ -517,20 +525,14 @@ function openSettings(sid) {
   const selP = document.createElement("select");
   selP.innerHTML =
     `<option value="">使用组配置（${escapeHtml(platformName(group.platform_id || "webchat"))}）</option>` +
-    platforms
-      .map(
-        (p) =>
-          `<option value="${escapeHtml(p.id)}">${escapeHtml(p.id)}（${escapeHtml(p.display_name || p.name)}）</option>`,
-      )
-      .join("");
+    platformOptions();
   selP.value = session.platform_id || "";
 
   const selC = document.createElement("select");
   selC.innerHTML =
     `<option value="">使用组配置（${group.conf_id ? escapeHtml(confName(group.conf_id)) : "默认"}）</option>` +
     `<option value="${CONF_DEFAULT}">默认配置（不绑定档案）</option>` +
-    confs
-      .filter((c) => c.id !== "default")
+    confOptions(session.conf_id || null)
       .map((c) => `<option value="${escapeHtml(c.id)}">${escapeHtml(c.name)}</option>`)
       .join("");
   if (session.conf_id === "") selC.value = CONF_DEFAULT;
