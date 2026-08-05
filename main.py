@@ -24,109 +24,67 @@ PLUGIN_NAME = "astrbot_plugin_testbench"
 
 MAX_SESSIONS_PER_GROUP = 500
 
+# 全部 Web API 端点集中于此：一处看全，新增端点只需加一行。
+# handler 用方法名字符串 + getattr 解析，构造期即校验拼写（拼错直接抛 AttributeError）。
+_ROUTES: tuple[tuple[str, str, list[str], str], ...] = (
+    ("/providers", "list_providers", ["GET"], "列出可用的 LLM Provider 与模型"),
+    ("/confs", "list_confs", ["GET"], "列出配置档案"),
+    ("/platforms", "list_platforms", ["GET"], "列出已启用的平台适配器"),
+    ("/groups", "list_groups", ["GET"], "列出测试组（含组内会话）"),
+    ("/groups", "create_group", ["POST"], "创建测试组并生成组内虚拟会话"),
+    ("/groups/delete", "delete_groups", ["POST"], "删除测试组"),
+    (
+        "/groups/<group_id>/sessions",
+        "add_group_sessions",
+        ["POST"],
+        "向测试组内新增虚拟会话",
+    ),
+    ("/sessions", "list_sessions", ["GET"], "列出全部虚拟会话（已解析最终配置）"),
+    (
+        "/sessions/update",
+        "update_session",
+        ["POST"],
+        "设置会话自身的配置（覆盖组配置）",
+    ),
+    ("/sessions/delete", "delete_sessions", ["POST"], "删除虚拟会话"),
+    (
+        "/sessions/<session_id>/history",
+        "session_history",
+        ["GET"],
+        "查看虚拟会话的对话历史",
+    ),
+    ("/reset", "reset_sessions", ["POST"], "重置虚拟会话的对话历史"),
+    (
+        "/test/run",
+        "run_test",
+        ["POST"],
+        "向多个虚拟会话投递消息（立即返回 test_id，结果轮询 status 接口）",
+    ),
+    (
+        "/test/run/status",
+        "test_run_status",
+        ["GET"],
+        "查询测试运行状态（已完成的会话逐个返回结果）",
+    ),
+    ("/sessions/history/edit", "edit_history", ["POST"], "编辑会话历史中的单条消息"),
+    (
+        "/sessions/history/regenerate",
+        "regenerate_history",
+        ["POST"],
+        "重新生成指定轮次（截断该轮之后的历史并重发该轮用户消息）",
+    ),
+)
+
 
 class VirtualSessionPlugin(Star):
     def __init__(self, context: Context) -> None:
         super().__init__(context)
         self.group_mgr = VirtualGroupManager()
         self.runner = VirtualTestRunner(context)
-
-        context.register_web_api(
-            f"/{PLUGIN_NAME}/providers",
-            self.list_providers,
-            ["GET"],
-            "列出可用的 LLM Provider 与模型",
-        )
-        context.register_web_api(
-            f"/{PLUGIN_NAME}/confs",
-            self.list_confs,
-            ["GET"],
-            "列出配置档案",
-        )
-        context.register_web_api(
-            f"/{PLUGIN_NAME}/platforms",
-            self.list_platforms,
-            ["GET"],
-            "列出已启用的平台适配器",
-        )
-        context.register_web_api(
-            f"/{PLUGIN_NAME}/groups",
-            self.list_groups,
-            ["GET"],
-            "列出测试组（含组内会话）",
-        )
-        context.register_web_api(
-            f"/{PLUGIN_NAME}/groups",
-            self.create_group,
-            ["POST"],
-            "创建测试组并生成组内虚拟会话",
-        )
-        context.register_web_api(
-            f"/{PLUGIN_NAME}/groups/delete",
-            self.delete_groups,
-            ["POST"],
-            "删除测试组",
-        )
-        context.register_web_api(
-            f"/{PLUGIN_NAME}/groups/<group_id>/sessions",
-            self.add_group_sessions,
-            ["POST"],
-            "向测试组内新增虚拟会话",
-        )
-        context.register_web_api(
-            f"/{PLUGIN_NAME}/sessions",
-            self.list_sessions,
-            ["GET"],
-            "列出全部虚拟会话（已解析最终配置）",
-        )
-        context.register_web_api(
-            f"/{PLUGIN_NAME}/sessions/update",
-            self.update_session,
-            ["POST"],
-            "设置会话自身的配置（覆盖组配置）",
-        )
-        context.register_web_api(
-            f"/{PLUGIN_NAME}/sessions/delete",
-            self.delete_sessions,
-            ["POST"],
-            "删除虚拟会话",
-        )
-        context.register_web_api(
-            f"/{PLUGIN_NAME}/sessions/<session_id>/history",
-            self.session_history,
-            ["GET"],
-            "查看虚拟会话的对话历史",
-        )
-        context.register_web_api(
-            f"/{PLUGIN_NAME}/reset",
-            self.reset_sessions,
-            ["POST"],
-            "重置虚拟会话的对话历史",
-        )
-        context.register_web_api(
-            f"/{PLUGIN_NAME}/test/run",
-            self.run_test,
-            ["POST"],
-            "向多个虚拟会话投递消息（立即返回 test_id，结果轮询 status 接口）",
-        )
-        context.register_web_api(
-            f"/{PLUGIN_NAME}/test/run/status",
-            self.test_run_status,
-            ["GET"],
-            "查询测试运行状态（已完成的会话逐个返回结果）",
-        )
-        context.register_web_api(
-            f"/{PLUGIN_NAME}/sessions/history/edit",
-            self.edit_history,
-            ["POST"],
-            "编辑会话历史中的单条消息",
-        )
-        context.register_web_api(
-            f"/{PLUGIN_NAME}/sessions/history/regenerate",
-            self.regenerate_history,
-            ["POST"],
-            "重新生成指定轮次（截断该轮之后的历史并重发该轮用户消息）",
-        )
+        for path, handler, methods, desc in _ROUTES:
+            context.register_web_api(
+                f"/{PLUGIN_NAME}{path}", getattr(self, handler), methods, desc
+            )
 
     async def list_providers(self):
         """列出可用的对话 LLM Provider 及其模型。"""
