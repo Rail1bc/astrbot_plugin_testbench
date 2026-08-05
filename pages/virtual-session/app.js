@@ -405,14 +405,14 @@ function refreshPanelHead(id) {
     [s.platform_id, "platform-badge", "", escapeHtml(platformName(s.platform_id))],
     [s.conf_id, "conf-badge", "", escapeHtml(confName(s.conf_id))],
   ];
-  const actions = head.querySelector(".panel-actions");
+  const info = head.querySelector(".panel-info");
   for (const [text, cls, tip, label] of badges) {
     if (!text) continue;
     const span = document.createElement("span");
     span.className = "badge " + cls + (cls === "conf-badge" ? " conf" : "");
     if (tip) span.title = tip;
     span.textContent = label;
-    head.insertBefore(span, actions);
+    info.appendChild(span);
   }
 }
 
@@ -461,8 +461,10 @@ function openPanel(id) {
   panel.innerHTML =
     `<div class="panel-head" title="拖拽排序">` +
     `<span class="drag-handle">≡</span>` +
+    `<span class="panel-info">` +
     `<span class="panel-title">${escapeHtml(s ? s.name : id)}</span>` +
     groupBadge + platformBadge + confBadge +
+    `</span>` +
     `<span class="panel-actions">` +
     `<button class="icon-btn" data-action="history" title="编辑对话历史（JSON）">历史</button>` +
     `<button class="icon-btn" data-action="pin" title="置顶">置顶</button>` +
@@ -580,37 +582,60 @@ function renderAligned(panel, conversations) {
   }
 }
 
-function extractText(content) {
-  if (content == null) return "";
-  if (typeof content === "string") return content;
+// 拆分消息内容：思维链（think 部件）与正文。AstrBot 当前把推理内容存为
+// assistant 消息内容里的 ThinkPart（{type: "think", think: "..."}）。
+function extractParts(content) {
+  if (content == null) return { reasoning: "", text: "" };
+  if (typeof content === "string") return { reasoning: "", text: content };
   if (Array.isArray(content)) {
-    return content
-      .map((p) => {
-        if (typeof p === "string") return p;
-        if (p && typeof p.text === "string") return p.text;
-        if (p && typeof p.content === "string") return p.content;
-        return "";
-      })
-      .filter(Boolean)
-      .join("\n");
+    const reasoning = [];
+    const texts = [];
+    for (const p of content) {
+      if (typeof p === "string") {
+        texts.push(p);
+      } else if (p && p.type === "think" && typeof p.think === "string") {
+        reasoning.push(p.think);
+      } else if (p && typeof p.text === "string") {
+        texts.push(p.text);
+      } else if (p && typeof p.content === "string") {
+        texts.push(p.content);
+      }
+    }
+    return { reasoning: reasoning.join("\n"), text: texts.join("\n") };
   }
-  return "";
+  return { reasoning: "", text: "" };
+}
+
+// 思维链折叠块：默认收起，点击「展开思维链」展开；切换后重排轮次对齐高度
+function reasoningSection(text) {
+  const details = document.createElement("details");
+  details.className = "reasoning-wrap";
+  const summary = document.createElement("summary");
+  summary.textContent = "展开思维链";
+  details.appendChild(summary);
+  const body = document.createElement("div");
+  body.className = "reasoning";
+  body.textContent = text;
+  details.appendChild(body);
+  details.addEventListener("toggle", () => {
+    summary.textContent = details.open ? "收起思维链" : "展开思维链";
+    if (align.isAlignMode()) requestAnimationFrame(() => align.reflowAlign());
+  });
+  return details;
 }
 
 function bubbleFor(msg, index) {
   const role = msg.role || "";
-  const text = extractText(msg.content);
+  const { reasoning, text } = extractParts(msg.content);
   const el = document.createElement("div");
   el.dataset.index = String(index);
   if (role === "user") {
     el.className = "msg user";
     el.textContent = text || "（空消息）";
   } else if (role === "assistant_reasoning" || role === "reasoning") {
+    // 旧格式：独立的推理角色消息，整条内容即思维链
     el.className = "msg bot";
-    const r = document.createElement("div");
-    r.className = "reasoning";
-    r.textContent = text || "（推理过程）";
-    el.appendChild(r);
+    el.appendChild(reasoningSection(reasoning || text || "（推理过程）"));
   } else if (role === "tool") {
     el.className = "msg tool";
     el.textContent = text || "（工具调用）";
@@ -618,13 +643,16 @@ function bubbleFor(msg, index) {
     el.className = "msg meta";
     el.textContent = text || "（系统消息）";
   } else {
-    // assistant 等其余角色
+    // assistant 等其余角色：正文 + 可折叠思维链
     el.className = "msg bot";
+    if (reasoning) el.appendChild(reasoningSection(reasoning));
     if (!text && msg.tool_calls && msg.tool_calls.length) {
-      el.textContent = "（调用工具…）";
+      el.appendChild(document.createTextNode("（调用工具…）"));
       el.classList.add("tool");
-    } else {
-      el.textContent = text || "…";
+    } else if (text) {
+      el.appendChild(document.createTextNode(text));
+    } else if (!reasoning) {
+      el.appendChild(document.createTextNode("…"));
     }
   }
   // 悬停操作：重新生成（仅 user 发言）；整体历史的编辑走面板头部的「历史」JSON 编辑器

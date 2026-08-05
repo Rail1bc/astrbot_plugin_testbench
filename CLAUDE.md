@@ -90,6 +90,8 @@ astrbot_plugin_testbench/
 
 - `api.js`：`window.AstrBotPluginPage` bridge 的 `apiGet`/`apiPost` 统一封装。bridge 的响应解析是 `response.data?.data ?? response.data`（json_response 的 body 直接作为 data）。
 - `app.js` 分区：弹窗（iframe 沙箱禁用原生 alert/confirm，用自绘弹窗）→ 测试组列表 → 面板 → 发送 → 会话操作 → 创建 → 面板排序 → 轮次对齐 → 选项加载 → 初始化。`loadOptions()` 拉取 platforms/confs 填充下拉框；`refreshGroups()` 渲染左侧组列表；`pollRun()` 轮询测试状态；`updateRunOverview()` 在群发栏实时显示当前打开的会话数与按测试组的分布。
+- 面板页眉为多行 flex 布局：标题与徽标包在 `.panel-info`（`flex-wrap: wrap`）内随内容换行撑开页眉，`.panel-actions` 的「历史 / 置顶 / 关闭」按钮始终第一行右对齐；`refreshPanelHead()` / `openPanel()` 都维护该结构。
+- 气泡渲染 `bubbleFor(msg)` 用 `extractParts(msg.content)` 拆分**思维链**（`ThinkPart`，`{type:"think", think:"..."}`）与正文：带推理内容的回复渲染 `.reasoning-wrap`（原生 `<details>`，默认收起，summary 即「展开/收起思维链」按钮）；旧格式的 `assistant_reasoning` / `reasoning` 角色整条按思维链处理。`<details>` 的 `toggle` 事件在轮次对齐模式下 `requestAnimationFrame(() => align.reflowAlign())` 重排高度。
 - 对话历史编辑走**面板头部「历史」按钮的 JSON 编辑器**（`openHistoryEditor`）：直接编辑 `{conversations: [...]}` 全结构，保存调 `saveHistory` 整体替换（编辑/新增/删除对话都在 JSON 里完成）；单条气泡只保留「重新生成」。不做复杂的单轮编辑 UI——没有能力修改结构化历史的用户不建议自己改。
 - `align.js`：`createAlignController(env)` 依赖注入访问器（getOpenIds/getPanelEls/getHistoryCache/getPanelsEl/renderChat），实现轮次对齐 + 滚动同步。
 - `index.html` 的 `<select>` 是静态骨架：`create-platform` 初始为空（`loadOptions()` 填充后默认项为「默认（webchat）」）、`create-conf` 只有 `<option value="">默认配置</option>`，**必须由 loadOptions() 填充**。
