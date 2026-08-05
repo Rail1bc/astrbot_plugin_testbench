@@ -321,15 +321,19 @@ def test_group_migration_legacy(tmp_path):
 
 
 class FakeUCR:
-    """模拟 UmopConfigRouter：维护 umo -> conf_id 的精确路由表。"""
+    """模拟 UmopConfigRouter：维护 umo -> conf_id 的精确路由表，并统计写入次数。"""
 
     def __init__(self) -> None:
         self.umop_to_conf_id: dict[str, str] = {}
+        self.update_calls = 0
+        self.delete_calls = 0
 
     async def update_route(self, umo: str, conf_id: str) -> None:
+        self.update_calls += 1
         self.umop_to_conf_id[umo] = conf_id
 
     async def delete_route(self, umo: str) -> None:
+        self.delete_calls += 1
         self.umop_to_conf_id.pop(umo, None)
 
 
@@ -440,6 +444,37 @@ class FakePlatformInst:
         )
 
 
+class FakeProvider:
+    """模拟 LLM Provider：meta()/get_models()/get_model()/provider_config。"""
+
+    def __init__(
+        self,
+        provider_id: str,
+        provider_type: str,
+        models: list[str] | None = None,
+        current_model: str | None = None,
+        config: dict | None = None,
+        raise_models: bool = False,
+    ) -> None:
+        self._id = provider_id
+        self._type = provider_type
+        self._models = models or []
+        self._current_model = current_model
+        self.provider_config = config
+        self._raise_models = raise_models
+
+    def meta(self):
+        return SimpleNamespace(id=self._id, type=self._type)
+
+    async def get_models(self) -> list[str]:
+        if self._raise_models:
+            raise RuntimeError("broken provider")
+        return list(self._models)
+
+    def get_model(self) -> str | None:
+        return self._current_model
+
+
 class FakeContext:
     def __init__(
         self,
@@ -447,14 +482,23 @@ class FakeContext:
         ucr: FakeUCR | None = None,
         conv_mgr: FakeConvManager | None = None,
         platform_mgr: FakePlatformManager | None = None,
+        providers: list[FakeProvider] | None = None,
+        conf_list: list[dict] | None = None,
     ) -> None:
         self._queue = queue or asyncio.Queue()
-        self.astrbot_config_mgr = SimpleNamespace(ucr=ucr or FakeUCR())
+        self._providers = providers or []
+        self.astrbot_config_mgr = SimpleNamespace(
+            ucr=ucr or FakeUCR(),
+            get_conf_list=lambda: list(conf_list or []),
+        )
         self.conversation_manager = conv_mgr or FakeConvManager()
         self.platform_manager = platform_mgr
 
     def get_event_queue(self) -> asyncio.Queue:
         return self._queue
+
+    def get_all_providers(self) -> list[FakeProvider]:
+        return list(self._providers)
 
     def register_web_api(self, *args, **kwargs) -> None:
         """插件注册 Web API 时静默忽略（测试不需要真实注册）。"""
@@ -770,6 +814,45 @@ async def test_plugin_update_session_not_found(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_plugin_update_session_conf_empty_means_default(tmp_path):
+    """conf_id=""（显式默认档案）时有效配置为不绑定档案，路由被清除。"""
+    context = FakeContext()
+    plugin = main_mod.VirtualSessionPlugin(context)
+    plugin.group_mgr = VirtualGroupManager(data_dir=tmp_path)
+    group = plugin.group_mgr.create_group("组A", count=1, conf_id="conf_a")
+    sid = group["sessions"][0]["id"]
+    umop = f"webchat:FriendMessage:{sid}"
+    ucr = context.astrbot_config_mgr.ucr
+    await ucr.update_route(umop, "conf_a")
+
+    resp = await call_handler(plugin.update_session, {"id": sid, "conf_id": ""})
+    assert resp.status_code == 200
+    body = json.loads(resp.body)
+    assert body["conf_id"] is None  # 有效配置不绑定档案
+    assert umop not in ucr.umop_to_conf_id
+
+
+@pytest.mark.asyncio
+async def test_plugin_update_session_platform_change_cascades_conversations(tmp_path):
+    """会话平台变更（umo 变化）时，旧 umo 的对话历史被级联删除（与删除会话一致）。"""
+    context = FakeContext()
+    plugin = main_mod.VirtualSessionPlugin(context)
+    plugin.group_mgr = VirtualGroupManager(data_dir=tmp_path)
+    group = plugin.group_mgr.create_group("组A", count=1, conf_id="conf_a")
+    session = group["sessions"][0]
+    old_umop = f"webchat:FriendMessage:{session['id']}"
+    conv_mgr = context.conversation_manager
+    conv_mgr.add_history(old_umop, "旧对话", [{"role": "user", "content": "hi"}])
+    await context.astrbot_config_mgr.ucr.update_route(old_umop, "conf_a")
+
+    resp = await call_handler(
+        plugin.update_session, {"id": session["id"], "platform_id": "telegram"}
+    )
+    assert resp.status_code == 200
+    assert await conv_mgr.get_conversations(old_umop) == []
+
+
+@pytest.mark.asyncio
 async def test_plugin_update_group_syncs_routes(tmp_path):
     context = FakeContext()
     plugin = main_mod.VirtualSessionPlugin(context)
@@ -838,6 +921,49 @@ async def test_plugin_update_group_not_found(tmp_path):
     plugin.group_mgr = VirtualGroupManager(data_dir=tmp_path)
     resp = await call_handler(plugin.update_group, {"name": "x"}, "g_none")
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_plugin_update_group_no_config_change_no_route_write(tmp_path):
+    """组配置未实际变化（仅改组名/发送者）时不写 UCR 路由。"""
+    context = FakeContext()
+    plugin = main_mod.VirtualSessionPlugin(context)
+    plugin.group_mgr = VirtualGroupManager(data_dir=tmp_path)
+    group = plugin.group_mgr.create_group("组A", count=2, conf_id="conf_a")
+    ucr = context.astrbot_config_mgr.ucr
+    umops = [f"webchat:FriendMessage:{s['id']}" for s in group["sessions"]]
+    for umop in umops:
+        await ucr.update_route(umop, "conf_a")
+    ucr.update_calls = 0  # 只统计本次 handler 产生的写入
+    ucr.delete_calls = 0
+
+    resp = await call_handler(
+        plugin.update_group, {"id": group["id"], "name": "新组名"}, group["id"]
+    )
+    assert resp.status_code == 200
+    assert ucr.update_calls == 0
+    assert ucr.delete_calls == 0
+    assert all(ucr.umop_to_conf_id[umop] == "conf_a" for umop in umops)
+
+
+@pytest.mark.asyncio
+async def test_plugin_update_group_platform_change_cascades_conversations(tmp_path):
+    """组平台变更（umo 变化）时，旧 umo 的对话历史被级联删除。"""
+    context = FakeContext()
+    plugin = main_mod.VirtualSessionPlugin(context)
+    plugin.group_mgr = VirtualGroupManager(data_dir=tmp_path)
+    group = plugin.group_mgr.create_group("组A", count=1, conf_id="conf_a")
+    session = group["sessions"][0]
+    old_umop = f"webchat:FriendMessage:{session['id']}"
+    conv_mgr = context.conversation_manager
+    conv_mgr.add_history(old_umop, "旧对话", [{"role": "user", "content": "hi"}])
+    await context.astrbot_config_mgr.ucr.update_route(old_umop, "conf_a")
+
+    resp = await call_handler(
+        plugin.update_group, {"id": group["id"], "platform_id": "telegram"}, group["id"]
+    )
+    assert resp.status_code == 200
+    assert await conv_mgr.get_conversations(old_umop) == []
 
 
 @pytest.mark.asyncio
@@ -1003,6 +1129,86 @@ async def test_plugin_list_platforms_missing_manager(tmp_path):
     resp = await plugin.list_platforms()
     assert resp.status_code == 200
     assert json.loads(resp.body) == []
+
+
+# ---------- Provider / 配置档案列表 ----------
+
+
+@pytest.mark.asyncio
+async def test_plugin_list_providers_ok(tmp_path):
+    context = FakeContext(
+        providers=[
+            FakeProvider(
+                "prov_a",
+                "openai",
+                models=["m1", "m2"],
+                current_model="m1",
+                config={"id": "prov_a", "name": "Provider A"},
+            ),
+            FakeProvider("prov_b", "anthropic", models=[], current_model=None),
+        ]
+    )
+    plugin = main_mod.VirtualSessionPlugin(context)
+    plugin.group_mgr = VirtualGroupManager(data_dir=tmp_path)
+
+    resp = await plugin.list_providers()
+    assert resp.status_code == 200
+    body = json.loads(resp.body)
+    assert body[0]["id"] == "prov_a"
+    assert body[0]["name"] == "Provider A"  # provider_config.name 优先
+    assert body[0]["type"] == "openai"
+    assert body[0]["current_model"] == "m1"
+    assert body[0]["models"] == ["m1", "m2"]
+    # 无 provider_config 时回落 meta 的 id / type
+    assert body[1]["id"] == "prov_b"
+    assert body[1]["name"] == "anthropic"
+
+
+@pytest.mark.asyncio
+async def test_plugin_list_providers_models_failure(tmp_path):
+    # get_models 抛异常时该 provider 的模型列表为空，接口不失败
+    context = FakeContext(
+        providers=[FakeProvider("prov_a", "openai", raise_models=True)]
+    )
+    plugin = main_mod.VirtualSessionPlugin(context)
+    plugin.group_mgr = VirtualGroupManager(data_dir=tmp_path)
+
+    resp = await plugin.list_providers()
+    assert resp.status_code == 200
+    body = json.loads(resp.body)
+    assert body[0]["models"] == []
+
+
+@pytest.mark.asyncio
+async def test_plugin_list_providers_empty(tmp_path):
+    plugin = main_mod.VirtualSessionPlugin(FakeContext())
+    plugin.group_mgr = VirtualGroupManager(data_dir=tmp_path)
+
+    resp = await plugin.list_providers()
+    assert resp.status_code == 200
+    assert json.loads(resp.body) == []
+
+
+@pytest.mark.asyncio
+async def test_plugin_list_confs_ok_and_defensive(tmp_path):
+    # 缺 id/name/path 的档案对象也能被安全列出（防御式 .get，不 500）
+    context = FakeContext(
+        conf_list=[
+            {"id": "conf_a", "name": "档案A", "path": "/a"},
+            {"name": "只有名字"},
+            {"id": "conf_c"},
+        ]
+    )
+    plugin = main_mod.VirtualSessionPlugin(context)
+    plugin.group_mgr = VirtualGroupManager(data_dir=tmp_path)
+
+    resp = await plugin.list_confs()
+    assert resp.status_code == 200
+    body = json.loads(resp.body)
+    assert body[0] == {"id": "conf_a", "name": "档案A", "path": "/a"}
+    # 缺 id 回落 name，缺 name 回落 id，缺 path 为 None
+    assert body[1] == {"id": "只有名字", "name": "只有名字", "path": None}
+    assert body[2] == {"id": "conf_c", "name": "conf_c", "path": None}
 
 
 @pytest.mark.asyncio
@@ -1260,6 +1466,42 @@ async def test_plugin_save_history_creates_placeholder_for_missing_cid(tmp_path)
 
 
 @pytest.mark.asyncio
+async def test_plugin_save_history_deduplicates_stale_cid(tmp_path):
+    """同一失效 cid 在编辑器中重复出现时只新建一个占位对话，后续引用更新到它。"""
+    conv_mgr = FakeConvManager()
+    plugin = main_mod.VirtualSessionPlugin(FakeContext(conv_mgr=conv_mgr))
+    plugin.group_mgr = VirtualGroupManager(data_dir=tmp_path)
+    group = plugin.group_mgr.create_group("组A", count=1)
+    session = group["sessions"][0]
+    umo = umo_of(plugin.group_mgr.effective(group, session))
+
+    resp = await call_handler(
+        plugin.save_history,
+        {
+            "id": session["id"],
+            "conversations": [
+                {
+                    "conversation_id": "phantom_cid",
+                    "title": "对话一",
+                    "history": [{"role": "user", "content": "一"}],
+                },
+                {
+                    "conversation_id": "phantom_cid",
+                    "title": "对话二",
+                    "history": [{"role": "user", "content": "二"}],
+                },
+            ],
+        },
+    )
+    assert resp.status_code == 200
+    assert json.loads(resp.body)["saved"] == 2
+    convs = await conv_mgr.get_conversations(umo)
+    assert len(convs) == 1  # 同一引用只落盘一个占位对话
+    assert convs[0].title == "对话二"  # 第二个对象的内容更新到首个占位对话
+    assert json.loads(convs[0].history) == [{"role": "user", "content": "二"}]
+
+
+@pytest.mark.asyncio
 async def test_plugin_regenerate_history(tmp_path):
     queue = asyncio.Queue()
     context = FakeContext(queue)
@@ -1306,6 +1548,85 @@ async def test_plugin_regenerate_history(tmp_path):
     assert received == ["第二问"]
 
 
+@pytest.mark.asyncio
+async def test_plugin_regenerate_history_no_history(tmp_path):
+    queue = asyncio.Queue()
+    context = FakeContext(queue)
+    plugin = main_mod.VirtualSessionPlugin(context)
+    plugin.group_mgr = VirtualGroupManager(data_dir=tmp_path)
+    group = plugin.group_mgr.create_group("组A", count=1)
+    session = group["sessions"][0]
+
+    resp = await call_handler(
+        plugin.regenerate_history, {"id": session["id"], "index": 0}
+    )
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_plugin_regenerate_history_index_out_of_range(tmp_path):
+    queue = asyncio.Queue()
+    context = FakeContext(queue)
+    plugin = main_mod.VirtualSessionPlugin(context)
+    plugin.group_mgr = VirtualGroupManager(data_dir=tmp_path)
+    group = plugin.group_mgr.create_group("组A", count=1)
+    session = group["sessions"][0]
+    umo = umo_of(plugin.group_mgr.effective(group, session))
+    context.conversation_manager.add_history(
+        umo, "测试", [{"role": "user", "content": "问"}]
+    )
+
+    resp = await call_handler(
+        plugin.regenerate_history, {"id": session["id"], "index": 5}
+    )
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_plugin_regenerate_history_no_user_before(tmp_path):
+    """index 之前没有 user 发言（历史以 assistant 开头）时无法定位轮次。"""
+    queue = asyncio.Queue()
+    context = FakeContext(queue)
+    plugin = main_mod.VirtualSessionPlugin(context)
+    plugin.group_mgr = VirtualGroupManager(data_dir=tmp_path)
+    group = plugin.group_mgr.create_group("组A", count=1)
+    session = group["sessions"][0]
+    umo = umo_of(plugin.group_mgr.effective(group, session))
+    context.conversation_manager.add_history(
+        umo, "测试", [{"role": "assistant", "content": "在的"}]
+    )
+
+    resp = await call_handler(
+        plugin.regenerate_history, {"id": session["id"], "index": 0}
+    )
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_plugin_regenerate_history_empty_user_text(tmp_path):
+    """命中的轮次 user 消息内容为空（parts 全为空串）时拒绝重新生成。"""
+    queue = asyncio.Queue()
+    context = FakeContext(queue)
+    plugin = main_mod.VirtualSessionPlugin(context)
+    plugin.group_mgr = VirtualGroupManager(data_dir=tmp_path)
+    group = plugin.group_mgr.create_group("组A", count=1)
+    session = group["sessions"][0]
+    umo = umo_of(plugin.group_mgr.effective(group, session))
+    context.conversation_manager.add_history(
+        umo,
+        "测试",
+        [
+            {"role": "user", "content": [{"text": ""}]},
+            {"role": "assistant", "content": "在的"},
+        ],
+    )
+
+    resp = await call_handler(
+        plugin.regenerate_history, {"id": session["id"], "index": 1}
+    )
+    assert resp.status_code == 400
+
+
 # ---------- 统计 ----------
 
 
@@ -1329,6 +1650,24 @@ def test_duration_stats_empty():
 def test_main_module_importable():
     assert main_mod.PLUGIN_NAME == "astrbot_plugin_testbench"
     assert main_mod.VirtualSessionPlugin is not None
+
+
+def test_msg_text_parts_array():
+    """_msg_text 对 content 为 parts 数组（字符串/对象混合）的提取。"""
+    plugin_cls = main_mod.VirtualSessionPlugin
+    assert plugin_cls._msg_text({"content": "纯字符串"}) == "纯字符串"
+    assert plugin_cls._msg_text({"content": None}) == ""
+    assert plugin_cls._msg_text({}) == ""
+    msg = {
+        "content": [
+            "纯文本段",
+            {"text": "对象文本段"},
+            {"content": "content 键"},
+            {"type": "image", "url": "..."},  # 无 text/content → 空串，被过滤
+            {"text": "末尾段"},
+        ]
+    }
+    assert plugin_cls._msg_text(msg) == "纯文本段\n对象文本段\ncontent 键\n末尾段"
 
 
 def test_session_history_endpoint(tmp_path):

@@ -221,16 +221,17 @@ class VirtualGroupManager:
         conf_id: Any = _UNSET,
         sender_id: Any = _UNSET,
         sender_name: Any = _UNSET,
-    ) -> tuple[dict, dict] | None:
+    ) -> None:
         """更新会话的配置覆盖。
 
         字段值为 None 表示恢复「继承组配置」；conf_id 为 "" 表示显式使用
-        默认配置档案（不绑定）。返回 (组, 会话)，会话不存在时返回 None。
+        默认配置档案（不绑定）。会话对象原地变更，调用方持有的引用即最新值；
+        会话不存在时不生效（不抛错）。
         """
         found = self.find_session(session_id)
         if found is None:
-            return None
-        group, session = found
+            return
+        _, session = found
         changed = False
         for key, value in {
             "platform_id": platform_id,
@@ -243,7 +244,6 @@ class VirtualGroupManager:
                 changed = True
         if changed:
             self._save()
-        return group, session
 
     def update_group(
         self,

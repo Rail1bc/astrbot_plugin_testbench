@@ -125,10 +125,20 @@ class VirtualSessionPlugin(Star):
         return json_response(providers)
 
     async def list_confs(self):
-        """列出配置档案（用于测试提示词/系统设定）。"""
+        """列出配置档案（用于测试提示词/系统设定）。
+
+        与 list_platforms 一致采用防御式读取：单个档案对象缺字段时回退默认值，
+        不因个别档案结构异常而拖垮整个列表接口。
+        """
         confs = []
         for conf in self.context.astrbot_config_mgr.get_conf_list():
-            confs.append({"id": conf["id"], "name": conf["name"], "path": conf["path"]})
+            confs.append(
+                {
+                    "id": conf.get("id") or conf.get("name") or "",
+                    "name": conf.get("name") or conf.get("id") or "",
+                    "path": conf.get("path"),
+                }
+            )
         return json_response(confs)
 
     async def list_platforms(self):
@@ -261,11 +271,15 @@ class VirtualSessionPlugin(Star):
 
         for old, session in zip(old_sessions, updated["sessions"]):
             new = self.group_mgr.effective(updated, session)
-            if old["platform_id"] != new["platform_id"]:
+            platform_changed = old["platform_id"] != new["platform_id"]
+            conf_changed = old["conf_id"] != new["conf_id"]
+            if platform_changed:
                 await delete_route_if_exists(
                     self.context.astrbot_config_mgr.ucr, umo_of(old)
                 )
-            await self._sync_conf_route(new)
+                await self._delete_session_conversations([old])
+            if platform_changed or conf_changed:
+                await self._sync_conf_route(new)
         return json_response(updated)
 
     # ---------- 会话 ----------
@@ -303,12 +317,16 @@ class VirtualSessionPlugin(Star):
         self.group_mgr.update_session(session_id, **overrides)
         new_session = self.group_mgr.effective(group, session)
 
-        # 平台变更会使 umo 变化：清理旧 umo 的路由，再按新 umo 同步
-        if old_session["platform_id"] != new_session["platform_id"]:
+        # 平台变更会使 umo 变化：清理旧 umo 的路由与对话历史，再按新 umo 同步
+        platform_changed = old_session["platform_id"] != new_session["platform_id"]
+        conf_changed = old_session["conf_id"] != new_session["conf_id"]
+        if platform_changed:
             await delete_route_if_exists(
                 self.context.astrbot_config_mgr.ucr, umo_of(old_session)
             )
-        await self._sync_conf_route(new_session)
+            await self._delete_session_conversations([old_session])
+        if platform_changed or conf_changed:
+            await self._sync_conf_route(new_session)
         return json_response(new_session)
 
     async def delete_sessions(self):
@@ -460,6 +478,9 @@ class VirtualSessionPlugin(Star):
 
         existing = await conv_mgr.get_conversations(umo)
         existing_cids = {conv.cid for conv in existing}
+        # 失效 cid 首次出现时新建占位对话（新生成 id），记录原 cid → 新 cid；
+        # 同一失效 cid 再次出现时更新首个占位对话，避免同一引用重复新建对话。
+        placeholder_map: dict[str, str] = {}
 
         for item in normalized:
             if item["cid"]:
@@ -467,13 +488,21 @@ class VirtualSessionPlugin(Star):
                     await conv_mgr.update_conversation(
                         umo, item["cid"], history=item["history"], title=item["title"]
                     )
+                elif item["cid"] in placeholder_map:
+                    await conv_mgr.update_conversation(
+                        umo,
+                        placeholder_map[item["cid"]],
+                        history=item["history"],
+                        title=item["title"],
+                    )
                 else:
                     # 引用的 conversation_id 在库中不存在：会话从未产生过对话，
                     # 或历史被重置/删除后编辑器里仍是旧 JSON。按整体替换语义
                     # 新建占位对话（新生成 id），而不是报错导致保存失败。
-                    await conv_mgr.new_conversation(
+                    new_cid = await conv_mgr.new_conversation(
                         umo, content=item["history"], title=item["title"]
                     )
+                    placeholder_map[item["cid"]] = new_cid
             else:
                 await conv_mgr.new_conversation(
                     umo, content=item["history"], title=item["title"]

@@ -9,6 +9,7 @@ send()/send_streaming() 捕获。
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from typing import TYPE_CHECKING
 
@@ -23,6 +24,13 @@ from .virtual_event import VirtualMessageEvent
 
 if TYPE_CHECKING:
     from astrbot.api.star import Context
+
+# 悬挂运行的安全阀（秒）：未完成的运行记录超过此时间即被清理，临时路由锁
+# 也在等待超过此时间后强制恢复释放。仅用于防止悬挂 pipeline 永久占用内存与
+# 路由锁，不改变「不设总超时」的测试语义——正常测试远小于此窗口。
+STALE_RUN_TIMEOUT = 3600
+
+logger = logging.getLogger(__name__)
 
 
 class VirtualTestRunner:
@@ -80,14 +88,6 @@ class VirtualTestRunner:
         if not text or not text.strip():
             raise ValueError("text 不能为空")
 
-        if conf_id:
-            await self._route_lock.acquire()
-            try:
-                await self._apply_conf_route(sessions, conf_id)
-            except Exception:
-                self._route_lock.release()
-                raise
-
         events = [
             VirtualMessageEvent.create(
                 session_id=s["id"],
@@ -116,14 +116,32 @@ class VirtualTestRunner:
         self._runs[test_id] = record
         self._prune_runs()
 
+        if conf_id:
+            await self._route_lock.acquire()
+            try:
+                await self._apply_conf_route(sessions, conf_id)
+                self._enqueue(test_id, events)
+                asyncio.create_task(self._release_route_after(test_id))
+            except BaseException:
+                # 入队/建任务途中出错：恢复已应用的临时路由并释放锁，避免锁泄漏
+                try:
+                    await self._restore_conf_route()
+                except Exception:
+                    logger.exception("恢复 UCR 路由失败")
+                finally:
+                    self._route_lock.release()
+                raise
+        else:
+            self._enqueue(test_id, events)
+        return test_id
+
+    def _enqueue(self, test_id: str, events: list[VirtualMessageEvent]) -> None:
+        """把事件投递到事件队列，并为每个事件启动等待任务。"""
         queue = self.context.get_event_queue()
         for event in events:
             queue.put_nowait(event)
         for event in events:
             asyncio.create_task(self._await_event(test_id, event))
-        if conf_id:
-            asyncio.create_task(self._release_route_after(test_id))
-        return test_id
 
     async def _await_event(self, test_id: str, event: VirtualMessageEvent) -> None:
         await event.pipeline_done_event.wait()
@@ -140,9 +158,19 @@ class VirtualTestRunner:
         record = self._runs.get(test_id)
         if record is None:
             return
-        await record["all_done"].wait()
-        await self._restore_conf_route()
-        self._route_lock.release()
+        try:
+            await asyncio.wait_for(record["all_done"].wait(), timeout=STALE_RUN_TIMEOUT)
+        except TimeoutError:
+            logger.warning(
+                f"测试 {test_id} 超过 {STALE_RUN_TIMEOUT}s 仍未完成，强制释放临时路由锁"
+            )
+        finally:
+            try:
+                await self._restore_conf_route()
+            except Exception:
+                logger.exception("恢复 UCR 路由失败")
+            finally:
+                self._route_lock.release()
 
     def status(self, test_id: str) -> dict | None:
         """查询运行状态（含已完成会话的结果与统计）。"""
@@ -159,12 +187,13 @@ class VirtualTestRunner:
         }
 
     def _prune_runs(self) -> None:
-        """清理已完成超过 10 分钟的运行记录，避免内存累积。"""
+        """清理过期的运行记录：已完成超过 10 分钟，或未完成超过 1 小时（视为悬挂），避免内存累积。"""
         now = time.time()
         expired = [
             tid
             for tid, r in self._runs.items()
-            if r["done"] and (now - (r["finished_at"] or now)) > 600
+            if (r["done"] and (now - (r["finished_at"] or now)) > 600)
+            or (not r["done"] and (now - r["created_at"]) > STALE_RUN_TIMEOUT)
         ]
         for tid in expired:
             self._runs.pop(tid, None)
