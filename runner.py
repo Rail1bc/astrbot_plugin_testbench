@@ -30,6 +30,10 @@ if TYPE_CHECKING:
 # 路由锁，不改变「不设总超时」的测试语义——正常测试远小于此窗口。
 STALE_RUN_TIMEOUT = 3600
 
+# 已完成条目在「在途」列表中的展示保留时长（秒）：前端把状态从「LLM 生成中」
+# 切换到「完成」后仍能看到结果落定，随后条目自然被清理。
+DONE_KEEP_SECONDS = 30
+
 logger = logging.getLogger(__name__)
 
 
@@ -37,7 +41,8 @@ class VirtualTestRunner:
     """把一条消息投递到多个虚拟会话，逐个流式汇总结果。
 
     不带 conf_id 的测试完全并行；带 conf_id 的测试之间通过路由锁串行，避免
-    临时 UCR 路由互相污染。
+    临时 UCR 路由互相污染。每条消息登记一个在途条目（submitted → waiting_llm
+    → llm → done），由 LLM 阶段 hook 推进状态，供前端面板实时展示。
     """
 
     def __init__(self, context: Context) -> None:
@@ -45,6 +50,7 @@ class VirtualTestRunner:
         self._route_lock = asyncio.Lock()
         self._saved_routes: list[tuple[str, str | None]] = []
         self._runs: dict[str, dict] = {}
+        self._pending: dict[str, dict] = {}  # entry_id -> 在途条目
         self._run_seq = 0
 
     async def _apply_conf_route(self, sessions: list[dict], conf_id: str) -> None:
@@ -114,6 +120,7 @@ class VirtualTestRunner:
             "all_done": asyncio.Event(),
         }
         self._runs[test_id] = record
+        self._register_pending(test_id, events, text)
         self._prune_runs()
 
         if conf_id:
@@ -123,7 +130,8 @@ class VirtualTestRunner:
                 self._enqueue(test_id, events)
                 asyncio.create_task(self._release_route_after(test_id))
             except BaseException:
-                # 入队/建任务途中出错：恢复已应用的临时路由并释放锁，避免锁泄漏
+                # 入队/建任务途中出错：清理在途条目、恢复已应用的临时路由并释放锁
+                self._discard_pending(test_id)
                 try:
                     await self._restore_conf_route()
                 except Exception:
@@ -132,8 +140,53 @@ class VirtualTestRunner:
                     self._route_lock.release()
                 raise
         else:
-            self._enqueue(test_id, events)
+            try:
+                self._enqueue(test_id, events)
+            except BaseException:
+                self._discard_pending(test_id)
+                raise
         return test_id
+
+    def _register_pending(
+        self, test_id: str, events: list[VirtualMessageEvent], text: str
+    ) -> None:
+        """为每个事件登记在途条目（供前端实时显示已入队/排队等待 LLM/LLM 生成中）。"""
+        for i, event in enumerate(events):
+            event.entry_id = f"e_{test_id}_{i}"
+            self._pending[event.entry_id] = {
+                "entry_id": event.entry_id,
+                "session_id": event.session_id,
+                "test_id": test_id,
+                "text": text,
+                "status": "submitted",
+                "created_at": time.time(),
+                "status_at": time.time(),
+            }
+
+    def _discard_pending(self, test_id: str) -> None:
+        """入队/建任务失败时清理该测试的在途条目（与路由锁清理一致，防泄漏）。"""
+        for eid in [
+            eid for eid, entry in self._pending.items() if entry["test_id"] == test_id
+        ]:
+            self._pending.pop(eid, None)
+
+    def mark_waiting_llm(self, entry_id: str) -> None:
+        """标记消息已到达 LLM 阶段、正在等待会话锁（OnWaitingLLMRequestEvent）。"""
+        entry = self._pending.get(entry_id)
+        if entry is not None and entry["status"] == "submitted":
+            entry["status"] = "waiting_llm"
+            entry["status_at"] = time.time()
+
+    def mark_llm(self, entry_id: str) -> None:
+        """标记消息正在调用 LLM（OnLLMRequestEvent，会话锁内）。"""
+        entry = self._pending.get(entry_id)
+        if entry is not None and entry["status"] in ("submitted", "waiting_llm"):
+            entry["status"] = "llm"
+            entry["status_at"] = time.time()
+
+    def pending_entries(self) -> list[dict]:
+        """返回全部在途条目（含刚完成、仍处展示保留期的条目），供前端轮询。"""
+        return list(self._pending.values())
 
     def _enqueue(self, test_id: str, events: list[VirtualMessageEvent]) -> None:
         """把事件投递到事件队列，并为每个事件启动等待任务。"""
@@ -145,6 +198,10 @@ class VirtualTestRunner:
 
     async def _await_event(self, test_id: str, event: VirtualMessageEvent) -> None:
         await event.pipeline_done_event.wait()
+        entry = self._pending.get(event.entry_id)
+        if entry is not None:
+            entry["status"] = "done"
+            entry["status_at"] = time.time()
         record = self._runs.get(test_id)
         if record is None:
             return
@@ -187,7 +244,11 @@ class VirtualTestRunner:
         }
 
     def _prune_runs(self) -> None:
-        """清理过期的运行记录：已完成超过 10 分钟，或未完成超过 1 小时（视为悬挂），避免内存累积。"""
+        """清理过期的运行记录与在途条目。
+
+        运行记录：已完成超过 10 分钟，或未完成超过 1 小时（视为悬挂）。
+        在途条目：已完成超过 DONE_KEEP_SECONDS，或未完成超过 1 小时。
+        """
         now = time.time()
         expired = [
             tid
@@ -197,3 +258,17 @@ class VirtualTestRunner:
         ]
         for tid in expired:
             self._runs.pop(tid, None)
+        stale_entries = [
+            eid
+            for eid, entry in self._pending.items()
+            if (
+                entry["status"] == "done"
+                and (now - entry["status_at"]) > DONE_KEEP_SECONDS
+            )
+            or (
+                entry["status"] != "done"
+                and (now - entry["created_at"]) > STALE_RUN_TIMEOUT
+            )
+        ]
+        for eid in stale_entries:
+            self._pending.pop(eid, None)

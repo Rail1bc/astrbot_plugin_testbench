@@ -7,6 +7,7 @@
 import asyncio
 import json
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -635,6 +636,63 @@ async def test_runner_requires_text():
     runner = VirtualTestRunner(FakeContext(queue))
     with pytest.raises(ValueError):
         await runner.start(sessions=[make_session(1)], text="")
+
+
+# ---------- 在途消息状态（重叠测试） ----------
+
+
+@pytest.mark.asyncio
+async def test_runner_pending_states():
+    """start 登记在途条目，hook 推进状态，pipeline 完成后标记 done。"""
+    queue = asyncio.Queue()
+    runner = VirtualTestRunner(FakeContext(queue))
+    test_id = await runner.start(sessions=[make_session(1)], text="重复追问")
+    ev = queue.get_nowait()
+
+    entries = runner.pending_entries()
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry["session_id"] == "vs_1"
+    assert entry["test_id"] == test_id
+    assert entry["text"] == "重复追问"
+    assert entry["status"] == "submitted"
+
+    runner.mark_waiting_llm(ev.entry_id)
+    assert runner.pending_entries()[0]["status"] == "waiting_llm"
+    runner.mark_llm(ev.entry_id)
+    assert runner.pending_entries()[0]["status"] == "llm"
+
+    # 模拟 pipeline 结束（PipelineScheduler.execute 的 finally 调用）
+    ev.cleanup_temporary_local_files()
+    await asyncio.sleep(0)  # 让 _await_event 任务完成标记
+    assert runner.pending_entries()[0]["status"] == "done"
+
+
+def test_runner_pending_prune():
+    """超时未完成与超时完成的在途条目被清理，未超时保留。"""
+    runner = VirtualTestRunner(FakeContext())
+    now = time.time()
+    runner._pending = {
+        "stale_inflight": {
+            "entry_id": "stale_inflight",
+            "status": "submitted",
+            "created_at": now - runner_mod.STALE_RUN_TIMEOUT - 1,
+            "status_at": now,
+        },
+        "stale_done": {
+            "entry_id": "stale_done",
+            "status": "done",
+            "status_at": now - runner_mod.DONE_KEEP_SECONDS - 1,
+        },
+        "fresh": {
+            "entry_id": "fresh",
+            "status": "llm",
+            "created_at": now,
+            "status_at": now,
+        },
+    }
+    runner._prune_runs()
+    assert set(runner._pending) == {"fresh"}
 
 
 # ---------- 配置档案绑定（UCR 路由） ----------
@@ -1323,6 +1381,40 @@ async def test_plugin_test_run_status_not_found():
         resp = await plugin.test_run_status()
     assert resp.status_code == 404
     assert json.loads(resp.body)["status"] == "error"
+
+
+@pytest.mark.asyncio
+async def test_plugin_session_pending_endpoint():
+    """session_pending 返回全部在途条目（含会话与测试归属）。"""
+    queue = asyncio.Queue()
+    plugin = main_mod.VirtualSessionPlugin(FakeContext(queue))
+    test_id = await plugin.runner.start(
+        sessions=[make_session(1), make_session(2)], text="hi"
+    )
+    resp = await plugin.session_pending()
+    body = json.loads(resp.body)
+    assert {e["test_id"] for e in body["pending"]} == {test_id}
+    assert {e["session_id"] for e in body["pending"]} == {"vs_1", "vs_2"}
+    assert all(e["status"] == "submitted" for e in body["pending"])
+
+
+@pytest.mark.asyncio
+async def test_plugin_hook_handlers_track_llm_stages():
+    """on_waiting_llm / on_llm hook 推进在途状态；非虚拟事件被忽略。"""
+    queue = asyncio.Queue()
+    plugin = main_mod.VirtualSessionPlugin(FakeContext(queue))
+    await plugin.runner.start(sessions=[make_session(1)], text="hi")
+    ev = queue.get_nowait()
+
+    await plugin.on_waiting_llm(ev)
+    assert plugin.runner.pending_entries()[0]["status"] == "waiting_llm"
+    await plugin.on_llm(ev, SimpleNamespace())
+    assert plugin.runner.pending_entries()[0]["status"] == "llm"
+
+    # 真实平台消息（非 VirtualMessageEvent）静默忽略，状态不变
+    foreign = SimpleNamespace(entry_id=ev.entry_id)
+    await plugin.on_waiting_llm(foreign)
+    assert plugin.runner.pending_entries()[0]["status"] == "llm"
 
 
 @pytest.mark.asyncio

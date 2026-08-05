@@ -60,6 +60,10 @@ export async function runStatus(testId) {
   return bridge.apiGet("test/run/status", { test_id: testId });
 }
 
+export async function getPending() {
+  return bridge.apiGet("sessions/pending");
+}
+
 export async function saveHistory(payload) {
   return bridge.apiPost("sessions/history/save", payload);
 }

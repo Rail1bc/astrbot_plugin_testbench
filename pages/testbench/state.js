@@ -10,7 +10,6 @@ export const state = {
   pinnedIds: [],
   panelEls: new Map(),
   historyCache: new Map(),
-  runBusy: false,
   expandedGroups: new Set(),
   expandedSessions: new Set(),
 };

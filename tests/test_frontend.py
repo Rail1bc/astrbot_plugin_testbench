@@ -175,3 +175,32 @@ def test_frontend_no_use_before_declaration():
                         f"{name}.js:{i} 顶层引用了 {binding}，但其 const/let 声明在"
                         f"第 {decl_line} 行（暂时性死区，模块求值即抛 ReferenceError）"
                     )
+
+
+def test_frontend_broadcast_does_not_block_overlap():
+    """群发不得用 state.runBusy 阻止并发发送。
+
+    真实场景中用户可能在 agent 处理上一条消息时重复追问；群发若在上一轮
+    未完成时直接 return，这一关键场景永远无法测试。防 runBusy guard 回归。
+    """
+    src = _read_module("app")
+    assert "runBusy" not in src, (
+        "app.js 仍引用 runBusy：群发在上一轮未完成时被阻止，无法测试重叠场景"
+    )
+
+
+def test_frontend_pending_status_labels():
+    """面板在途条须覆盖四个状态文案（已入队/排队等待 LLM/LLM 生成中/完成）。
+
+    PENDING_STATUS_TEXT 与后端 runner 条目状态一一对应；缺任一键/文案，
+    重叠场景下的状态显示就会不完整（如只剩「已入队」）。
+    """
+    src = _read_module("app")
+    for key, label in (
+        ("submitted", "已入队"),
+        ("waiting_llm", "排队等待 LLM"),
+        ("llm", "LLM 生成中"),
+        ("done", "完成"),
+    ):
+        assert f"{key}:" in src, f"PENDING_STATUS_TEXT 缺少状态键 {key}"
+        assert label in src, f"PENDING_STATUS_TEXT 缺少状态键 {key} 的文案 {label}"

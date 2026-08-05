@@ -57,6 +57,8 @@ class VirtualMessageEvent(AstrMessageEvent):
         """产生回复后置位"""
         self.pipeline_done_event = asyncio.Event()
         """pipeline 执行完毕后置位"""
+        self.entry_id: str | None = None
+        """运行器登记的在途条目 id（LLM 阶段 hook 经它与条目关联）；由 runner.start() 赋值"""
 
     @classmethod
     def create(

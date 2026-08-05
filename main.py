@@ -14,6 +14,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from astrbot.api.event import AstrMessageEvent
+from astrbot.api.event.filter import on_llm_request, on_waiting_llm_request
 from astrbot.api.star import Context, Star
 from astrbot.api.web import error_response, json_response, request
 
@@ -25,6 +27,7 @@ from .conf_routes import (
 )
 from .group_store import VirtualGroupManager, umo_of
 from .runner import VirtualTestRunner
+from .virtual_event import VirtualMessageEvent
 
 PLUGIN_NAME = "astrbot_plugin_testbench"
 
@@ -52,6 +55,12 @@ _ROUTES: tuple[tuple[str, str, list[str], str], ...] = (
         "更新测试组配置（组配置变更同步应用到仍继承组配置的会话）",
     ),
     ("/sessions", "list_sessions", ["GET"], "列出全部虚拟会话（已解析最终配置）"),
+    (
+        "/sessions/pending",
+        "session_pending",
+        ["GET"],
+        "查询全部在途/刚完成测试消息的实时状态",
+    ),
     (
         "/sessions/update",
         "update_session",
@@ -427,6 +436,28 @@ class VirtualSessionPlugin(Star):
         if record is None:
             return error_response("未找到该测试运行", status_code=404)
         return json_response(record)
+
+    # ---------- 在途消息状态（LLM 阶段 hook） ----------
+
+    async def session_pending(self):
+        """查询全部在途（未完成或刚完成）测试消息的实时状态。
+
+        前端面板据此显示每条消息「已入队 / 排队等待 LLM / LLM 生成中 /
+        完成」；中间两个状态由下面的 hook 推进。
+        """
+        return json_response({"pending": self.runner.pending_entries()})
+
+    @on_waiting_llm_request()
+    async def on_waiting_llm(self, event: AstrMessageEvent) -> None:
+        """消息已到达 LLM 阶段、正在等待会话锁（「重复追问」排队等待时触发）。"""
+        if isinstance(event, VirtualMessageEvent) and event.entry_id:
+            self.runner.mark_waiting_llm(event.entry_id)
+
+    @on_llm_request()
+    async def on_llm(self, event: AstrMessageEvent, req) -> None:
+        """消息正在调用 LLM（会话锁内、流式/非流式分叉之前触发）。"""
+        if isinstance(event, VirtualMessageEvent) and event.entry_id:
+            self.runner.mark_llm(event.entry_id)
 
     async def save_history(self):
         """整体替换会话的对话历史（JSON 编辑器保存）。

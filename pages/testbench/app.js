@@ -9,6 +9,7 @@ import { createGroupList } from "./group_list.js";
 import {
   deleteSessions,
   getHistory,
+  getPending,
   listConfs,
   listPlatforms,
   ready,
@@ -79,6 +80,7 @@ function openPanel(id) {
     `</div>` +
     `<div class="panel-body">` +
     `<div class="chat"></div>` +
+    `<div class="panel-pending" hidden></div>` +
     `<div class="panel-status" hidden></div>` +
     `</div>` +
     `<div class="panel-input">` +
@@ -292,7 +294,6 @@ async function sendToOne(id, text) {
 }
 
 async function sendToAll() {
-  if (state.runBusy) return;
   const ids = state.openIds.slice();
   const text = $("run-text").value.trim();
   if (!ids.length) {
@@ -303,9 +304,8 @@ async function sendToAll() {
     showRunStatus("warn", "请输入群发消息");
     return;
   }
-  state.runBusy = true;
-  $("btn-run-all").disabled = true;
-  $("btn-run-all").textContent = "发送中…";
+  // 不阻止重叠发送：agent 处理中可再次群发（真实「重复追问」场景），
+  // 各会话的在途消息由面板底部的在途条实时展示
   $("run-text").value = "";
   showRunStatus("warn", `正在并发发送给 ${ids.length} 个会话…`);
   try {
@@ -337,16 +337,10 @@ async function sendToAll() {
           `完成：成功 ${ok} / 无回复 ${noReply} / 错误 ${err}` +
             `，耗时 avg ${s.avg}s，p95 ${s.p95}s`,
         );
-        state.runBusy = false;
-        $("btn-run-all").disabled = false;
-        $("btn-run-all").textContent = "发送到全部";
       },
     );
   } catch (err) {
     showRunStatus("error", "发送失败: " + err.message);
-    state.runBusy = false;
-    $("btn-run-all").disabled = false;
-    $("btn-run-all").textContent = "发送到全部";
   }
 }
 
@@ -355,6 +349,67 @@ function showRunStatus(status, text) {
   el.hidden = false;
   el.className = "run-status " + status;
   el.textContent = text;
+}
+
+// ---------- 在途消息（面板实时状态条） ----------
+
+// 在途消息的状态文案（与后端 runner 的条目状态一一对应）
+const PENDING_STATUS_TEXT = {
+  submitted: "已入队",
+  waiting_llm: "排队等待 LLM",
+  llm: "LLM 生成中",
+  done: "完成",
+};
+
+// 渲染单个面板的在途消息条：显示正在处理与排队中的消息及其当前阶段；
+// 返回是否发生变化（供轮询器决定是否重排对齐高度）
+function renderPendingStrip(panel, entries) {
+  const el = panel.querySelector(".panel-pending");
+  if (!el) return false;
+  entries.sort((a, b) => (a.created_at || 0) - (b.created_at || 0));
+  const key = entries.map((e) => `${e.entry_id}:${e.status}`).join(",");
+  if (key === el.dataset.pendingKey) return false;
+  el.dataset.pendingKey = key;
+  if (!entries.length) {
+    el.hidden = true;
+    el.innerHTML = "";
+    return true;
+  }
+  el.hidden = false;
+  el.innerHTML = entries
+    .map((e) => {
+      const text =
+        e.text && e.text.length > 24 ? e.text.slice(0, 24) + "…" : e.text || "";
+      const label = PENDING_STATUS_TEXT[e.status] || e.status;
+      return (
+        `<span class="pending-item pending-${escapeHtml(e.status)}">` +
+        `<span class="pending-text" title="${escapeHtml(e.text)}">${escapeHtml(text)}</span>` +
+        `<span class="pending-state">${escapeHtml(label)}</span>` +
+        `</span>`
+      );
+    })
+    .join("");
+  return true;
+}
+
+// 全局轮询在途消息：一次查询，按会话分发到各面板（单发/群发/重新生成共用）
+function pollPending() {
+  setInterval(async () => {
+    let pending = [];
+    try {
+      const data = await getPending();
+      pending = Array.isArray(data.pending) ? data.pending : [];
+    } catch (err) {
+      return; // 查询失败下轮重试
+    }
+    let changed = false;
+    for (const [id, el] of state.panelEls) {
+      if (renderPendingStrip(el, pending.filter((e) => e.session_id === id))) {
+        changed = true;
+      }
+    }
+    if (changed && align.isAlignMode()) align.reflowAlign();
+  }, 1000);
 }
 
 // 群发栏实时显示：当前打开的会话总数 + 按所属测试组的分布
@@ -564,3 +619,4 @@ railSessionBtn.addEventListener("click", () => {
 
 await ready();
 await Promise.all([loadOptions(), refreshGroups()]);
+pollPending();

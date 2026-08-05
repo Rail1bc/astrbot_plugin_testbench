@@ -93,16 +93,18 @@ astrbot_plugin_testbench/
 - `start(sessions, text, provider_id, model, conf_id)` **立即返回 test_id**（不等待回复）；事件 `put_nowait` 入队，逐事件 `asyncio.create_task(_await_event)` 等待 `pipeline_done_event`。
 - `status(test_id)` 返回 `{total, done, results[], stats}`，前端轮询实现逐会话独立刷新。
 - 运行记录保存在内存 `self._runs`，完成超过 10 分钟自动清理。
+- **在途条目（重叠测试）**：每条消息登记一个条目（`self._pending`，经 `event.entry_id` 关联），状态 submitted → waiting_llm → llm → done；中间两个状态由 LLM 阶段 hook（`on_waiting_llm_request` / `on_llm_request`）推进，`pending_entries()` 供前端面板实时展示；已完成的条目保留 `DONE_KEEP_SECONDS`（30s）后随 `_prune_runs` 清理。
 
 ### 前端（pages/testbench/）
 
 - `api.js`：`window.AstrBotPluginPage` bridge 的 `apiGet`/`apiPost` 统一封装。bridge 的响应解析是 `response.data?.data ?? response.data`（json_response 的 body 直接作为 data）。
-- `state.js`：全部共享可变状态收进一个 `state` 对象（groups/platforms/confs/openIds/pinnedIds/panelEls/historyCache/runBusy/expandedGroups/expandedSessions）。ES module 顶层绑定无法跨模块共享可变值，故集中到叶子模块，各模块从 `state` 读写，保持依赖单向。
+- `state.js`：全部共享可变状态收进一个 `state` 对象（groups/platforms/confs/openIds/pinnedIds/panelEls/historyCache/expandedGroups/expandedSessions）。ES module 顶层绑定无法跨模块共享可变值，故集中到叶子模块，各模块从 `state` 读写，保持依赖单向。
 - `utils.js`：纯工具与配置解析（`escapeHtml`/`statusText`/`confName`/`platformName`/`findSession`/`effectiveView`），唯一依赖 `state`。`effectiveView` 是后端 `effective()` 的客户端镜像（曾漏 sender 字段导致显示「—」，有防回归测试）。
 - `modal.js`：自绘弹窗（iframe 沙箱禁用原生 alert/confirm），回调状态 `modalCallback` 封装在模块内部，对外只暴露 `openModal`/`showModal`/`hideModal`。
 - `group_list.js`：左侧测试组列表与组/会话配置弹窗。`createGroupList(env)` 依赖注入视图动作（toggleOpen/openAll/deleteSession/renderPanels/showRunStatus/updateRunOverview），本模块不 import app.js，模块依赖保持单向。`platformOptions()`/`confOptions()` 是平台/档案下拉选项的共享构建（含「档案已不存在」占位，防静默丢绑定）。
 - `chat.js`：`createChatRenderer(alignGetter)` 集中聊天内容渲染（气泡 `bubbleFor` / 思维链 `reasoningSection` / 轮次分组 `groupTurns` 与对齐渲染 `renderAligned`）。align 以 getter 注入（渲染时才取），避免与 `createAlignController` 互相创建的循环依赖；`app.js` 提供 `renderChat` 包装函数注入 align 控制器并传给 align.js 的 env。
-- `app.js` 分区：面板（openPanel/loadHistory/历史 JSON 编辑/重新生成）→ 发送（pollRun/sendToOne/sendToAll/updateRunOverview）→ 会话操作（重置/删除）→ 面板排序（renderPanels/拖拽/置顶）→ 选项加载 → 初始化（组装 align/chat/group_list，绑定全局事件）。`loadOptions()` 拉取 platforms/confs 写入 `state`；`refreshGroups()` 来自 group_list（刷新左侧列表并清理失效面板）。
+- `app.js` 分区：面板（openPanel/loadHistory/历史 JSON 编辑/重新生成）→ 发送（pollRun/pollPending/sendToOne/sendToAll/updateRunOverview）→ 会话操作（重置/删除）→ 面板排序（renderPanels/拖拽/置顶）→ 选项加载 → 初始化（组装 align/chat/group_list，绑定全局事件）。`loadOptions()` 拉取 platforms/confs 写入 `state`；`refreshGroups()` 来自 group_list（刷新左侧列表并清理失效面板）。
+- 群发**不阻止重叠发送**（真实「重复追问」场景，与真实平台一致由 pipeline 并发处理）；每个面板底部有在途消息条（`.panel-pending`），`pollPending()` 每秒轮询 `sessions/pending` 接口、`renderPendingStrip` 按会话渲染「已入队 / 排队等待 LLM / LLM 生成中 / 完成」chip（`PENDING_STATUS_TEXT`），strip 在 `.chat` 外不干扰轮次对齐，显隐变化后按需 `reflowAlign()`。
 - 左侧布局：最左为 `.ui-rail` UI 窄条（方形按钮，当前 1 个「会话列表」按钮，点击折叠/展开侧栏，为后续扩展预留）；侧栏只有一个列表——「＋ 新建测试组」块（点击创建默认配置组并弹编辑弹窗）+ 测试组块（可展开组内会话）。组头操作：打开全部 / ＋新增 / ✎编辑 / ✕删除；会话行头点击展开配置（`renderSessionConfig` 每行显示有效值 + 「已修改/继承组」chip，`sessionOverrides` 统计已单独修改的项），会话操作按钮：打开 / 删除（配置修改走展开配置中的「编辑配置」弹窗，「重置」在已打开会话的面板页眉）。
 - 群发栏（`.run-bar`）位于工作区**下方**（面板在上、群发在右下），`#align-bar` 位于面板与群发栏之间；`.workspace` 为 flex 列布局，`workspace-body` flex:1。
 - 面板页眉为多行 flex 布局：标题与徽标包在 `.panel-info`（`flex-wrap: wrap`）内随内容换行撑开页眉，`.panel-actions` 的「编辑 / 重置 / 置顶 / 关闭」按钮始终第一行右对齐；`refreshPanelHead()` / `openPanel()` 都维护该结构。
@@ -126,6 +128,7 @@ astrbot_plugin_testbench/
 | POST | /groups/\<id\>/sessions | add_group_sessions | 组内新增会话 |
 | POST | /groups/\<id\>/update | update_group | 更新测试组配置（组配置变更同步应用到仍继承组配置的会话） |
 | GET | /sessions | list_sessions | 全部会话（已解析最终配置） |
+| GET | /sessions/pending | session_pending | 在途测试消息的实时状态（已入队/排队等待 LLM/LLM 生成中/完成） |
 | POST | /sessions/update | update_session | 会话配置覆盖（null 恢复继承组配置） |
 | POST | /sessions/delete | delete_sessions | 删会话 + 联动清理 |
 | GET | /sessions/\<id\>/history | session_history | 对话历史（LLM 上下文消息列表） |
@@ -140,15 +143,15 @@ astrbot_plugin_testbench/
 ## 测试与验证
 
 > **开发流程（2026-08-05 起）**：本地**不跑**测试，修改直接提交推送到 `dev` 分支，
-> 由 GitHub Actions 自动把关——push 到 dev 触发 `pytest.yml`（80 个测试 +
+> 由 GitHub Actions 自动把关——push 到 dev 触发 `pytest.yml`（88 个测试 +
 > 前端 JS 语法检查 `js-check`：node --check 八个页面脚本）+ `ruff-format.yml`；
 > dev 验证通过后合并到 `main`，metadata.yaml 变更即触发 release.yml 自动发版。
 > 本地命令（下面的 pytest/ruff）仅在需要主动排查时使用。
 
 测试随插件仓库维护（`tests/`，可与主仓库无关地推送、供协作者运行）。
 
-- `tests/test_backend.py`：后端单元测试（77 个），需要 astrbot（PyPI 包，插件运行时依赖）。以 **namespace package** 加载插件：`sys.path.insert(0, str(REPO_ROOT.parent))` 后 `import astrbot_plugin_testbench.*`——插件模块用相对导入（`from .group_store import ...`），必须按包加载，这与 AstrBot 在 data/plugins 下加载插件的方式一致。未安装 astrbot 时整组跳过（`pytest.importorskip`）。
-- `tests/test_frontend.py`：前端脚本静态检查（5 个），零依赖，任何环境可运行。
+- `tests/test_backend.py`：后端单元测试（81 个），需要 astrbot（PyPI 包，插件运行时依赖）。以 **namespace package** 加载插件：`sys.path.insert(0, str(REPO_ROOT.parent))` 后 `import astrbot_plugin_testbench.*`——插件模块用相对导入（`from .group_store import ...`），必须按包加载，这与 AstrBot 在 data/plugins 下加载插件的方式一致。未安装 astrbot 时整组跳过（`pytest.importorskip`）。
+- `tests/test_frontend.py`：前端脚本静态检查（7 个），零依赖，任何环境可运行。
 
 本地运行（用主仓库 venv，bash cwd 不稳定，命令先 `cd /e/AstrBot` 或 `git -C` 插件目录）：
 

@@ -894,6 +894,57 @@ code {
   color: var(--danger);
 }
 
+.panel-pending {
+  max-height: 96px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 4px 12px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+}
+
+.pending-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pending-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-secondary);
+}
+
+.pending-state {
+  flex-shrink: 0;
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  white-space: nowrap;
+  background: var(--badge-bg);
+  color: var(--text-secondary);
+}
+
+.pending-waiting_llm .pending-state {
+  background: color-mix(in srgb, var(--warn) 15%, transparent);
+  color: var(--warn);
+}
+
+.pending-llm .pending-state {
+  background: color-mix(in srgb, var(--primary) 15%, transparent);
+  color: var(--primary);
+}
+
+.pending-done .pending-state {
+  background: color-mix(in srgb, var(--ok) 15%, transparent);
+  color: var(--ok);
+}
+
 .panel-input {
   display: flex;
   gap: 8px;
