@@ -15,4 +15,6 @@ export const state = {
   testsets: [],
   selectedTestsetId: null,
   activeRunId: null,
+  // 页眉菜单「复制历史」的剪贴板：{conversations, sourceName, at}，null 表示未复制
+  clipboard: null,
 };

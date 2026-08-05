@@ -1635,6 +1635,163 @@ async def test_plugin_save_history_deduplicates_stale_cid(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_plugin_clone_sessions_copies_history(tmp_path):
+    """克隆会话：同组内新建 N 个会话，每个新会话的历史与源会话一致（新 cid）。"""
+    conv_mgr = FakeConvManager()
+    plugin = main_mod.VirtualSessionPlugin(FakeContext(conv_mgr=conv_mgr))
+    plugin.group_mgr = VirtualGroupManager(data_dir=tmp_path)
+    group = plugin.group_mgr.create_group("组A", count=1)
+    session = group["sessions"][0]
+    resolved = plugin.group_mgr.effective(group, session)
+    conv_mgr.add_history(
+        umo_of(resolved),
+        "对话",
+        [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "在的"},
+        ],
+    )
+
+    resp = await call_handler(
+        plugin.clone_sessions, {"session_id": session["id"], "count": 2}
+    )
+    assert resp.status_code == 200
+    body = json.loads(resp.body)
+    assert body["group_id"] == group["id"]
+    assert len(body["session_ids"]) == 2
+    assert body["copied"] == 2
+
+    # 同组会话数 1 → 3，新会话继承组配置
+    updated = plugin.group_mgr.get_group(group["id"])
+    assert len(updated["sessions"]) == 3
+    for new_session in updated["sessions"][1:]:
+        new_umo = umo_of(plugin.group_mgr.effective(updated, new_session))
+        convs = await conv_mgr.get_conversations(new_umo)
+        assert len(convs) == 1  # 新 cid（new_cid_*），不沿用源会话 cid
+        assert json.loads(convs[0].history) == [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "在的"},
+        ]
+    # 源会话历史不受影响
+    src_convs = await conv_mgr.get_conversations(umo_of(resolved))
+    assert json.loads(src_convs[0].history)[0]["content"] == "hi"
+
+
+@pytest.mark.asyncio
+async def test_plugin_clone_sessions_validation(tmp_path):
+    """克隆会话的参数校验：会话不存在 404、count 非法 400。"""
+    plugin = main_mod.VirtualSessionPlugin(FakeContext())
+    plugin.group_mgr = VirtualGroupManager(data_dir=tmp_path)
+    group = plugin.group_mgr.create_group("组A", count=1)
+    session = group["sessions"][0]
+
+    resp = await call_handler(
+        plugin.clone_sessions, {"session_id": "vs_none", "count": 1}
+    )
+    assert resp.status_code == 404
+
+    for bad_count in (0, -1, "x", True, None):
+        resp = await call_handler(
+            plugin.clone_sessions, {"session_id": session["id"], "count": bad_count}
+        )
+        assert resp.status_code == 400, f"count={bad_count!r} 应被拒绝"
+
+    resp = await call_handler(plugin.clone_sessions, {"session_id": session["id"]})
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_plugin_clone_sessions_group_overflow(tmp_path):
+    """克隆后会话数超过测试组上限时拒绝。"""
+    plugin = main_mod.VirtualSessionPlugin(FakeContext())
+    plugin.group_mgr = VirtualGroupManager(data_dir=tmp_path)
+    group = plugin.group_mgr.create_group("组A", count=499)
+    session = group["sessions"][0]
+
+    resp = await call_handler(
+        plugin.clone_sessions, {"session_id": session["id"], "count": 2}
+    )
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_plugin_derive_session_copies_history(tmp_path):
+    """衍生会话：创建全新测试组，组内每个会话的历史都与源会话一致。"""
+    conv_mgr = FakeConvManager()
+    plugin = main_mod.VirtualSessionPlugin(FakeContext(conv_mgr=conv_mgr))
+    plugin.group_mgr = VirtualGroupManager(data_dir=tmp_path)
+    group = plugin.group_mgr.create_group("原组", count=1)
+    session = group["sessions"][0]
+    resolved = plugin.group_mgr.effective(group, session)
+    conv_mgr.add_history(umo_of(resolved), "对话", [{"role": "user", "content": "hi"}])
+
+    resp = await call_handler(
+        plugin.derive_session,
+        {"session_id": session["id"], "count": 3, "name": "衍生组"},
+    )
+    assert resp.status_code == 200
+    body = json.loads(resp.body)
+    assert body["group_name"] == "衍生组"
+    assert len(body["session_ids"]) == 3
+    assert body["copied"] == 3
+
+    new_group = plugin.group_mgr.get_group(body["group_id"])
+    assert new_group is not None
+    assert new_group["id"] != group["id"]  # 全新测试组
+    for new_session in new_group["sessions"]:
+        new_umo = umo_of(plugin.group_mgr.effective(new_group, new_session))
+        convs = await conv_mgr.get_conversations(new_umo)
+        assert len(convs) == 1
+        assert json.loads(convs[0].history) == [{"role": "user", "content": "hi"}]
+    # 源组与会话不受影响
+    assert len(plugin.group_mgr.get_group(group["id"])["sessions"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_plugin_derive_session_default_name_and_config(tmp_path):
+    """衍生组默认名「<原组名> 衍生」，并继承源组的配置（含 conf_id 路由应用）。"""
+    ucr = FakeUCR()
+    plugin = main_mod.VirtualSessionPlugin(FakeContext(ucr=ucr))
+    plugin.group_mgr = VirtualGroupManager(data_dir=tmp_path)
+    group = plugin.group_mgr.create_group(
+        "提示词A", count=1, platform_id="telegram", conf_id="conf_1"
+    )
+    session = group["sessions"][0]
+
+    resp = await call_handler(
+        plugin.derive_session, {"session_id": session["id"], "count": 2}
+    )
+    assert resp.status_code == 200
+    body = json.loads(resp.body)
+    assert body["group_name"] == "提示词A 衍生"
+
+    new_group = plugin.group_mgr.get_group(body["group_id"])
+    assert new_group["platform_id"] == "telegram"
+    assert new_group["conf_id"] == "conf_1"
+    # 组配置档案路由已应用到新会话
+    new_umo = umo_of(plugin.group_mgr.effective(new_group, new_group["sessions"][0]))
+    assert ucr.umop_to_conf_id.get(new_umo) == "conf_1"
+
+
+@pytest.mark.asyncio
+async def test_plugin_derive_session_validation(tmp_path):
+    """衍生会话的参数校验：会话不存在 404、count 非法 400。"""
+    plugin = main_mod.VirtualSessionPlugin(FakeContext())
+    plugin.group_mgr = VirtualGroupManager(data_dir=tmp_path)
+    group = plugin.group_mgr.create_group("组A", count=1)
+    session = group["sessions"][0]
+
+    resp = await call_handler(
+        plugin.derive_session, {"session_id": "vs_none", "count": 1}
+    )
+    assert resp.status_code == 404
+    resp = await call_handler(
+        plugin.derive_session, {"session_id": session["id"], "count": 0}
+    )
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
 async def test_plugin_regenerate_history(tmp_path):
     queue = asyncio.Queue()
     context = FakeContext(queue)

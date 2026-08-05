@@ -11,6 +11,7 @@ id/昵称）的虚拟会话，组内单个会话可覆盖组配置。测试以�
 
 from __future__ import annotations
 
+import copy
 import json
 from typing import Any
 
@@ -70,6 +71,18 @@ _ROUTES: tuple[tuple[str, str, list[str], str], ...] = (
         "设置会话自身的配置（覆盖组配置）",
     ),
     ("/sessions/delete", "delete_sessions", ["POST"], "删除虚拟会话"),
+    (
+        "/sessions/clone",
+        "clone_sessions",
+        ["POST"],
+        "克隆会话：同测试组内新建 N 个会话并拷贝其对话历史",
+    ),
+    (
+        "/sessions/derive",
+        "derive_session",
+        ["POST"],
+        "衍生会话：基于某会话历史创建全新测试组（组内会话历史一致）",
+    ),
     (
         "/sessions/<session_id>/history",
         "session_history",
@@ -392,6 +405,102 @@ class VirtualSessionPlugin(Star):
         await self._clear_conf_routes(sessions)
         await self._delete_session_conversations(sessions)
         return json_response({"deleted": len(sessions)})
+
+    async def clone_sessions(self):
+        """克隆会话：在源会话所属测试组内新建 count 个会话，并把源会话的
+        对话历史拷贝给每个新会话——同一历史起点，可分别改配置/模型测试。"""
+        payload = await request.json(default={})
+        session_id = payload.get("session_id")
+        count = payload.get("count")
+        if not isinstance(session_id, str) or not session_id:
+            return error_response("session_id 不能为空", status_code=400)
+        if (
+            not isinstance(count, int)
+            or isinstance(count, bool)
+            or count < 1
+            or count > MAX_SESSIONS_PER_GROUP
+        ):
+            return error_response(
+                f"count 必须是 1-{MAX_SESSIONS_PER_GROUP} 之间的整数",
+                status_code=400,
+            )
+        found = self.group_mgr.find_session(session_id)
+        if found is None:
+            return error_response("未找到该虚拟会话", status_code=404)
+        group, session = found
+        if len(group.get("sessions", [])) + count > MAX_SESSIONS_PER_GROUP:
+            return error_response("克隆后会话数超过测试组上限", status_code=400)
+        created = self.group_mgr.add_sessions(
+            group["id"], count, name_prefix=session.get("name")
+        )
+        resolved_created = [self.group_mgr.effective(group, s) for s in created]
+        conf_id = group.get("conf_id") or None
+        if conf_id:
+            await self._apply_conf_routes(resolved_created, conf_id)
+        copied = await self._copy_history(
+            self.group_mgr.effective(group, session), resolved_created
+        )
+        return json_response(
+            {
+                "group_id": group["id"],
+                "session_ids": [s["id"] for s in created],
+                "copied": copied,
+            }
+        )
+
+    async def derive_session(self):
+        """衍生会话：基于某会话的对话历史创建全新测试组，组内每个会话的历史
+        都与该目标会话一致——同一起点的全新会话集合，便于后续分别改配置测试。
+        新组继承源组的平台/档案/发送者配置。"""
+        payload = await request.json(default={})
+        session_id = payload.get("session_id")
+        count = payload.get("count")
+        if not isinstance(session_id, str) or not session_id:
+            return error_response("session_id 不能为空", status_code=400)
+        if (
+            not isinstance(count, int)
+            or isinstance(count, bool)
+            or count < 1
+            or count > MAX_SESSIONS_PER_GROUP
+        ):
+            return error_response(
+                f"count 必须是 1-{MAX_SESSIONS_PER_GROUP} 之间的整数",
+                status_code=400,
+            )
+        found = self.group_mgr.find_session(session_id)
+        if found is None:
+            return error_response("未找到该虚拟会话", status_code=404)
+        group, session = found
+        name = payload.get("name")
+        new_group = self.group_mgr.create_group(
+            name=(
+                f"{group.get('name') or '测试组'} 衍生"
+                if not (isinstance(name, str) and name.strip())
+                else name
+            ),
+            count=count,
+            platform_id=group.get("platform_id"),
+            conf_id=group.get("conf_id"),
+            sender_id=group.get("sender_id"),
+            sender_name=group.get("sender_name"),
+        )
+        resolved_new = [
+            self.group_mgr.effective(new_group, s) for s in new_group["sessions"]
+        ]
+        conf_id = new_group.get("conf_id") or None
+        if conf_id:
+            await self._apply_conf_routes(resolved_new, conf_id)
+        copied = await self._copy_history(
+            self.group_mgr.effective(group, session), resolved_new
+        )
+        return json_response(
+            {
+                "group_id": new_group["id"],
+                "group_name": new_group["name"],
+                "session_ids": [s["id"] for s in new_group["sessions"]],
+                "copied": copied,
+            }
+        )
 
     async def session_history(self, session_id: str):
         """查看虚拟会话的对话历史（LLM 上下文消息列表）。"""
@@ -843,6 +952,31 @@ class VirtualSessionPlugin(Star):
                     parts.append(str(part.get("text") or part.get("content") or ""))
             return "\n".join(p for p in parts if p)
         return ""
+
+    async def _copy_history(self, source: dict, targets: list[dict]) -> int:
+        """把 source 会话的全部对话历史深拷贝到每个 target 会话。
+
+        目标会话的对话按内容整体新建，conversation_id 由系统重新生成——克隆/
+        衍生的会话是独立实体，不沿用源会话的对话 id。返回新建对话总数。
+        """
+        conv_mgr = self.context.conversation_manager
+        snapshot: list[tuple[str | None, list[dict]]] = []
+        for conv in await conv_mgr.get_conversations(umo_of(source)):
+            try:
+                history = json.loads(conv.history) if conv.history else []
+            except json.JSONDecodeError:
+                history = []
+            snapshot.append((conv.title, history))
+        copied = 0
+        for target in targets:
+            for title, history in snapshot:
+                await conv_mgr.new_conversation(
+                    umo_of(target),
+                    content=copy.deepcopy(history),
+                    title=title,
+                )
+                copied += 1
+        return copied
 
     async def _delete_session_conversations(self, sessions: list[dict]) -> int:
         """级联删除虚拟会话在 AstrBot 原生的对话历史（按 umo），返回成功数。"""

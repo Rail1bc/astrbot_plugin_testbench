@@ -43,6 +43,14 @@ export async function deleteSessions(ids) {
   return bridge.apiPost("sessions/delete", { ids });
 }
 
+export async function cloneSession(sessionId, count) {
+  return bridge.apiPost("sessions/clone", { session_id: sessionId, count });
+}
+
+export async function deriveSession(sessionId, count, name) {
+  return bridge.apiPost("sessions/derive", { session_id: sessionId, count, name });
+}
+
 export async function getHistory(id) {
   return bridge.apiGet(`sessions/${encodeURIComponent(id)}/history`);
 }

@@ -214,6 +214,28 @@ def test_frontend_tool_call_and_result_bubbles():
     assert "（调用工具…）" not in src, "旧的裸「（调用工具…）」占位仍存在"
 
 
+def test_frontend_panel_menu_actions():
+    """会话面板页眉「⋯」菜单须含编辑/重置/复制/克隆/粘贴/衍生六项。
+
+    曾把编辑/重置作为页眉常显按钮、复制/粘贴/克隆/衍生不存在。现收敛为
+    ⋯ 下拉菜单：app.js 须渲染 .panel-menu-dropdown 菜单项并分发到
+    copyHistory/pasteHistory/cloneSession/deriveSession；api.js 须封装
+    sessions/clone 与 sessions/derive；state.js 须有 clipboard 剪贴板。
+    """
+    app_js = _read_module("app")
+    api_js = _read_module("api")
+    state_js = _read_module("state")
+    for action in ("history", "reset", "copy", "clone", "paste", "derive"):
+        assert f'data-action="{action}"' in app_js, f"面板菜单缺少 data-action={action}"
+    assert "panel-menu-dropdown" in app_js, "缺少下拉菜单容器"
+    assert "setupPanelMenu" in app_js, "缺少菜单绑定函数"
+    for fn in ("copyHistory", "pasteHistory", "cloneSession", "deriveSession"):
+        assert f"function {fn}(" in app_js, f"缺少 {fn} 操作函数"
+    assert "clipboard" in state_js, "state 缺少 clipboard 剪贴板"
+    assert "sessions/clone" in api_js, "api 缺少 sessions/clone 封装"
+    assert "sessions/derive" in api_js, "api 缺少 sessions/derive 封装"
+
+
 def test_frontend_pending_status_labels():
     """面板在途条须覆盖四个状态文案（已入队/排队等待 LLM/LLM 生成中/完成）。
 

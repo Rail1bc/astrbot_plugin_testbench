@@ -130,7 +130,7 @@ astrbot_plugin_testbench/
 - 群发**不阻止重叠发送**（真实「重复追问」场景，与真实平台一致由 pipeline 并发处理）；每个面板底部有在途消息条（`.panel-pending`），`pollPending()` 每秒轮询 `sessions/pending` 接口、`renderPendingStrip` 按会话渲染「已入队 / 排队等待 LLM / LLM 生成中 / 完成」chip（`PENDING_STATUS_TEXT`）；**完成且已刷入会话历史的消息即从条内移除**（`loadHistory` 成功记录 `historyRefreshedAt`，过滤掉 `status=="done"` 且完成于该时刻之前的条目，条内只留真正在途与完成后的短暂过渡）；strip 在 `.chat` 外不干扰轮次对齐，显隐变化后按需 `reflowAlign()`。
 - 左侧布局：最左为 `.ui-rail` UI 窄条（方形按钮，当前 2 个「会话列表」/「测试集」，点击切换视图，点当前视图按钮折叠/展开侧栏，为后续扩展预留）；侧栏有两个互斥视图：`.groups-card`——「＋ 新建测试组」块（点击创建默认配置组并弹编辑弹窗）+ 测试组块（可展开组内会话），组头操作：打开全部 / ＋新增 / ✎编辑 / ✕删除，会话行头点击展开配置（`renderSessionConfig` 每行显示有效值 + 「已修改/继承组」chip，`sessionOverrides` 统计已单独修改的项），会话操作按钮：打开 / 删除（配置修改走展开配置中的「编辑配置」弹窗，「重置」在已打开会话的面板页眉）；`.testsets-card`——「＋ 新建测试集」块 + **纯命名条目**（名字 + N 条消息徽标 + 选中高亮，无内联展开 / 无行内操作按钮，点击 → `selectTestset` 打开右侧编辑窗口）+ 底部「最近运行」区。
 - 工作区（`.workspace`）为 flex 列布局：顶部 `#workspace-strip` 常显状态条（运行状态 + 取消按钮，两个视图下都常显）；`.sessions-view`——`.panels-block`（包裹已打开会话面板 + 空态提示，flex:1）、`#align-bar`、`.run-bar` 两行（第 1 行群发输入 + 发送到全部 + 轮次对齐；第 2 行 `#run-testset` 测试集下拉 + `#btn-run-testset` 执行 + `#run-overview`）；`.testsets-view`（初始 hidden）——`.testset-editor` 编辑窗口。`.sessions-view` / `.testsets-view` 必须带 `[hidden]{display:none}` 特例（flex 列元素与 HTML hidden 的已知陷阱，沿用 groups-card）。
-- 面板页眉为多行 flex 布局：标题与徽标包在 `.panel-info`（`flex-wrap: wrap`）内随内容换行撑开页眉，`.panel-actions` 的「编辑 / 重置 / 置顶 / 关闭」按钮始终第一行右对齐；`refreshPanelHead()` / `openPanel()` 都维护该结构。
+- 面板页眉为多行 flex 布局：标题与徽标包在 `.panel-info`（`flex-wrap: wrap`）内随内容换行撑开页眉，`.panel-actions` 始终第一行右对齐。操作按钮收敛为「⋯」下拉菜单（`.panel-menu` / `.panel-menu-dropdown`，`setupPanelMenu` 切换显隐、document 级点击外关闭）+ 常显「置顶 / 关闭」：菜单项经 `data-action` 分发——`history`（JSON 编辑器，即原「编辑」按钮）、`reset`（重置历史）、`copy`（复制历史到 `state.clipboard`，去掉 conversation_id 使粘贴行为可预测）、`clone`（`promptCountDialog` 数字弹窗 → `cloneSessionApi`，同组新建 N 个历史一致的会话）、`paste`（有剪贴板内容才可用，danger 确认后经 `saveHistory` 整体覆盖）、`derive`（带命名与计数弹窗 → `deriveSessionApi`，创建全新测试组）；克隆 / 衍生后 `refreshGroups()` 刷新左侧列表。`refreshPanelHead()` / `openPanel()` 都维护该结构。
 - 气泡渲染 `bubbleFor(msg, index, ctx)` 用 `extractParts(msg.content)` 拆分**思维链**（`ThinkPart`，`{type:"think", think:"..."}`）与正文：带推理内容的回复渲染 `.reasoning-wrap`（原生 `<details>`，默认收起，summary 即「展开/收起思维链」按钮）；旧格式的 `assistant_reasoning` / `reasoning` 角色整条按思维链处理。`<details>` 的 `toggle` 事件在轮次对齐模式下 `requestAnimationFrame(() => align.reflowAlign())` 重排高度。
 - **工具调用 / 工具返回气泡**（OpenAI 格式历史：助手消息经 `msg.tool_calls`（`{id, function:{name, arguments}}` 数组）携带工具调用，content 部件只有 text/think/image_url/audio_url，工具调用不作为 content 部件；返回为 `role:"tool"` 消息 + `tool_call_id`）：助手消息逐个渲染 `.tool-call` 气泡（`<details>`，summary 即工具名、默认收起，展开显示 `prettyArgs` 美化后的参数 JSON；非 JSON 参数原样）；`role:"tool"` 渲染 `.tool-result` 气泡（头部经 `ctx.toolNames` 用 `tool_call_id` 关联标注「工具返回 · <工具名>」，正文即返回内容）。`ctx = {toolNames: {}}` 是每次 `renderHistory`/`renderAligned` 调用共享的渲染上下文（跨消息收集 id → 工具名），两次渲染循环都创建并传给 `bubbleFor`；`toolCallBlock`/`toolResultBlock` 的 `<details>` toggle 同样在轮次对齐模式下重排高度。思维链内出现工具调用（think 部件与 tool_calls 同消息）时，工具调用以独立气泡紧随思维链渲染，不再以裸文本挂在思维链下。
 - 对话历史编辑走**面板头部「历史」按钮的 JSON 编辑器**（`openHistoryEditor`）：直接编辑 `{conversations: [...]}` 全结构，保存调 `saveHistory` 整体替换（编辑/新增/删除对话都在 JSON 里完成）；单条气泡只保留「重新生成」。不做复杂的单轮编辑 UI——没有能力修改结构化历史的用户不建议自己改。
@@ -155,6 +155,8 @@ astrbot_plugin_testbench/
 | GET | /sessions/pending | session_pending | 在途测试消息的实时状态（已入队/排队等待 LLM/LLM 生成中/完成） |
 | POST | /sessions/update | update_session | 会话配置覆盖（null 恢复继承组配置） |
 | POST | /sessions/delete | delete_sessions | 删会话 + 联动清理 |
+| POST | /sessions/clone | clone_sessions | 克隆会话：同测试组内新建 N 个会话并拷贝其对话历史（count 1-500，组容量上限 MAX_SESSIONS_PER_GROUP=500） |
+| POST | /sessions/derive | derive_session | 衍生会话：基于某会话历史创建全新测试组（组内会话历史一致，可命名 / 指定会话数，默认名「\<组名\> 衍生」） |
 | GET | /sessions/\<id\>/history | session_history | 对话历史（LLM 上下文消息列表） |
 | POST | /sessions/history/save | save_history | 整体替换对话历史（带 cid 更新、无 cid 新建、带不存在的 cid 也新建占位对话、未列出删除；JSON 编辑器保存） |
 | POST | /sessions/history/regenerate | regenerate_history | 截断该轮之后历史并重发该轮 user 消息 |
@@ -174,15 +176,15 @@ astrbot_plugin_testbench/
 ## 测试与验证
 
 > **开发流程（2026-08-05 起）**：本地**不跑**测试，修改直接提交推送到 `dev` 分支，
-> 由 GitHub Actions 自动把关——push 到 dev 触发 `pytest.yml`（121 个测试 +
+> 由 GitHub Actions 自动把关——push 到 dev 触发 `pytest.yml`（128 个测试 +
 > 前端 JS 语法检查 `js-check`：node --check 九个页面脚本）+ `ruff-format.yml`；
 > dev 验证通过后合并到 `main`，metadata.yaml 变更即触发 release.yml 自动发版。
 > 本地命令（下面的 pytest/ruff）仅在需要主动排查时使用。
 
 测试随插件仓库维护（`tests/`，可与主仓库无关地推送、供协作者运行）。
 
-- `tests/test_backend.py`：后端单元测试（107 个），需要 astrbot（PyPI 包，插件运行时依赖）。以 **namespace package** 加载插件：`sys.path.insert(0, str(REPO_ROOT.parent))` 后 `import astrbot_plugin_testbench.*`——插件模块用相对导入（`from .group_store import ...`），必须按包加载，这与 AstrBot 在 data/plugins 下加载插件的方式一致。未安装 astrbot 时整组跳过（`pytest.importorskip`）。
-- `tests/test_frontend.py`：前端脚本静态检查（14 个），零依赖，任何环境可运行。
+- `tests/test_backend.py`：后端单元测试（113 个），需要 astrbot（PyPI 包，插件运行时依赖）。以 **namespace package** 加载插件：`sys.path.insert(0, str(REPO_ROOT.parent))` 后 `import astrbot_plugin_testbench.*`——插件模块用相对导入（`from .group_store import ...`），必须按包加载，这与 AstrBot 在 data/plugins 下加载插件的方式一致。未安装 astrbot 时整组跳过（`pytest.importorskip`）。
+- `tests/test_frontend.py`：前端脚本静态检查（15 个），零依赖，任何环境可运行。
 
 本地运行（用主仓库 venv，bash cwd 不稳定，命令先 `cd /e/AstrBot` 或 `git -C` 插件目录）：
 

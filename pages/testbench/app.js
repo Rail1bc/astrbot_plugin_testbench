@@ -9,7 +9,9 @@ import { createGroupList } from "./group_list.js";
 import { createTestsetList } from "./testset_list.js";
 import {
   abortTestsetRun as abortTestsetRunApi,
+  cloneSession as cloneSessionApi,
   deleteSessions,
+  deriveSession as deriveSessionApi,
   getHistory,
   getPending,
   listConfs,
@@ -76,8 +78,17 @@ function openPanel(id) {
     groupBadge + platformBadge + confBadge +
     `</span>` +
     `<span class="panel-actions">` +
-    `<button class="icon-btn" data-action="history" title="编辑对话历史（JSON）">编辑</button>` +
-    `<button class="icon-btn" data-action="reset" title="重置对话历史">重置</button>` +
+    `<div class="panel-menu">` +
+    `<button class="icon-btn menu-toggle" data-action="menu" title="更多操作">⋯</button>` +
+    `<div class="panel-menu-dropdown" hidden>` +
+    `<button class="panel-menu-item" data-action="history">编辑历史</button>` +
+    `<button class="panel-menu-item" data-action="reset">重置历史</button>` +
+    `<button class="panel-menu-item" data-action="copy">复制历史</button>` +
+    `<button class="panel-menu-item" data-action="clone">克隆会话…</button>` +
+    `<button class="panel-menu-item" data-action="paste">粘贴历史</button>` +
+    `<button class="panel-menu-item" data-action="derive">衍生测试组…</button>` +
+    `</div>` +
+    `</div>` +
     `<button class="icon-btn" data-action="pin" title="置顶">置顶</button>` +
     `<button class="icon-btn" data-action="close" title="关闭">✕</button>` +
     `</span>` +
@@ -93,11 +104,8 @@ function openPanel(id) {
     `</div>`;
 
   panel.querySelector('[data-action="close"]').addEventListener("click", () => toggleOpen(id));
-  panel.querySelector('[data-action="reset"]').addEventListener("click", () => resetHistory(id));
   panel.querySelector('[data-action="pin"]').addEventListener("click", () => pin(id));
-  panel
-    .querySelector('[data-action="history"]')
-    .addEventListener("click", () => void openHistoryEditor(id));
+  setupPanelMenu(panel, id);
   const input = panel.querySelector(".msg-input");
   input.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.isComposing) sendToOne(id, input.value);
@@ -695,6 +703,187 @@ function deleteSession(id) {
   });
 }
 
+// ---------- 会话页眉 ⋯ 菜单：编辑/重置/复制/克隆/粘贴/衍生 ----------
+
+// 绑定面板「⋯」下拉菜单：点击开关切换、点菜单外自动关闭，菜单项分发到各操作
+function setupPanelMenu(panel, id) {
+  const toggle = panel.querySelector('[data-action="menu"]');
+  const dropdown = panel.querySelector(".panel-menu-dropdown");
+  if (!toggle || !dropdown) return;
+  toggle.addEventListener("click", (e) => {
+    e.stopPropagation();
+    document.querySelectorAll(".panel-menu-dropdown").forEach((d) => {
+      if (d !== dropdown) d.hidden = true;
+    });
+    dropdown.hidden = !dropdown.hidden;
+  });
+  dropdown.querySelectorAll(".panel-menu-item").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      dropdown.hidden = true;
+      switch (btn.dataset.action) {
+        case "history":
+          void openHistoryEditor(id);
+          break;
+        case "reset":
+          resetHistory(id);
+          break;
+        case "copy":
+          void copyHistory(id);
+          break;
+        case "clone":
+          cloneSession(id);
+          break;
+        case "paste":
+          pasteHistory(id);
+          break;
+        case "derive":
+          deriveSession(id);
+          break;
+      }
+    });
+  });
+}
+
+// 复制历史：把当前会话的全部对话（去掉 conversation_id，粘贴时整体新建）存入剪贴板
+async function copyHistory(id) {
+  let data;
+  try {
+    data = await getHistory(id);
+  } catch (err) {
+    showRunStatus("error", "复制历史失败: " + err.message);
+    return;
+  }
+  const conversations = (data.conversations || []).map((c) => ({
+    title: c.title || null,
+    history: Array.isArray(c.history) ? c.history : [],
+  }));
+  if (!conversations.length) {
+    showRunStatus("warn", "该会话暂无对话历史，无可复制");
+    return;
+  }
+  state.clipboard = {
+    conversations,
+    sourceName: (effectiveView(id) || {}).name || id,
+    at: Date.now(),
+  };
+  showRunStatus(
+    "ok",
+    `已复制 ${conversations.length} 个对话的历史，可在其他会话「⋯」菜单粘贴`,
+  );
+}
+
+// 粘贴历史：用剪贴板整体覆盖当前会话的历史（复用 save_history 的替换语义）
+function pasteHistory(id) {
+  const clip = state.clipboard;
+  if (!clip) {
+    showModal("尚未复制任何历史：请先在某个会话的「⋯」菜单中点击「复制历史」。");
+    return;
+  }
+  const n = clip.conversations.length;
+  showModal(
+    `将用来自「${clip.sourceName}」的 ${n} 个对话覆盖当前会话的历史，` +
+      "当前历史将被删除，此操作不可撤销。确定继续吗？",
+    {
+      danger: true,
+      onOk: async () => {
+        await saveHistory({ id, conversations: clip.conversations });
+        void loadHistory(id);
+        showRunStatus("ok", `已粘贴 ${n} 个对话的历史`);
+      },
+    },
+  );
+}
+
+// 克隆会话：在当前测试组内新建 N 个历史一致的会话（同一起点，便于分别改配置测试）
+function cloneSession(id) {
+  const v = effectiveView(id);
+  promptCountDialog(
+    "克隆会话",
+    `在当前测试组内新建 N 个会话，其对话历史与「${v ? v.name : id}」完全一致，` +
+      "克隆后可在各会话上分别修改配置/模型进行对照测试。",
+    3,
+    async (count) => {
+      const resp = await cloneSessionApi(id, count);
+      await refreshGroups();
+      showRunStatus(
+        "ok",
+        `已克隆 ${resp.session_ids.length} 个会话（历史与当前会话一致）`,
+      );
+    },
+  );
+}
+
+// 衍生测试组：基于当前会话的历史创建全新测试组，组内每个会话的历史都与它一致
+function deriveSession(id) {
+  const group = state.groups.find((g) =>
+    (g.sessions || []).some((s) => s.id === id),
+  );
+  const defaultName = group && group.name ? `${group.name} 衍生` : "衍生测试组";
+  const defaultCount =
+    group && Array.isArray(group.sessions) && group.sessions.length
+      ? group.sessions.length
+      : 3;
+  const wrap = document.createElement("div");
+  wrap.className = "form-col";
+  const p = document.createElement("p");
+  p.textContent =
+    "基于当前会话的历史创建全新测试组（继承当前组的平台/档案/发送者配置），组内每个会话的历史都与它一致，可分别改配置测试。";
+  const nameInput = document.createElement("input");
+  nameInput.type = "text";
+  nameInput.value = defaultName;
+  const countInput = document.createElement("input");
+  countInput.type = "number";
+  countInput.min = "1";
+  countInput.max = "500";
+  countInput.value = String(defaultCount);
+  wrap.append(p, nameInput, countInput);
+  openModal({
+    title: "衍生测试组",
+    content: wrap,
+    okText: "创建",
+    onOk: async () => {
+      const name = nameInput.value.trim();
+      if (!name) throw new Error("测试组名称不能为空");
+      const n = parseInt(countInput.value, 10);
+      if (!Number.isInteger(n) || n < 1 || n > 500) {
+        throw new Error("会话数量必须是 1-500 的整数");
+      }
+      const resp = await deriveSessionApi(id, n, name);
+      await refreshGroups();
+      showRunStatus(
+        "ok",
+        `已创建测试组「${name}」：${resp.session_ids.length} 个会话，历史与当前会话一致`,
+      );
+    },
+  });
+}
+
+// 数字输入弹窗：克隆数量等单输入场景的通用表单
+function promptCountDialog(title, message, defaultValue, onOk) {
+  const wrap = document.createElement("div");
+  wrap.className = "form-col";
+  const p = document.createElement("p");
+  p.textContent = message;
+  const input = document.createElement("input");
+  input.type = "number";
+  input.min = "1";
+  input.max = "500";
+  input.value = String(defaultValue);
+  wrap.append(p, input);
+  openModal({
+    title,
+    content: wrap,
+    okText: "确定",
+    onOk: () => {
+      const n = parseInt(input.value, 10);
+      if (!Number.isInteger(n) || n < 1 || n > 500) {
+        throw new Error("数量必须是 1-500 的整数");
+      }
+      return onOk(n);
+    },
+  });
+}
+
 // ---------- 面板排序 ----------
 
 function visibleOrder() {
@@ -778,6 +967,14 @@ panelsEl.addEventListener("drop", (e) => {
 panelsEl.addEventListener("dragend", () => {
   dragId = null;
   document.querySelectorAll(".panel.dragging").forEach((p) => p.classList.remove("dragging"));
+});
+
+// 点击「⋯」菜单外的任意位置关闭所有已打开的面板菜单（开关按钮的 click 已 stopPropagation）
+document.addEventListener("click", (e) => {
+  if (e.target.closest && e.target.closest(".panel-menu")) return;
+  document.querySelectorAll(".panel-menu-dropdown").forEach((d) => {
+    d.hidden = true;
+  });
 });
 
 // 气泡悬停操作：重新生成某轮（整体历史的编辑走面板头部「编辑」）
