@@ -28,16 +28,19 @@
 ```
 astrbot_plugin_testbench/
 ├─ metadata.yaml        # 插件元数据（name/display_name/version/astrbot_version）
-├─ main.py              # Star 类：Web API 路由 + 全部请求处理器（563 行）
+├─ main.py              # Star 类：Web API 路由 + 全部请求处理器（555 行）
 ├─ group_store.py       # 测试组数据模型与持久化（VirtualGroupManager、umo_of）
-├─ runner.py            # 并发测试运行器（VirtualTestRunner）
+├─ conf_routes.py       # UCR 配置档案路由操作收敛（持久路由与临时路由共用一套）
+├─ runner.py            # 并发测试运行器（VirtualTestRunner，临时路由经 conf_routes）
 ├─ stats.py             # 耗时统计纯函数（duration_stats：min/max/avg/p50/p95）
 ├─ virtual_event.py     # VirtualMessageEvent：捕获 send/流式结果，携带完成信号
+├─ pyproject.toml       # 插件仓库自包含的 ruff / pytest 配置（不依赖主仓库）
 ├─ pages/virtual-session/
 │  ├─ index.html        # 页面骨架（表单/面板的静态 HTML，select 初始为空或仅默认项）
-│  ├─ app.js            # 页面主逻辑（1089 行，ES module）
+│  ├─ app.js            # 页面主逻辑（980 行，ES module）
 │  ├─ api.js            # bridge 调用的统一封装（listPlatforms/listConfs/...）
 │  ├─ align.js          # 轮次对齐控制器（createAlignController，依赖注入）
+│  ├─ chat.js           # 聊天内容渲染（createChatRenderer：气泡/思维链/轮次分组）
 │  └─ style.css         # 亮/暗主题样式
 ├─ CHANGELOG.md         # 变更记录（[Unreleased] 在上）
 ├─ README.md            # 面向用户的说明
@@ -65,9 +68,10 @@ astrbot_plugin_testbench/
 
 ### UCR 配置档案路由
 
+- 路由操作集中在 `conf_routes.py`：持久路由（创建/删除组与会话、会话配置变更时应用与清理）与 runner 临时路由（测试运行时指定 conf_id）共用同一套 umo → conf_id 操作，避免两处实现对 UCR API 的双份维护。
 - 绑定用**会话级精确路由** `umo → conf_id`（`ucr.update_route(umop, conf_id)`），不用平台级 `platform_id::`，避免影响同平台其他会话。
 - 创建组/添加会话时若带 `conf_id`，调用 `_apply_conf_routes`；删除组/会话/重置时用 `_clear_conf_routes`（仅删已存在的路由）+ `_delete_session_conversations`（级联删原生对话历史，按 umo 调 `conversation_manager.delete_conversations_by_user_id`）。
-- runner 的临时路由（测试运行时指定 conf_id）带 `asyncio.Lock` 串行：保存原路由 → 应用 → 全部完成后恢复并释放锁，避免临时路由互相污染。
+- runner 的临时路由（测试运行时指定 conf_id）带 `asyncio.Lock` 串行：`save_and_apply_routes` 保存原路由 → 应用 → 全部完成后 `restore_routes` 恢复并释放锁，避免临时路由互相污染。
 
 ### VirtualMessageEvent（virtual_event.py）
 
@@ -89,6 +93,7 @@ astrbot_plugin_testbench/
 ### 前端（pages/virtual-session/）
 
 - `api.js`：`window.AstrBotPluginPage` bridge 的 `apiGet`/`apiPost` 统一封装。bridge 的响应解析是 `response.data?.data ?? response.data`（json_response 的 body 直接作为 data）。
+- `chat.js`：`createChatRenderer(alignGetter)` 集中聊天内容渲染（气泡 `bubbleFor` / 思维链 `reasoningSection` / 轮次分组 `groupTurns` 与对齐渲染 `renderAligned`）。align 以 getter 注入（渲染时才取），避免与 `createAlignController` 互相创建的循环依赖；`app.js` 提供 `renderChat` 包装函数注入 align 控制器并传给 align.js 的 env。
 - `app.js` 分区：弹窗（iframe 沙箱禁用原生 alert/confirm，用自绘弹窗）→ 测试组列表 → 面板 → 发送 → 会话操作 → 创建 → 面板排序 → 轮次对齐 → 选项加载 → 初始化。`loadOptions()` 拉取 platforms/confs 填充下拉框；`refreshGroups()` 渲染左侧组列表；`pollRun()` 轮询测试状态；`updateRunOverview()` 在群发栏实时显示当前打开的会话数与按测试组的分布。
 - 面板页眉为多行 flex 布局：标题与徽标包在 `.panel-info`（`flex-wrap: wrap`）内随内容换行撑开页眉，`.panel-actions` 的「历史 / 置顶 / 关闭」按钮始终第一行右对齐；`refreshPanelHead()` / `openPanel()` 都维护该结构。
 - 气泡渲染 `bubbleFor(msg)` 用 `extractParts(msg.content)` 拆分**思维链**（`ThinkPart`，`{type:"think", think:"..."}`）与正文：带推理内容的回复渲染 `.reasoning-wrap`（原生 `<details>`，默认收起，summary 即「展开/收起思维链」按钮）；旧格式的 `assistant_reasoning` / `reasoning` 角色整条按思维链处理。`<details>` 的 `toggle` 事件在轮次对齐模式下 `requestAnimationFrame(() => align.reflowAlign())` 重排高度。
@@ -125,7 +130,7 @@ astrbot_plugin_testbench/
 
 测试随插件仓库维护（`tests/`，可与主仓库无关地推送、供协作者运行）。
 
-- `tests/test_backend.py`：后端单元测试（51 个），需要 astrbot（PyPI 包，插件运行时依赖）。以 **namespace package** 加载插件：`sys.path.insert(0, str(REPO_ROOT.parent))` 后 `import astrbot_plugin_testbench.*`——插件模块用相对导入（`from .group_store import ...`），必须按包加载，这与 AstrBot 在 data/plugins 下加载插件的方式一致。未安装 astrbot 时整组跳过（`pytest.importorskip`）。
+- `tests/test_backend.py`：后端单元测试（55 个），需要 astrbot（PyPI 包，插件运行时依赖）。以 **namespace package** 加载插件：`sys.path.insert(0, str(REPO_ROOT.parent))` 后 `import astrbot_plugin_testbench.*`——插件模块用相对导入（`from .group_store import ...`），必须按包加载，这与 AstrBot 在 data/plugins 下加载插件的方式一致。未安装 astrbot 时整组跳过（`pytest.importorskip`）。
 - `tests/test_frontend.py`：前端脚本静态检查（2 个），零依赖，任何环境可运行。
 
 本地运行（用主仓库 venv，bash cwd 不稳定，命令先 `cd /e/AstrBot` 或 `git -C` 插件目录）：

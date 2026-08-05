@@ -12,11 +12,11 @@ import asyncio
 import time
 from typing import TYPE_CHECKING
 
+from .conf_routes import restore_routes, save_and_apply_routes
 from .group_store import (
     DEFAULT_PLATFORM_ID,
     DEFAULT_SENDER_ID,
     DEFAULT_SENDER_NAME,
-    umo_of,
 )
 from .stats import duration_stats
 from .virtual_event import VirtualMessageEvent
@@ -45,23 +45,14 @@ class VirtualTestRunner:
         使用会话级精确路由（而非平台级 `platform_id::`），避免影响同平台其他会话，
         且不覆盖会话创建时绑定的持久配置。
         """
-        ucr = self.context.astrbot_config_mgr.ucr
-        self._saved_routes = []
-        for session in sessions:
-            umop = umo_of(session)
-            self._saved_routes.append((umop, ucr.umop_to_conf_id.get(umop)))
-            await ucr.update_route(umop, conf_id)
+        self._saved_routes = await save_and_apply_routes(
+            self.context.astrbot_config_mgr.ucr, sessions, conf_id
+        )
 
     async def _restore_conf_route(self) -> None:
         if not self._saved_routes:
             return
-        ucr = self.context.astrbot_config_mgr.ucr
-        for umop, prev_conf_id in self._saved_routes:
-            if prev_conf_id is None:
-                if umop in ucr.umop_to_conf_id:
-                    await ucr.delete_route(umop)
-            else:
-                await ucr.update_route(umop, prev_conf_id)
+        await restore_routes(self.context.astrbot_config_mgr.ucr, self._saved_routes)
         self._saved_routes = []
 
     async def start(

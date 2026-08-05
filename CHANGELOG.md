@@ -24,9 +24,14 @@
 - 修复平台来源下拉框异常无选项的问题：平台列表接口对单个适配器元数据读取失败做容错（跳过该适配器，不拖垮整个接口），前端对返回数据做类型校验，保证至少保留「virtual_test（默认）」选项。
 - 删除测试组 / 会话时联动删除 AstrBot 原生对话历史（按 unified_msg_origin），不再在 WebUI 会话列表中残留虚拟会话的对话数据。
 
+- 修复 `run_ruff.bat` 找不到虚拟环境激活脚本的问题：脚本查找的目录名 `venv` 实际为 `.venv`（带点前缀），此前运行恒在 STEP 2 失败。
+
 ### 🔧 Refactor (代码结构)
 
 - 代码结构拆分，无行为变化：后端 `runner.py` 拆为数据层 `group_store.py`、统计工具 `stats.py` 与运行器 `runner.py`；前端 `app.js` 拆出 `api.js`（bridge 调用统一封装）与 `align.js`（轮次对齐控制器）。
+- 插件仓库新增自包含 `pyproject.toml`（ruff / pytest 配置与主仓库口径一致，line-length 88、target py312），任何环境在仓库内直接 `ruff check .` / `pytest` 结果一致；同步修复测试代码的 ASYNC109 告警（`wait_run_done` 的 `timeout` 参数更名），并清理 `list_providers` 对 `prov.meta()` 的重复调用。
+- UCR 配置档案路由操作收敛到 `conf_routes.py`：持久路由（创建/删除组与会话、会话配置变更）与 runner 临时路由（测试运行时指定 conf_id）共用同一套 umo → conf_id 操作，消除两处实现对 UCR API 的双份维护；行为不变。
+- 前端 `app.js` 拆出 `chat.js`（`createChatRenderer`）：气泡 / 思维链 / 轮次分组与对齐渲染集中到独立模块，align 控制器以 getter 注入（渲染时才取），避免与 `createAlignController` 互相创建的循环依赖；行为不变。
 
 ---
 

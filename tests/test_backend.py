@@ -459,16 +459,14 @@ async def consume(queue: asyncio.Queue, handler) -> None:
         await handler(event)
 
 
-async def wait_run_done(runner, test_id: str, timeout: float = 5.0) -> dict:
+async def wait_run_done(runner, test_id: str, max_wait: float = 5.0) -> dict:
     """轮询 status 直到 done（模拟前端轮询）。"""
-    deadline = asyncio.get_running_loop().time() + timeout
-    while True:
-        rec = runner.status(test_id)
-        if rec and rec["done"]:
-            return rec
-        if asyncio.get_running_loop().time() > deadline:
-            raise AssertionError("测试运行未在限时内完成")
-        await asyncio.sleep(0.01)
+    async with asyncio.timeout(max_wait):
+        while True:
+            rec = runner.status(test_id)
+            if rec and rec["done"]:
+                return rec
+            await asyncio.sleep(0.01)
 
 
 @pytest.mark.asyncio

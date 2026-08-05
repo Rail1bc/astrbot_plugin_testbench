@@ -37,10 +37,10 @@ cd /d "%ASTRBOT_ROOT%"
 if errorlevel 1 goto :err_root
 
 echo [STEP 2/7] 检查虚拟环境激活脚本...
-if not exist ".\venv\Scripts\activate.bat" goto :err_venv
+if not exist ".\.venv\Scripts\activate.bat" goto :err_venv
 
 echo [STEP 3/7] 激活虚拟环境...
-call ".\venv\Scripts\activate.bat"
+call ".\.venv\Scripts\activate.bat"
 if errorlevel 1 goto :err_activate
 
 echo [STEP 4/7] 显示 Ruff 版本信息...
@@ -104,7 +104,7 @@ echo [ERROR] 无法进入 AstrBot 根目录: %ASTRBOT_ROOT%
 goto :fail
 
 :err_venv
-echo [ERROR] 未找到虚拟环境激活脚本: .\venv\Scripts\activate.bat
+echo [ERROR] 未找到虚拟环境激活脚本: .\.venv\Scripts\activate.bat
 goto :fail
 
 :err_activate

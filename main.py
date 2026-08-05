@@ -17,6 +17,12 @@ from typing import Any
 from astrbot.api.star import Context, Star
 from astrbot.api.web import error_response, json_response, request
 
+from .conf_routes import (
+    apply_routes,
+    clear_routes,
+    delete_route_if_exists,
+    sync_route,
+)
 from .group_store import VirtualGroupManager, umo_of
 from .runner import VirtualTestRunner
 
@@ -95,14 +101,12 @@ class VirtualSessionPlugin(Star):
         """列出可用的对话 LLM Provider 及其模型。"""
         providers = []
         for prov in self.context.get_all_providers():
+            meta = prov.meta()
             models: list[str] = []
             try:
                 models = await prov.get_models()
             except Exception as e:  # noqa: BLE001
-                self.logger.warning(
-                    f"获取 Provider {prov.meta().id} 的模型列表失败: {e}"
-                )
-            meta = prov.meta()
+                self.logger.warning(f"获取 Provider {meta.id} 的模型列表失败: {e}")
             providers.append(
                 {
                     "id": (prov.provider_config or {}).get("id") or meta.id,
@@ -261,11 +265,10 @@ class VirtualSessionPlugin(Star):
         new_session = self.group_mgr.effective(group, session)
 
         # 平台变更会使 umo 变化：清理旧 umo 的路由，再按新 umo 同步
-        ucr = self.context.astrbot_config_mgr.ucr
         if old_session["platform_id"] != new_session["platform_id"]:
-            old_umop = umo_of(old_session)
-            if old_umop in ucr.umop_to_conf_id:
-                await ucr.delete_route(old_umop)
+            await delete_route_if_exists(
+                self.context.astrbot_config_mgr.ucr, umo_of(old_session)
+            )
         await self._sync_conf_route(new_session)
         return json_response(new_session)
 
@@ -541,24 +544,12 @@ class VirtualSessionPlugin(Star):
 
     async def _apply_conf_routes(self, sessions: list[dict], conf_id: str) -> None:
         """把每个会话路由到指定配置档案（精确到 umo，不互相影响）。"""
-        ucr = self.context.astrbot_config_mgr.ucr
-        for session in sessions:
-            await ucr.update_route(umo_of(session), conf_id)
+        await apply_routes(self.context.astrbot_config_mgr.ucr, sessions, conf_id)
 
     async def _clear_conf_routes(self, sessions: list[dict]) -> None:
         """删除会话对应的配置档案路由。"""
-        ucr = self.context.astrbot_config_mgr.ucr
-        for session in sessions:
-            umop = umo_of(session)
-            if umop in ucr.umop_to_conf_id:
-                await ucr.delete_route(umop)
+        await clear_routes(self.context.astrbot_config_mgr.ucr, sessions)
 
     async def _sync_conf_route(self, session: dict) -> None:
         """按会话的有效配置档案同步 UCR 路由（无绑定则确保路由不存在）。"""
-        ucr = self.context.astrbot_config_mgr.ucr
-        umop = umo_of(session)
-        conf_id = session.get("conf_id")
-        if conf_id:
-            await ucr.update_route(umop, conf_id)
-        elif umop in ucr.umop_to_conf_id:
-            await ucr.delete_route(umop)
+        await sync_route(self.context.astrbot_config_mgr.ucr, session)

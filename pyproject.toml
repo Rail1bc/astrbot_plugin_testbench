@@ -1,0 +1,14 @@
+# 插件仓库自包含的 ruff / pytest 配置：不依赖 AstrBot 主仓库的 pyproject.toml，
+# 任何环境下在本仓库内直接运行 `ruff check .` / `pytest` 都口径一致。
+# 规则集与 AstrBot 主仓库保持一致（line-length 88，select F/W/E/ASYNC/C4/Q/I/UP）。
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["F", "W", "E", "ASYNC", "C4", "Q", "I", "UP"]
+ignore = ["F403", "F405", "E501", "ASYNC230", "ASYNC240"]
