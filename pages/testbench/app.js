@@ -362,19 +362,36 @@ function showRunStatus(status, text) {
 // 测试集运行由后端后台任务驱动（离开页面不中断），前端只负责启动与轮询进度；
 // 记录可经「最近运行」找回，运行中/结束后均可点「查看」看结果表格。
 
-async function runTestset(testset, mode, ids) {
+async function runTestset(testset, ids) {
   try {
-    const resp = await runTestsetApi({ testset_id: testset.id, mode, sessions: ids });
+    const resp = await runTestsetApi({ testset_id: testset.id, sessions: ids });
     state.activeRunId = resp.run_id;
     $("btn-abort-run").hidden = false;
+    const segText = segmentSummary(testset);
     showRunStatus(
       "warn",
-      `测试集「${testset.name}」已启动（${mode === "batch" ? "批量" : "逐条"}模式，${resp.steps} 步），后台运行中…`,
+      `测试集「${testset.name}」已启动（${resp.steps} 步${segText}），后台运行中…`,
     );
     pollTestsetRun(resp.run_id);
   } catch (err) {
     showRunStatus("error", "启动测试集运行失败: " + err.message);
   }
+}
+
+// 批量发送范围的启动文案：如「，含批量段 1-2、4」；无批量段返回空串
+function segmentSummary(testset) {
+  const ranges = testset.batch_ranges || [];
+  if (!ranges.length) return "";
+  const parts = ranges.map(([s, e]) => (s === e ? `${s + 1}` : `${s + 1}-${e + 1}`));
+  return `，含批量段 ${parts.join("、")}`;
+}
+
+// 进度文案：当前步在某批量段内 → 显示段范围；否则显示第 i/N 步
+function segmentLabel(run, idx) {
+  for (const [s, e] of run.batch_ranges || []) {
+    if (idx >= s && idx <= e) return `第 ${s + 1}–${e + 1} 步（批量）`;
+  }
+  return `第 ${idx + 1}/${run.steps.length} 步`;
 }
 
 // 当前测试集轮询定时器：新的轮询开始时停掉旧的，避免重复轮询叠加
@@ -398,11 +415,11 @@ function pollTestsetRun(runId) {
     }
     const name = run.testset_name || "测试集";
     if (run.status === "running") {
-      const step = Math.max(1, run.current_step + 1);
-      const stepText = run.steps[step - 1] ? run.steps[step - 1].text : "";
+      const idx = Math.max(0, run.current_step);
+      const stepText = run.steps[idx] ? run.steps[idx].text : "";
       showRunStatus(
         "warn",
-        `测试集「${name}」运行中：第 ${step}/${run.steps.length} 步 — ${stepText}`,
+        `测试集「${name}」运行中：${segmentLabel(run, idx)} — ${stepText}`,
       );
       // 步骤推进（完成步数增加）→ 刷新已打开面板的历史（逐条模式每步完成即可见）
       const completed = run.steps.filter((s) => s.status === "done").length;
@@ -451,7 +468,7 @@ function showTestsetResults(run) {
     `<th>结果</th></tr>`;
   const body = document.createElement("tbody");
   body.innerHTML = (run.steps || [])
-    .map((step) => {
+    .map((step, i) => {
       const cells = sessions
         .map((s) => {
           const r = (step.results || []).find((x) => x.session_id === s.id);
@@ -473,9 +490,12 @@ function showTestsetResults(run) {
       const stepErr = step.error
         ? `<div class="cell-err">失败：${escapeHtml(step.error)}</div>`
         : "";
+      const batchBadge = (run.batch_ranges || []).some(([s, e]) => i >= s && i <= e)
+        ? '<span class="badge conf">批量</span> '
+        : "";
       return (
         `<tr>` +
-        `<td class="cell-step">${escapeHtml(step.text)}${stepErr}</td>` +
+        `<td class="cell-step">${batchBadge}${escapeHtml(step.text)}${stepErr}</td>` +
         cells +
         `<td>成功 ${ok} / 无回复 ${noReply} / 错误 ${err}</td>` +
         `</tr>`
@@ -519,6 +539,26 @@ async function abortTestsetRun(runId) {
   } catch (err) {
     showRunStatus("error", "取消失败: " + err.message);
   }
+}
+
+// 群发栏「执行测试」：目标即已打开的会话
+function runTestsetFromBar() {
+  const tsId = $("run-testset").value;
+  if (!tsId) {
+    showRunStatus("warn", "请先选择测试集");
+    return;
+  }
+  if (!state.openIds.length) {
+    showRunStatus("warn", "请先在左侧打开至少一个会话");
+    return;
+  }
+  const ts = state.testsets.find((t) => t.id === tsId);
+  if (!ts) return;
+  if (!(ts.messages || []).length) {
+    showRunStatus("warn", "该测试集没有消息，请先在测试集窗口中编辑");
+    return;
+  }
+  runTestset(ts, state.openIds.slice());
 }
 
 // ---------- 在途消息（面板实时状态条） ----------
@@ -782,10 +822,12 @@ const { refreshGroups, renderGroupList } = createGroupList({
   updateRunOverview,
 });
 
-const { refreshTestsets, renderTestsetList } = createTestsetList({
+const { refreshTestsets } = createTestsetList({
   showRunStatus,
   runTestset,
   viewTestsetRun,
+  // 选中测试集 → 右侧自动切到「测试集」视图（showView 是函数声明，可提升）
+  switchToTestsets: () => showView("testsets"),
 });
 
 // 静态控件绑定须放在 createGroupList / createTestsetList 解构之后：
@@ -795,6 +837,10 @@ $("btn-refresh").addEventListener("click", refreshGroups);
 $("btn-refresh-testsets").addEventListener("click", refreshTestsets);
 $("btn-run-all").addEventListener("click", sendToAll);
 $("btn-abort-run").addEventListener("click", () => abortTestsetRun(state.activeRunId));
+$("btn-run-testset").addEventListener("click", runTestsetFromBar);
+$("run-testset").addEventListener("change", () => {
+  $("btn-run-testset").disabled = !$("run-testset").value;
+});
 $("run-text").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.isComposing) sendToAll();
 });
@@ -808,6 +854,9 @@ function showView(view) {
   document.body.classList.remove("sidebar-collapsed");
   document.querySelector(".groups-card").hidden = view !== "sessions";
   document.querySelector(".testsets-card").hidden = view !== "testsets";
+  // 左侧选择驱动右侧视图：会话列表 ↔ 测试集编辑窗口自动切换
+  document.querySelector(".sessions-view").hidden = view !== "sessions";
+  document.querySelector(".testsets-view").hidden = view !== "testsets";
   document.querySelectorAll(".rail-btn").forEach((btn) => {
     btn.classList.toggle("active", btn.dataset.view === view);
   });
@@ -826,5 +875,5 @@ document.querySelectorAll(".rail-btn").forEach((btn) => {
 });
 
 await ready();
-await Promise.all([loadOptions(), refreshGroups()]);
+await Promise.all([loadOptions(), refreshGroups(), refreshTestsets()]);
 pollPending();

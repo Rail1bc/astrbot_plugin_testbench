@@ -47,35 +47,74 @@
       </aside>
 
       <main class="workspace">
-        <section class="workspace-body">
-          <div id="panels" class="panels"></div>
-          <div id="empty-hint" class="empty">
-            点左侧「＋」创建默认配置的测试组，展开组后点「打开全部」或单个会话的
-            「打开」即可并行查看；<br />
-            面板可拖拽排序、可置顶，每个面板可单独发送消息。
-          </div>
-        </section>
-
-        <div id="align-bar" class="align-bar" hidden>
-          <span id="align-turn-label" class="align-label">轮次 1/1</span>
-          <input id="align-slider" type="range" min="1" max="1" value="1" step="1" />
+        <div id="workspace-strip" class="workspace-strip">
+          <span id="run-status" class="run-status" hidden></span>
+          <span class="toolbar-spacer"></span>
+          <button id="btn-abort-run" class="btn small danger" hidden>取消测试集运行</button>
         </div>
 
-        <section class="card run-bar">
-          <div class="run-row">
-            <label class="full">群发消息（发送给所有已打开的会话）
-              <input id="run-text" type="text" placeholder="输入一条消息，发送给所有已打开的会话" />
-            </label>
-            <button id="btn-run-all" class="btn primary">发送到全部</button>
-            <button id="btn-abort-run" class="btn small danger" hidden>取消测试集运行</button>
-            <label class="align-toggle" title="启用后所有面板按对话轮次对齐，滑动条可同步滚动全部窗口">
-              <input id="align-toggle" type="checkbox" />
-              轮次对齐
-            </label>
+        <div id="sessions-view" class="sessions-view">
+          <div class="panels-block">
+            <div id="panels" class="panels"></div>
+            <div id="empty-hint" class="empty">
+              点左侧「＋」创建默认配置的测试组，展开组后点「打开全部」或单个会话的
+              「打开」即可并行查看；<br />
+              面板可拖拽排序、可置顶，每个面板可单独发送消息。
+            </div>
           </div>
-          <div id="run-overview" class="run-overview" hidden></div>
-          <div id="run-status" class="run-status" hidden></div>
-        </section>
+
+          <div id="align-bar" class="align-bar" hidden>
+            <span id="align-turn-label" class="align-label">轮次 1/1</span>
+            <input id="align-slider" type="range" min="1" max="1" value="1" step="1" />
+          </div>
+
+          <section class="card run-bar">
+            <div class="run-row">
+              <label class="full">群发消息（发送给所有已打开的会话）
+                <input id="run-text" type="text" placeholder="输入一条消息，发送给所有已打开的会话" />
+              </label>
+              <button id="btn-run-all" class="btn primary">发送到全部</button>
+              <label class="align-toggle" title="启用后所有面板按对话轮次对齐，滑动条可同步滚动全部窗口">
+                <input id="align-toggle" type="checkbox" />
+                轮次对齐
+              </label>
+            </div>
+            <div class="run-row">
+              <label class="full">执行测试集（发送给所有已打开的会话）
+                <select id="run-testset">
+                  <option value="">选择测试集…</option>
+                </select>
+              </label>
+              <button id="btn-run-testset" class="btn primary" disabled>执行测试</button>
+              <div id="run-overview" class="run-overview" hidden></div>
+            </div>
+          </section>
+        </div>
+
+        <div id="testsets-view" class="testsets-view" hidden>
+          <section class="card testset-editor">
+            <div class="ts-head">
+              <div class="ts-name-wrap">
+                <input id="ts-name" type="text" placeholder="测试集名称" />
+                <span id="ts-meta" class="count-label"></span>
+                <span id="ts-dirty" class="hint warn-hint" hidden>有未保存的修改</span>
+              </div>
+              <div class="ts-actions">
+                <button id="btn-ts-save" class="btn small">保存修改</button>
+                <button id="btn-ts-run" class="btn small primary">▶ 运行</button>
+                <button id="btn-ts-export" class="btn small">导出</button>
+                <button id="btn-ts-import" class="btn small">导入</button>
+                <button id="btn-ts-delete" class="btn small danger">✕ 删除</button>
+                <input id="ts-import-file" type="file" accept=".json,application/json" hidden />
+              </div>
+            </div>
+            <div id="ts-messages" class="ts-messages"></div>
+            <div class="ts-foot">
+              <button id="btn-ts-add-msg" class="add-block">＋ 添加消息</button>
+              <span id="ts-segments" class="ts-segments"></span>
+            </div>
+          </section>
+        </div>
       </main>
     </div>
 

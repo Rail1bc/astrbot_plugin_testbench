@@ -230,17 +230,56 @@ def test_frontend_pending_hides_done_after_history_refresh():
 
 
 def test_frontend_rail_has_testset_view():
-    """测试集视图入口不得丢失。
+    """测试集视图入口不得丢失，且左侧选择驱动右侧视图切换。
 
     左侧窄条是视图切换入口（会话列表 / 测试集）：index.html 必须含
     data-view="testsets" 按钮；app.js 必须能把该视图切换到 .testsets-card
-    并刷新测试集数据。任一缺失，测试集列表就无法从 UI 进入。
+    并刷新测试集数据，同时切换右侧工作区视图（.sessions-view / .testsets-view）
+    ——右侧不再设手动切换按钮，随左侧列表选择自动切换。
     """
     html = _read_html()
     app_js = _read_module("app")
     assert 'data-view="testsets"' in html, "index.html 缺少测试集视图入口（rail 按钮）"
     assert ".testsets-card" in app_js, "app.js 未引用 .testsets-card（视图切换丢失）"
     assert 'view === "testsets"' in app_js, "app.js 缺少 testsets 视图分支"
+    assert ".sessions-view" in app_js, "app.js 未切换右侧会话视图 .sessions-view"
+    assert ".testsets-view" in app_js, "app.js 未切换右侧测试集视图 .testsets-view"
+
+
+def test_frontend_right_view_switches_from_left():
+    """右侧视图由左侧列表选择驱动（选中测试集 → 自动切「测试集」视图）。
+
+    测试集条目不再内联展开：testset_list.js 选中条目时须经 env.switchToTestsets
+    把右侧切到编辑窗口；app.js 以 showView("testsets") 注入该动作。
+    """
+    testset_js = _read_module("testset_list")
+    app_js = _read_module("app")
+    assert "switchToTestsets" in testset_js, "testset_list.js 未使用 switchToTestsets"
+    assert "switchToTestsets();" in testset_js, "选中测试集时未触发右侧视图切换"
+    assert 'switchToTestsets: () => showView("testsets")' in app_js, (
+        "app.js 未把选中测试集映射到 testsets 视图"
+    )
+
+
+def test_frontend_testset_export_import_and_group_target():
+    """测试集导出 / 导入信封与运行目标「选择测试组」。
+
+    导出须带 format/version 信封（为未来「测试集市场」下载兼容）；导入复用现有
+    createTestset 端点（无新后端接口）；运行弹窗须支持按测试组多选目标，并把
+    勾选组解析为会话 id 列表后交给 runTestset。
+    """
+    src = _read_module("testset_list")
+    assert "astrbot-testbench-testset" in src, "导出信封缺少 format 标识"
+    assert "version: EXPORT_VERSION" in src, "导出信封缺少 version"
+    assert "format: EXPORT_FORMAT" in src, "导出信封未序列化 format"
+    assert "createTestset({" in src, "导入未复用 createTestset 端点"
+    assert "选择测试组" in src, "运行弹窗缺少「选择测试组」目标选项"
+    assert "env.runTestset(testset, ids)" in src, (
+        "运行未把目标会话 id 列表交给 runTestset"
+    )
+    # 组多选 → 会话 id 解析：勾选 data-gid checkbox，展开为该组全部会话 id
+    assert "input[data-gid]:checked" in src, "组多选缺少按 data-gid 收集勾选态"
+    assert "selectedGroupSessionIds" in src, "缺少把测试组解析为会话 id 列表的函数"
 
 
 def test_frontend_testset_run_is_backend_driven():

@@ -1955,6 +1955,57 @@ def test_testset_store_delete_unknown(tmp_path):
     assert len(store.list_testsets()) == 1
 
 
+def test_testset_store_batch_ranges_normalize(tmp_path):
+    store = TestsetStore(data_dir=tmp_path)
+    # 合法：排序 + 去重保序（乱序输入按 start 升序）
+    ts = store.create_testset(
+        "批量",
+        [{"text": f"m{i}"} for i in range(4)],
+        batch_ranges=[[2, 3], [0, 0]],
+    )
+    assert ts["batch_ranges"] == [[0, 0], [2, 3]]
+
+    # 单条不合法（越界 / 倒序 / bool / 非整数对 / 非 list）→ 整段丢弃或清空
+    cases = [
+        [[-1, 1]],
+        [[0, 4]],  # 越界（message_count=4）
+        [[2, 1]],  # s > e
+        [[0, True]],
+        [[0]],
+        "not-a-list",
+    ]
+    for ranges in cases:
+        assert (
+            store.create_testset("x", [{"text": "m"}] * 4, ranges)["batch_ranges"] == []
+        ), ranges
+
+    # 部分不合法 → 合法段保留（重叠段丢弃 / 非法项丢弃，结果与输入顺序无关）
+    assert store.create_testset("x", [{"text": "m"}] * 4, [[0, 1], [1, 2]])[
+        "batch_ranges"
+    ] == [[0, 1]]
+    assert store.create_testset("x", [{"text": "m"}] * 4, [[1, 2], [0, 1]])[
+        "batch_ranges"
+    ] == [[0, 1]]
+    assert store.create_testset("x", [{"text": "m"}] * 4, [[0, 1], "x"])[
+        "batch_ranges"
+    ] == [[0, 1]]
+
+    # 更新时按新消息数重新规范化（索引基于存储后的消息序列）
+    ts2 = store.create_testset("再", [{"text": "a"}, {"text": "b"}], [[0, 1]])
+    updated = store.update_testset(ts2["id"], "再改", [{"text": "a"}], [[0, 1]])
+    assert updated["batch_ranges"] == []  # 消息只剩 1 条，越界丢弃
+
+    # 持久化 + 旧数据 setdefault
+    reloaded = TestsetStore(data_dir=tmp_path)
+    assert reloaded.get_testset(ts["id"])["batch_ranges"] == [[0, 0], [2, 3]]
+    legacy = {"testsets": [{"id": "ts_old", "name": "旧", "messages": []}]}
+    (tmp_path / "virtual_session" / "testsets.json").write_text(
+        json.dumps(legacy), encoding="utf-8"
+    )
+    legacy_store = TestsetStore(data_dir=tmp_path)
+    assert legacy_store.get_testset("ts_old")["batch_ranges"] == []
+
+
 # ---------- runner.wait_done ----------
 
 
@@ -2008,13 +2059,17 @@ async def wait_testset_done(
 
 
 def _make_testset(
-    testset_id: str, name: str, texts: list[tuple[str, dict | None]]
+    testset_id: str,
+    name: str,
+    texts: list[tuple[str, dict | None]],
+    batch_ranges: list[list[int]] | None = None,
 ) -> dict:
     return {
         "id": testset_id,
         "name": name,
         "created_at": 0,
         "messages": [{"text": t, "rule": r} for t, r in texts],
+        "batch_ranges": batch_ranges or [],
     }
 
 
@@ -2040,21 +2095,19 @@ async def test_testset_runner_sequential():
                 ("第二问", None),
             ],
         )
-        run_id = tsr.start_run(
-            testset, [make_session(1), make_session(2)], "sequential"
-        )
+        run_id = tsr.start_run(testset, [make_session(1), make_session(2)])
         rec = await wait_testset_done(tsr, run_id)
     finally:
         task.cancel()
     assert rec["status"] == "done"
-    # 逐条模式：每步全部会话完成才发下一条
+    # 无批量段：每步全部会话完成才发下一条
     assert processed == ["第一问", "第一问", "第二问", "第二问"]
     assert [s["status"] for s in rec["steps"]] == ["done", "done"]
     assert rec["steps"][0]["results"][0]["assertion"]["pass"] is True
 
 
 @pytest.mark.asyncio
-async def test_testset_runner_batch():
+async def test_testset_runner_batch_segment():
     queue = asyncio.Queue()
     context = FakeContext(queue)
     tsr = TestsetRunner(context, VirtualTestRunner(context))
@@ -2071,14 +2124,56 @@ async def test_testset_runner_batch():
             "ts_2",
             "批量测试",
             [("b1", None), ("b2", {"type": "not_contains", "value": "绝对不存在"})],
+            batch_ranges=[[0, 1]],
         )
-        run_id = tsr.start_run(testset, [make_session(1)], "batch")
+        run_id = tsr.start_run(testset, [make_session(1)])
         rec = await wait_testset_done(tsr, run_id)
     finally:
         task.cancel()
     assert rec["status"] == "done"
-    assert sorted(processed) == ["b1", "b2"]  # 两条消息均已发出（batch 不等待）
+    assert sorted(processed) == ["b1", "b2"]  # 批量段内两条消息均已发出（重叠）
     assert rec["steps"][1]["results"][0]["assertion"]["pass"] is True
+
+
+@pytest.mark.asyncio
+async def test_testset_runner_mixed_segments():
+    queue = asyncio.Queue()
+    context = FakeContext(queue)
+    tsr = TestsetRunner(context, VirtualTestRunner(context))
+    processed: list[str] = []
+
+    async def handler(event):
+        processed.append(event.message_str)
+        if event.message_str == "B":
+            # B 在回复前等 C 已入队 → 证明 B、C 同时发出（批量段重叠）；
+            # 段外消息 A 完成前 B 不会入队（逐条等待）。runner 是黑盒、没有
+            # 外部信号可等，只能轮询队列深度观察入队时序
+            async with asyncio.timeout(5.0):
+                while queue.qsize() == 0:  # noqa: ASYNC110
+                    await asyncio.sleep(0.001)
+        await event.send(MessageChain().message(f"回复 {event.message_str}"))
+        event.cleanup_temporary_local_files()
+
+    task = asyncio.create_task(consume(queue, handler))
+    try:
+        testset = _make_testset(
+            "ts_5",
+            "混合节奏",
+            [("A", None), ("B", None), ("C", None), ("D", None)],
+            batch_ranges=[[1, 2]],
+        )
+        run_id = tsr.start_run(testset, [make_session(1)])
+        rec = await wait_testset_done(tsr, run_id)
+    finally:
+        task.cancel()
+    assert rec["status"] == "done"
+    assert rec["batch_ranges"] == [[1, 2]]
+    # A 是单步段：先于 B、C 完成；B、C 是批量段：D 之前完成
+    assert processed.index("A") < processed.index("B")
+    assert processed.index("A") < processed.index("C")
+    assert processed.index("B") < processed.index("D")
+    assert processed.index("C") < processed.index("D")
+    assert all(s["status"] == "done" for s in rec["steps"])
 
 
 @pytest.mark.asyncio
@@ -2089,7 +2184,7 @@ async def test_testset_runner_step_timeout(monkeypatch):
     tsr = TestsetRunner(context, VirtualTestRunner(context))
 
     testset = _make_testset("ts_3", "超时测试", [("m1", None), ("m2", None)])
-    run_id = tsr.start_run(testset, [make_session(1)], "sequential")
+    run_id = tsr.start_run(testset, [make_session(1)])
     rec = await wait_testset_done(tsr, run_id)
     # 收尾：放行悬挂的 _await_event
     while not queue.empty():
@@ -2121,7 +2216,7 @@ async def test_testset_runner_abort():
         testset = _make_testset(
             "ts_4", "取消测试", [("第一步", None), ("第二步", None)]
         )
-        run_id = tsr.start_run(testset, [make_session(1)], "sequential")
+        run_id = tsr.start_run(testset, [make_session(1)])
         async with asyncio.timeout(5.0):
             while True:
                 if tsr.status(run_id)["current_step"] == 0:
@@ -2153,7 +2248,7 @@ def test_testset_runner_list_runs_and_prune():
         "run_id": "",
         "testset_id": "ts",
         "testset_name": "旧完成",
-        "mode": "sequential",
+        "batch_ranges": [],
         "status": "done",
         "current_step": -1,
         "steps": [],
@@ -2234,7 +2329,6 @@ async def test_plugin_testset_crud_validation(tmp_path):
 
     cases = [
         {"name": "x", "messages": "不是数组"},
-        {"name": "x", "messages": []},
         {"name": "x", "messages": [{"text": "  "}]},
         {"name": "x", "messages": [{"text": "ok", "rule": "regex"}]},
         {
@@ -2247,6 +2341,11 @@ async def test_plugin_testset_crud_validation(tmp_path):
     for payload in cases:
         resp = await call_handler(plugin.create_testset, payload)
         assert resp.status_code == 400, payload
+
+    # 空消息允许创建（先建命名条目、再在窗口里加消息）
+    resp = await call_handler(plugin.create_testset, {"name": "空建", "messages": []})
+    assert resp.status_code == 200
+    assert json.loads(resp.body)["messages"] == []
 
     resp = await call_handler(
         plugin.update_testset, {"name": "x", "messages": [{"text": "ok"}]}, "ts_none"
@@ -2279,15 +2378,70 @@ async def test_plugin_run_testset_validation(tmp_path):
     assert resp.status_code == 400  # 测试集没有消息
 
     resp = await call_handler(
-        plugin.run_testset,
-        {"testset_id": ts["id"], "mode": "crazy", "sessions": ["vs_1"]},
-    )
-    assert resp.status_code == 400
-
-    resp = await call_handler(
         plugin.run_testset, {"testset_id": ts["id"], "sessions": ["vs_missing"]}
     )
     assert resp.status_code == 404  # 会话缺失
+
+
+@pytest.mark.asyncio
+async def test_plugin_testset_batch_ranges_validation(tmp_path):
+    plugin = main_mod.VirtualSessionPlugin(FakeContext())
+    plugin.testset_store = TestsetStore(data_dir=tmp_path)
+
+    # 非法 batch_ranges → 400
+    invalid = [
+        "不是数组",
+        [["a", 1]],
+        [[True, 1]],
+        [[0, 2]],  # 越界（仅 2 条消息，最大索引 1）
+        [[1, 0]],  # s > e
+        [[0, 1], [1, 1]],  # 重叠
+    ]
+    for br in invalid:
+        payload = {
+            "name": "T",
+            "messages": [{"text": "m1"}, {"text": "m2"}],
+            "batch_ranges": br,
+        }
+        resp = await call_handler(plugin.create_testset, payload)
+        assert resp.status_code == 400, br
+
+    # 合法 → 200 且返回规范化（按 start 排序）
+    resp = await call_handler(
+        plugin.create_testset,
+        {
+            "name": "T",
+            "messages": [{"text": "m1"}, {"text": "m2"}, {"text": "m3"}],
+            "batch_ranges": [[2, 2], [0, 0]],
+        },
+    )
+    assert resp.status_code == 200
+    body = json.loads(resp.body)
+    assert body["batch_ranges"] == [[0, 0], [2, 2]]
+
+    # 更新也校验 batch_ranges 并透传
+    resp = await call_handler(
+        plugin.update_testset,
+        {
+            "name": "T",
+            "messages": [{"text": "m1"}, {"text": "m2"}],
+            "batch_ranges": [[0, 1]],
+        },
+        body["id"],
+    )
+    assert resp.status_code == 200
+    assert json.loads(resp.body)["batch_ranges"] == [[0, 1]]
+
+    resp = await call_handler(
+        plugin.update_testset,
+        {
+            "name": "T",
+            "messages": [{"text": "m1"}, {"text": "m2"}],
+            "batch_ranges": [[0, 5]],
+        },
+        body["id"],
+    )
+    assert resp.status_code == 400
 
 
 @pytest.mark.asyncio
@@ -2344,9 +2498,7 @@ async def test_plugin_testset_run_status_abort_runs(tmp_path):
     assert resp.status_code == 404
 
     # 启动运行 → status 可查询
-    run_id = plugin.testset_runner.start_run(
-        ts, plugin.group_mgr.effective_many([sid]), "sequential"
-    )
+    run_id = plugin.testset_runner.start_run(ts, plugin.group_mgr.effective_many([sid]))
     req = make_plugin_request({}, query=f"run_id={run_id}")
     with bind_request_context(req):
         resp = await plugin.testset_run_status()

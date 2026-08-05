@@ -506,9 +506,10 @@ class VirtualSessionPlugin(Star):
     def _validate_messages(messages: Any) -> list[dict] | None:
         """校验并清洗测试集消息；无效返回 None（调用方转 400）。
 
-        每条消息必须含非空字符串 text，rule 必须为 dict 或 null。
+        messages 必须为 list（可空——先建命名条目、再在窗口里加消息）；
+        每条已含消息必须含非空字符串 text，rule 必须为 dict 或 null。
         """
-        if not isinstance(messages, list) or not messages:
+        if not isinstance(messages, list):
             return None
         out: list[dict] = []
         for item in messages:
@@ -522,6 +523,38 @@ class VirtualSessionPlugin(Star):
                 return None
             out.append({"text": text, "rule": rule})
         return out
+
+    @staticmethod
+    def _validate_batch_ranges(
+        batch_ranges: Any, message_count: int
+    ) -> list[list[int]] | None:
+        """严格校验批量发送范围；非法返回 None（调用方转 400）。
+
+        非 list、项非两个整数、越界、s>e、互相重叠都拒绝；合法返回规范化
+        列表（按 start 升序）。handler 校验的 messages 逐条非空 ⇒ 存储层不丢
+        消息 ⇒ 索引稳定，此处校验与存储层规范化结果一致。
+        """
+        if not isinstance(batch_ranges, list):
+            return None
+        kept: list[list[int]] = []
+        for item in batch_ranges:
+            if (
+                not isinstance(item, list)
+                or len(item) != 2
+                or isinstance(item[0], bool)
+                or isinstance(item[1], bool)
+                or not isinstance(item[0], int)
+                or not isinstance(item[1], int)
+            ):
+                return None
+            start, end = item
+            if not (0 <= start <= end < message_count):
+                return None
+            if any(not (end < s or e < start) for s, e in kept):
+                return None
+            kept.append([start, end])
+        kept.sort(key=lambda r: r[0])
+        return kept
 
     async def list_testsets(self):
         """列出全部测试集。"""
@@ -538,13 +571,20 @@ class VirtualSessionPlugin(Star):
                 f"messages 数量不能超过 {MAX_MESSAGES_PER_TESTSET}",
                 status_code=400,
             )
+        batch_ranges = self._validate_batch_ranges(
+            payload.get("batch_ranges") or [], len(messages)
+        )
+        if batch_ranges is None:
+            return error_response("batch_ranges 格式无效", status_code=400)
         testset = self.testset_store.create_testset(
-            name=payload.get("name"), messages=messages
+            name=payload.get("name"),
+            messages=messages,
+            batch_ranges=batch_ranges,
         )
         return json_response(testset)
 
     async def update_testset(self, testset_id: str):
-        """更新测试集（名称与消息序列整体替换）。"""
+        """更新测试集（名称、消息序列与批量发送范围整体替换）。"""
         payload = await request.json(default={})
         messages = self._validate_messages(payload.get("messages"))
         if messages is None:
@@ -554,8 +594,16 @@ class VirtualSessionPlugin(Star):
                 f"messages 数量不能超过 {MAX_MESSAGES_PER_TESTSET}",
                 status_code=400,
             )
+        batch_ranges = self._validate_batch_ranges(
+            payload.get("batch_ranges") or [], len(messages)
+        )
+        if batch_ranges is None:
+            return error_response("batch_ranges 格式无效", status_code=400)
         testset = self.testset_store.update_testset(
-            testset_id, name=payload.get("name"), messages=messages
+            testset_id,
+            name=payload.get("name"),
+            messages=messages,
+            batch_ranges=batch_ranges,
         )
         if testset is None:
             return error_response("未找到该测试集", status_code=404)
@@ -573,9 +621,10 @@ class VirtualSessionPlugin(Star):
     async def run_testset(self):
         """启动测试集运行（后端后台任务驱动，立即返回 run_id，结果轮询 status）。
 
-        测试集运行是耗时操作、可能与页面生命周期解耦：逐条模式由后台任务在
-        全部会话完成当前步骤后才发下一条，离开页面不影响执行；运行记录可经
-        ``/testsets/run/status`` 轮询、``/testsets/runs`` 找回、``abort`` 取消。
+        测试集运行是耗时操作、可能与页面生命周期解耦：发送节奏由测试集内的
+        批量发送范围决定（段内重叠、段外逐条），后台任务按段驱动，离开页面
+        不影响执行；运行记录可经 ``/testsets/run/status`` 轮询、
+        ``/testsets/runs`` 找回、``abort`` 取消。
         """
         payload = await request.json(default={})
         testset_id = payload.get("testset_id")
@@ -586,9 +635,6 @@ class VirtualSessionPlugin(Star):
             return error_response("未找到该测试集", status_code=404)
         if not testset.get("messages"):
             return error_response("该测试集没有消息", status_code=400)
-        mode = payload.get("mode") or "sequential"
-        if mode not in ("sequential", "batch"):
-            return error_response("mode 必须是 sequential 或 batch", status_code=400)
         sessions = payload.get("sessions")
         if not isinstance(sessions, list) or not sessions:
             return error_response("sessions 不能为空", status_code=400)
@@ -598,7 +644,7 @@ class VirtualSessionPlugin(Star):
             found = {s["id"] for s in session_objs}
             missing = [sid for sid in requested if sid not in found]
             return error_response(f"未找到指定的虚拟会话: {missing}", status_code=404)
-        run_id = self.testset_runner.start_run(testset, session_objs, mode)
+        run_id = self.testset_runner.start_run(testset, session_objs)
         return json_response({"run_id": run_id, "steps": len(testset["messages"])})
 
     async def testset_run_status(self):

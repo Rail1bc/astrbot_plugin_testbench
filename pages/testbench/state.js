@@ -13,6 +13,6 @@ export const state = {
   expandedGroups: new Set(),
   expandedSessions: new Set(),
   testsets: [],
-  expandedTestsets: new Set(),
+  selectedTestsetId: null,
   activeRunId: null,
 };

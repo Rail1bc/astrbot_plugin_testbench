@@ -35,7 +35,7 @@ astrbot_plugin_testbench/
 ├─ stats.py             # 耗时统计纯函数（duration_stats：min/max/avg/p50/p95）
 ├─ assertions.py        # 回复断言规则评估纯函数（evaluate_rule：正则/包含/格式）
 ├─ testset_store.py     # 测试集数据模型与持久化（TestsetStore）
-├─ testset_runner.py    # 测试集运行编排器（TestsetRunner：后端驱动逐条/批量）
+├─ testset_runner.py    # 测试集运行编排器（TestsetRunner：后端按段驱动，单步段逐条、批量段重叠）
 ├─ virtual_event.py     # VirtualMessageEvent：捕获 send/流式结果，携带完成信号
 ├─ pyproject.toml       # 插件仓库自包含的 ruff / pytest 配置（不依赖主仓库）
 ├─ pages/testbench/
@@ -45,7 +45,7 @@ astrbot_plugin_testbench/
 │  ├─ modal.js          # 自绘弹窗（openModal/showModal/hideModal）
 │  ├─ utils.js          # 工具函数与最终配置解析（effectiveView/findSession 等）
 │  ├─ group_list.js     # 左侧测试组列表与组/会话配置弹窗（createGroupList(env)）
-│  ├─ testset_list.js   # 测试集列表/编辑/运行弹窗与最近运行（createTestsetList(env)）
+│  ├─ testset_list.js   # 测试集列表/编辑窗口/运行弹窗/导出导入与最近运行（createTestsetList(env)）
 │  ├─ api.js            # bridge 调用的统一封装（listPlatforms/listConfs/...）
 │  ├─ align.js          # 轮次对齐控制器（createAlignController，依赖注入）
 │  ├─ chat.js           # 聊天内容渲染（createChatRenderer：气泡/思维链/轮次分组）
@@ -107,27 +107,29 @@ astrbot_plugin_testbench/
 
 ### 测试集（testset_store.py / testset_runner.py）
 
-- `TestsetStore`：持久化到 `data/virtual_session/testsets.json`（与 groups.json 同目录），模型 `{testsets: [{id: "ts_<uuid8>", name, created_at, messages: [{text, rule}]}]}`；`_normalize_messages` 清洗（text 去首尾空白、空文本丢弃、rule 归一 dict|None）；`MAX_MESSAGES_PER_TESTSET = 100`。两个类名以 Test 开头，须带 `__test__ = False` 防 pytest 误收集。
-- `TestsetRunner`：测试集运行是**耗时操作**且用户可能离开页面，因此**由后端后台任务驱动**（`asyncio.create_task(_drive)`），运行记录保存在内存、可轮询 / 找回 / 取消：
-  - sequential：逐条发出 → 等该步全部会话完成（`runner.wait_done(timeout_secs=TESTSET_STEP_TIMEOUT)`）→ 再发下一条（上下文连续）；每步循环前检查 `run["status"] == "running"`。
-  - batch：所有消息立即连续发出（重叠），再逐个收结果。
-  - abort 只置标记、不 cancel 任务：当前步骤照常完成并收结果，后续步骤不再发。
-  - 单步超时安全阀 `TESTSET_STEP_TIMEOUT = 600`（超时标该步 error，sequential 直接中止、batch 继续收其余步）；运行记录按 `DONE_RUN_KEEP_SECONDS`（10min）/ `STALE_RUN_TIMEOUT`（1h）清理，`start_run` 与 `list_runs` 时 `_prune_runs()`。
-  - `status(run_id)` / `list_runs(limit=10)`（倒序摘要，页面重开找回）/ `abort(run_id)`。
+- `TestsetStore`：持久化到 `data/virtual_session/testsets.json`（与 groups.json 同目录），模型 `{testsets: [{id: "ts_<uuid8>", name, created_at, messages: [{text, rule}], batch_ranges: [[start, end], ...]}]}`；`_normalize_messages` 清洗（text 去首尾空白、空文本丢弃、rule 归一 dict|None）；`_normalize_batch_ranges` 清洗批量段（每项须为非 bool 的两个 int 且 0 ≤ s ≤ e < message_count，不满足的整段丢弃；先按 start 升序再贪心保留不重叠段，结果与输入顺序无关；非 list → `[]`）；`MAX_MESSAGES_PER_TESTSET = 100`；允许空消息创建（先建命名条目、再在窗口里加消息），`_load` 对旧数据 `setdefault("batch_ranges", [])`。两个类名以 Test 开头，须带 `__test__ = False` 防 pytest 误收集。
+- `TestsetRunner`：测试集运行是**耗时操作**且用户可能离开页面，因此**由后端后台任务驱动**（`asyncio.create_task(_drive_segments)`），运行记录保存在内存、可轮询 / 找回 / 取消；`start_run(testset, sessions)`（**无 mode**，发送节奏由 `testset["batch_ranges"]` 决定）：
+  - `_segments(run)` 把消息按 batch_ranges 切分为**单步段**（`[i]`，段外消息）与**批量段**（`[s..e]`，段内消息）；段之间按 start 升序、互不重叠，逐段驱动。
+  - **单步段**：发 → 等该步全部会话完成（`runner.wait_done(timeout_secs=TESTSET_STEP_TIMEOUT)`）→ 再发下一步（上下文连续）；超时 / 异常 → 该步 error、run error、**中止后续**（同原 sequential 语义）。
+  - **批量段**：先全部 `start`（各步置 running、记 test_id），再逐个 `wait_done`；段内单步超时 / 异常 → 该步 error、继续收其余步；**段内错误不中止后续段**（同原 batch 语义）。
+  - abort 只置标记、不 cancel 任务：当前步骤照常完成并收结果，后续步骤不再发；段与段之间、批量段等待循环内都检查 `run["status"]`。
+  - 全部段结束后：`run.status = 有 error 步 ? "error" : "done"`（仅当未 abort）。
+  - 单步超时安全阀 `TESTSET_STEP_TIMEOUT = 600`；运行记录按 `DONE_RUN_KEEP_SECONDS`（10min）/ `STALE_RUN_TIMEOUT`（1h）清理，`start_run` 与 `list_runs` 时 `_prune_runs()`。
+  - `status(run_id)` / `list_runs(limit=10)`（倒序摘要，页面重开找回；摘要无 mode 字段）/ `abort(run_id)`。
 
 ### 前端（pages/testbench/）
 
 - `api.js`：`window.AstrBotPluginPage` bridge 的 `apiGet`/`apiPost` 统一封装。bridge 的响应解析是 `response.data?.data ?? response.data`（json_response 的 body 直接作为 data）。
-- `state.js`：全部共享可变状态收进一个 `state` 对象（groups/platforms/confs/openIds/pinnedIds/panelEls/historyCache/expandedGroups/expandedSessions/testsets/expandedTestsets/activeRunId）。ES module 顶层绑定无法跨模块共享可变值，故集中到叶子模块，各模块从 `state` 读写，保持依赖单向。
+- `state.js`：全部共享可变状态收进一个 `state` 对象（groups/platforms/confs/openIds/pinnedIds/panelEls/historyCache/expandedGroups/expandedSessions/testsets/selectedTestsetId/activeRunId）。ES module 顶层绑定无法跨模块共享可变值，故集中到叶子模块，各模块从 `state` 读写，保持依赖单向。
 - `utils.js`：纯工具与配置解析（`escapeHtml`/`statusText`/`confName`/`platformName`/`findSession`/`effectiveView`），唯一依赖 `state`。`effectiveView` 是后端 `effective()` 的客户端镜像（曾漏 sender 字段导致显示「—」，有防回归测试）。
 - `modal.js`：自绘弹窗（iframe 沙箱禁用原生 alert/confirm），回调状态 `modalCallback` 封装在模块内部，对外只暴露 `openModal`/`showModal`/`hideModal`。
 - `group_list.js`：左侧测试组列表与组/会话配置弹窗。`createGroupList(env)` 依赖注入视图动作（toggleOpen/openAll/deleteSession/renderPanels/showRunStatus/updateRunOverview），本模块不 import app.js，模块依赖保持单向。`platformOptions()`/`confOptions()` 是平台/档案下拉选项的共享构建（含「档案已不存在」占位，防静默丢绑定）。
-- `testset_list.js`：左侧测试集列表、编辑器、运行弹窗与最近运行。`createTestsetList(env)` 依赖注入视图动作（showRunStatus/runTestset/viewTestsetRun），同样不 import app.js。`RULE_TYPES` 定义断言类型选项（无 / contains / not_contains / regex / json / non_empty / min_len / max_len / prefix / suffix），编辑器按行维护「文本 + 断言类型 + 断言值」，最近运行条目标注状态 chip（运行中/完成/错误/已取消），运行中条目也可点「查看」续轮询。
+- `testset_list.js`：左侧测试集列表、**右侧编辑窗口**、运行弹窗、导出 / 导入与最近运行。`createTestsetList(env)` 依赖注入视图动作（showRunStatus/runTestset/viewTestsetRun/switchToTestsets），同样不 import app.js。列表条目是**有名字的条目**（点击选中后右侧打开编辑窗口，不再内联展开）；编辑器按行维护「文本 + 断言类型 + 断言值 + 批量勾选」，**`renderMsgRow` 单行构建 + `collectEditorRows` 反向收集是唯二变化点**，`RULE_TYPES` 定义断言类型选项（无 / contains / not_contains / regex / json / non_empty / min_len / max_len / prefix / suffix）为唯一来源，未来新增测试行为只改这两处 + 后端 `_normalize_messages`；连续勾选「批量」的消息合并为批量段（`collectEditorRows` 丢弃空文本行后按索引连续性合并，`batch_ranges` 引用保留后的消息索引），`#ts-segments` 实时显示段摘要；**脏标记** `dirty`（任一行输入 / 勾选变化置位，切换测试集 / 导入 / 导出 / 运行前确认，`refreshTestsets` 在 dirty 时跳过编辑器重渲染以免异步刷新清掉未保存修改）。导出走 Blob `<a download>`（iframe 沙箱含 `allow-downloads`），信封 `{format: "astrbot-testbench-testset", version: 1, name, messages, batch_ranges}` 预留「测试集市场」下载兼容；导入复用 `createTestset` 端点（无新后端接口），`parseTestsetEnvelope` 校验 format/version≤1/name/messages/batch_ranges。运行弹窗目标**三选**：已打开的 / 全部 / 选择测试组（`buildGroupCheckboxes` 组多选 → `selectedGroupSessionIds` 把勾选组解析为该组全部会话 id），`env.runTestset(testset, ids)` 只收会话 id 列表。最近运行条目标注状态 chip（运行中/完成/错误/已取消），运行中条目也可点「查看」续轮询。
 - `chat.js`：`createChatRenderer(alignGetter)` 集中聊天内容渲染（气泡 `bubbleFor` / 思维链 `reasoningSection` / 轮次分组 `groupTurns` 与对齐渲染 `renderAligned`）。align 以 getter 注入（渲染时才取），避免与 `createAlignController` 互相创建的循环依赖；`app.js` 提供 `renderChat` 包装函数注入 align 控制器并传给 align.js 的 env。
-- `app.js` 分区：面板（openPanel/loadHistory/历史 JSON 编辑/重新生成）→ 发送（pollRun/pollPending/sendToOne/sendToAll/updateRunOverview）→ 会话操作（重置/删除）→ 面板排序（renderPanels/拖拽/置顶）→ **rail 视图切换**（`showView`：`.groups-card` / `.testsets-card` 互斥、rail 按钮 active 互斥，点当前视图 toggle 折叠，切到测试集时刷新）→ **测试集运行编排**（`runTestset` 一次启动后端运行 → `pollTestsetRun` 每秒轮询 `testsets/run/status`，进度逐步骤显示、完成步数变化时刷新已打开面板历史、终态弹结果表格；`showTestsetResults` 表格行=步骤、列=会话、单元格含断言 ✓/✗；`viewTestsetRun` 从「最近运行」找回并续轮询；`abortTestsetRun` 请求取消，当前步骤完成即止）→ 选项加载 → 初始化（组装 align/chat/group_list/testset_list，绑定全局事件）。`loadOptions()` 拉取 platforms/confs 写入 `state`；`refreshGroups()` 来自 group_list（刷新左侧列表并清理失效面板）。
+- `app.js` 分区：面板（openPanel/loadHistory/历史 JSON 编辑/重新生成）→ 发送（pollRun/pollPending/sendToOne/sendToAll/updateRunOverview）→ 会话操作（重置/删除）→ 面板排序（renderPanels/拖拽/置顶）→ **rail 视图切换**（`showView`：同时驱动左侧列表 `.groups-card` / `.testsets-card` 互斥 **与右侧视图 `.sessions-view` / `.testsets-view` 互斥**——左侧选择自动切换右侧视图、不再手动切换；rail 按钮 active 互斥，点当前视图 toggle 折叠，切到测试集时 `refreshTestsets()`）→ **测试集运行编排**（`runTestset(testset, ids)` 一次启动后端运行（**无 mode**，启动文案含批量段摘要 `segmentSummary`）→ `pollTestsetRun` 每秒轮询 `testsets/run/status`，进度文案按 `segmentLabel` 标注「第 s+1–e+1 步（批量）」、逐步骤显示、完成步数变化时刷新已打开面板历史、终态弹结果表格；`showTestsetResults` 表格行=步骤、列=会话、单元格含断言 ✓/✗、批量段步骤带「批量」徽标 `batchBadge`；`viewTestsetRun` 从「最近运行」找回并续轮询；`abortTestsetRun` 请求取消，当前步骤完成即止；`runTestsetFromBar` 读 `#run-testset` 下拉对已打开会话执行）→ 选项加载 → 初始化（组装 align/chat/group_list/testset_list，绑定全局事件；`#run-testset` change 启用 / 禁用执行按钮）。`loadOptions()` 拉取 platforms/confs 写入 `state`；`refreshGroups()` 来自 group_list（刷新左侧列表并清理失效面板）。
 - 群发**不阻止重叠发送**（真实「重复追问」场景，与真实平台一致由 pipeline 并发处理）；每个面板底部有在途消息条（`.panel-pending`），`pollPending()` 每秒轮询 `sessions/pending` 接口、`renderPendingStrip` 按会话渲染「已入队 / 排队等待 LLM / LLM 生成中 / 完成」chip（`PENDING_STATUS_TEXT`）；**完成且已刷入会话历史的消息即从条内移除**（`loadHistory` 成功记录 `historyRefreshedAt`，过滤掉 `status=="done"` 且完成于该时刻之前的条目，条内只留真正在途与完成后的短暂过渡）；strip 在 `.chat` 外不干扰轮次对齐，显隐变化后按需 `reflowAlign()`。
-- 左侧布局：最左为 `.ui-rail` UI 窄条（方形按钮，当前 2 个「会话列表」/「测试集」，点击切换视图，点当前视图按钮折叠/展开侧栏，为后续扩展预留）；侧栏有两个互斥视图：`.groups-card`——「＋ 新建测试组」块（点击创建默认配置组并弹编辑弹窗）+ 测试组块（可展开组内会话），组头操作：打开全部 / ＋新增 / ✎编辑 / ✕删除，会话行头点击展开配置（`renderSessionConfig` 每行显示有效值 + 「已修改/继承组」chip，`sessionOverrides` 统计已单独修改的项），会话操作按钮：打开 / 删除（配置修改走展开配置中的「编辑配置」弹窗，「重置」在已打开会话的面板页眉）；`.testsets-card`——「＋ 新建测试集」块 + 测试集块（可展开消息预览，编辑 / 删除 / 运行）+ 底部「最近运行」区。
-- 群发栏（`.run-bar`）位于工作区**下方**（面板在上、群发在右下），`#align-bar` 位于面板与群发栏之间；`.workspace` 为 flex 列布局，`workspace-body` flex:1。
+- 左侧布局：最左为 `.ui-rail` UI 窄条（方形按钮，当前 2 个「会话列表」/「测试集」，点击切换视图，点当前视图按钮折叠/展开侧栏，为后续扩展预留）；侧栏有两个互斥视图：`.groups-card`——「＋ 新建测试组」块（点击创建默认配置组并弹编辑弹窗）+ 测试组块（可展开组内会话），组头操作：打开全部 / ＋新增 / ✎编辑 / ✕删除，会话行头点击展开配置（`renderSessionConfig` 每行显示有效值 + 「已修改/继承组」chip，`sessionOverrides` 统计已单独修改的项），会话操作按钮：打开 / 删除（配置修改走展开配置中的「编辑配置」弹窗，「重置」在已打开会话的面板页眉）；`.testsets-card`——「＋ 新建测试集」块 + **纯命名条目**（名字 + N 条消息徽标 + 选中高亮，无内联展开 / 无行内操作按钮，点击 → `selectTestset` 打开右侧编辑窗口）+ 底部「最近运行」区。
+- 工作区（`.workspace`）为 flex 列布局：顶部 `#workspace-strip` 常显状态条（运行状态 + 取消按钮，两个视图下都常显）；`.sessions-view`——`.panels-block`（包裹已打开会话面板 + 空态提示，flex:1）、`#align-bar`、`.run-bar` 两行（第 1 行群发输入 + 发送到全部 + 轮次对齐；第 2 行 `#run-testset` 测试集下拉 + `#btn-run-testset` 执行 + `#run-overview`）；`.testsets-view`（初始 hidden）——`.testset-editor` 编辑窗口。`.sessions-view` / `.testsets-view` 必须带 `[hidden]{display:none}` 特例（flex 列元素与 HTML hidden 的已知陷阱，沿用 groups-card）。
 - 面板页眉为多行 flex 布局：标题与徽标包在 `.panel-info`（`flex-wrap: wrap`）内随内容换行撑开页眉，`.panel-actions` 的「编辑 / 重置 / 置顶 / 关闭」按钮始终第一行右对齐；`refreshPanelHead()` / `openPanel()` 都维护该结构。
 - 气泡渲染 `bubbleFor(msg)` 用 `extractParts(msg.content)` 拆分**思维链**（`ThinkPart`，`{type:"think", think:"..."}`）与正文：带推理内容的回复渲染 `.reasoning-wrap`（原生 `<details>`，默认收起，summary 即「展开/收起思维链」按钮）；旧格式的 `assistant_reasoning` / `reasoning` 角色整条按思维链处理。`<details>` 的 `toggle` 事件在轮次对齐模式下 `requestAnimationFrame(() => align.reflowAlign())` 重排高度。
 - 对话历史编辑走**面板头部「历史」按钮的 JSON 编辑器**（`openHistoryEditor`）：直接编辑 `{conversations: [...]}` 全结构，保存调 `saveHistory` 整体替换（编辑/新增/删除对话都在 JSON 里完成）；单条气泡只保留「重新生成」。不做复杂的单轮编辑 UI——没有能力修改结构化历史的用户不建议自己改。
@@ -158,10 +160,10 @@ astrbot_plugin_testbench/
 | POST | /reset | reset_sessions | 重置会话对话历史 |
 | POST | /test/run | run_test | 投递消息，立即返回 test_id |
 | GET | /test/run/status | test_run_status | 查询运行状态（含统计） |
-| GET/POST | /testsets | list_testsets / create_testset | 测试集列表 / 创建测试集（消息序列，可带断言规则） |
+| GET/POST | /testsets | list_testsets / create_testset | 测试集列表 / 创建测试集（消息序列可带断言规则；允许空消息先建条目；可选 batch_ranges 批量段，非法 → 400） |
 | POST | /testsets/delete | delete_testsets | 删除测试集 |
-| POST | /testsets/\<id\>/update | update_testset | 更新测试集（名称与消息序列整体替换） |
-| POST | /testsets/run | run_testset | 启动测试集运行（后端后台任务驱动，立即返回 run_id） |
+| POST | /testsets/\<id\>/update | update_testset | 更新测试集（名称、消息序列与批量段整体替换；batch_ranges 缺省为 []） |
+| POST | /testsets/run | run_testset | 启动测试集运行（仅 `{testset_id, sessions}`，无 mode；后端后台任务驱动，立即返回 run_id） |
 | GET | /testsets/run/status | testset_run_status | 查询测试集运行进度与结果（逐步骤） |
 | POST | /testsets/run/abort | abort_testset_run | 请求取消测试集运行（当前步骤完成即止） |
 | GET | /testsets/runs | testset_runs | 最近测试集运行摘要列表 |
@@ -178,8 +180,8 @@ astrbot_plugin_testbench/
 
 测试随插件仓库维护（`tests/`，可与主仓库无关地推送、供协作者运行）。
 
-- `tests/test_backend.py`：后端单元测试（103 个），需要 astrbot（PyPI 包，插件运行时依赖）。以 **namespace package** 加载插件：`sys.path.insert(0, str(REPO_ROOT.parent))` 后 `import astrbot_plugin_testbench.*`——插件模块用相对导入（`from .group_store import ...`），必须按包加载，这与 AstrBot 在 data/plugins 下加载插件的方式一致。未安装 astrbot 时整组跳过（`pytest.importorskip`）。
-- `tests/test_frontend.py`：前端脚本静态检查（10 个），零依赖，任何环境可运行。
+- `tests/test_backend.py`：后端单元测试（106 个），需要 astrbot（PyPI 包，插件运行时依赖）。以 **namespace package** 加载插件：`sys.path.insert(0, str(REPO_ROOT.parent))` 后 `import astrbot_plugin_testbench.*`——插件模块用相对导入（`from .group_store import ...`），必须按包加载，这与 AstrBot 在 data/plugins 下加载插件的方式一致。未安装 astrbot 时整组跳过（`pytest.importorskip`）。
+- `tests/test_frontend.py`：前端脚本静态检查（12 个），零依赖，任何环境可运行。
 
 本地运行（用主仓库 venv，bash cwd 不稳定，命令先 `cd /e/AstrBot` 或 `git -C` 插件目录）：
 

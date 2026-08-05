@@ -51,7 +51,10 @@ class TestsetStore:
             except (OSError, json.JSONDecodeError):
                 data = None
             if isinstance(data, dict) and isinstance(data.get("testsets"), list):
-                return [t for t in data["testsets"] if isinstance(t, dict)]
+                testsets = [t for t in data["testsets"] if isinstance(t, dict)]
+                for testset in testsets:
+                    testset.setdefault("batch_ranges", [])
+                return testsets
         return []
 
     def _save(self) -> None:
@@ -71,6 +74,40 @@ class TestsetStore:
             out.append({"text": text, "rule": _clean_rule(item.get("rule"))})
         return out
 
+    @staticmethod
+    def _normalize_batch_ranges(
+        batch_ranges: Any, message_count: int
+    ) -> list[list[int]]:
+        """清洗批量发送范围：仅保留合法且互不重叠的 [s, e] 整数闭区间。
+
+        每项须为非 bool 的两个 int 且 0 ≤ s ≤ e < message_count；不满足的整段丢弃；
+        与已保留段重叠的整段丢弃；先按 start 升序再贪心保留，保证结果与输入顺序
+        无关。
+        """
+        if not isinstance(batch_ranges, list):
+            return []
+        kept: list[list[int]] = []
+        for item in batch_ranges:
+            if (
+                not isinstance(item, list)
+                or len(item) != 2
+                or isinstance(item[0], bool)
+                or isinstance(item[1], bool)
+                or not isinstance(item[0], int)
+                or not isinstance(item[1], int)
+            ):
+                continue
+            start, end = item
+            if not (0 <= start <= end < message_count):
+                continue
+            kept.append([start, end])
+        kept.sort(key=lambda r: r[0])
+        out: list[list[int]] = []
+        for start, end in kept:
+            if not out or start > out[-1][1]:
+                out.append([start, end])
+        return out
+
     # ---------- 查询 ----------
 
     def list_testsets(self) -> list[dict]:
@@ -84,25 +121,37 @@ class TestsetStore:
 
     # ---------- 创建 / 更新 / 删除 ----------
 
-    def create_testset(self, name: str, messages: list[dict]) -> dict:
+    def create_testset(
+        self, name: str, messages: list[dict], batch_ranges: Any = None
+    ) -> dict:
+        normalized = self._normalize_messages(messages)
         testset = {
             "id": f"ts_{uuid.uuid4().hex[:8]}",
             "name": str(name or "").strip() or "测试集",
             "created_at": int(time.time()),
-            "messages": self._normalize_messages(messages),
+            "messages": normalized,
+            "batch_ranges": self._normalize_batch_ranges(batch_ranges, len(normalized)),
         }
         self._testsets.append(testset)
         self._save()
         return testset
 
     def update_testset(
-        self, testset_id: str, name: str, messages: list[dict]
+        self,
+        testset_id: str,
+        name: str,
+        messages: list[dict],
+        batch_ranges: Any = None,
     ) -> dict | None:
         testset = self.get_testset(testset_id)
         if testset is None:
             return None
+        normalized = self._normalize_messages(messages)
         testset["name"] = str(name or "").strip() or "测试集"
-        testset["messages"] = self._normalize_messages(messages)
+        testset["messages"] = normalized
+        testset["batch_ranges"] = self._normalize_batch_ranges(
+            batch_ranges, len(normalized)
+        )
         self._save()
         return testset
 
