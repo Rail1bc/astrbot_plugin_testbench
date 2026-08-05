@@ -183,13 +183,16 @@ class VirtualGroupManager:
         id_set = set(ids)
         removed: list[tuple[dict, dict]] = []
         kept: list[dict] = []
+        matched = False
         for group in self._groups:
             if group["id"] in id_set:
+                matched = True
                 for session in group.get("sessions", []):
                     removed.append((group, session))
             else:
                 kept.append(group)
-        if removed:
+        # 用 matched 而非 removed：组内 0 会话时 removed 恒为空，但组仍须删除
+        if matched:
             self._groups = kept
             self._save()
         return removed

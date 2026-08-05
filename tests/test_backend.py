@@ -172,6 +172,26 @@ def test_group_manager_create_persist(tmp_path):
     assert (tmp_path / "virtual_session" / "groups.json").exists()
 
 
+def test_group_manager_delete_group_with_no_sessions(tmp_path):
+    """0 会话的测试组也必须能删除：删除条件不能依赖 removed 非空。
+
+    组内会话可被逐个删光，此时 delete_groups 的 removed 恒为空列表，
+    曾因此跳过 _save() 导致组永远删不掉。
+    """
+    mgr = VirtualGroupManager(data_dir=tmp_path)
+    group = mgr.create_group("空组", count=1)
+    mgr.delete_sessions([group["sessions"][0]["id"]])
+    assert mgr.get_group(group["id"])["sessions"] == []
+
+    removed = mgr.delete_groups([group["id"]])
+    assert removed == []  # 无会话可清，返回空对
+    assert mgr.list_groups() == []  # 组必须被真正删除
+
+    # 重新加载（新实例）确认删除已持久化
+    mgr2 = VirtualGroupManager(data_dir=tmp_path)
+    assert mgr2.list_groups() == []
+
+
 def test_group_create_stores_conf(tmp_path):
     mgr = VirtualGroupManager(data_dir=tmp_path)
     group = mgr.create_group("组A", count=2, conf_id="conf_a")
@@ -1001,6 +1021,21 @@ async def test_plugin_delete_groups_cleans_routes(tmp_path):
     assert resp.status_code == 200
     assert json.loads(resp.body)["deleted"] == 2
     assert all(umop not in ucr.umop_to_conf_id for umop in umops)
+
+
+@pytest.mark.asyncio
+async def test_plugin_delete_group_with_no_sessions(tmp_path):
+    context = FakeContext()
+    plugin = main_mod.VirtualSessionPlugin(context)
+    plugin.group_mgr = VirtualGroupManager(data_dir=tmp_path)
+    group = plugin.group_mgr.create_group("空组", count=1)
+    # 先删光组内会话，使组内剩 0 会话
+    await call_handler(plugin.delete_sessions, {"ids": [group["sessions"][0]["id"]]})
+
+    resp = await call_handler(plugin.delete_groups, {"ids": [group["id"]]})
+    assert resp.status_code == 200
+    assert json.loads(resp.body)["deleted"] == 0  # 无会话可级联清理
+    assert plugin.group_mgr.list_groups() == []  # 组已删除
 
 
 def _add_history(conv_mgr, sessions: list[dict]) -> list[str]:
