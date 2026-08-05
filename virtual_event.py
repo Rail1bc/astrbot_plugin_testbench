@@ -65,8 +65,8 @@ class VirtualMessageEvent(AstrMessageEvent):
         sender_id: str,
         sender_name: str,
         text: str,
-        platform_id: str = "virtual_test",
-        platform_name: str = "virtual_test",
+        platform_id: str = "webchat",
+        platform_name: str = "webchat",
         provider_id: str | None = None,
         model: str | None = None,
         done_event: asyncio.Event | None = None,
@@ -78,7 +78,7 @@ class VirtualMessageEvent(AstrMessageEvent):
             sender_id: 发送者 id，用于会话与权限判断。
             sender_name: 发送者昵称。
             text: 消息纯文本。
-            platform_id: 平台 id，决定 umo 与配置档案路由；默认虚拟平台。
+            platform_id: 平台 id，决定 umo 与配置档案路由；默认 webchat（与 AstrBot WebUI 一致）。
             platform_name: 平台类型名，通常与 platform_id 一致。
             provider_id: 可选，覆盖本次测试使用的 LLM provider。
             model: 可选，覆盖本次测试使用的模型名。

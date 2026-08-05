@@ -53,7 +53,7 @@ astrbot_plugin_testbench/
 
 ### umo（unified_msg_origin）
 
-`umo_of(session)`（group_store.py:27）：`f"{platform_id}:FriendMessage:{session_id}"`。平台 id 默认 `virtual_test`，会话 id 形如 `vs_<uuid8>`，测试组 id 形如 `g_<uuid8>`。umo 是 AstrBot 会话/配置/历史隔离的键：配置档案路由（UCR）、对话历史（conversation_manager）都按它定位。
+`umo_of(session)`（group_store.py:27）：`f"{platform_id}:FriendMessage:{session_id}"`。平台 id 默认 `webchat`（与 AstrBot WebUI 一致），发送者默认 `testbench` / `测试台`，会话 id 形如 `vs_<uuid8>`，测试组 id 形如 `g_<uuid8>`。umo 是 AstrBot 会话/配置/历史隔离的键：配置档案路由（UCR）、对话历史（conversation_manager）都按它定位。
 
 ### 测试组模型（group_store.py）
 
@@ -89,10 +89,11 @@ astrbot_plugin_testbench/
 ### 前端（pages/virtual-session/）
 
 - `api.js`：`window.AstrBotPluginPage` bridge 的 `apiGet`/`apiPost` 统一封装。bridge 的响应解析是 `response.data?.data ?? response.data`（json_response 的 body 直接作为 data）。
-- `app.js` 分区：弹窗（iframe 沙箱禁用原生 alert/confirm，用自绘弹窗）→ 测试组列表 → 面板 → 发送 → 会话操作 → 创建 → 面板排序 → 轮次对齐 → 选项加载 → 初始化。`loadOptions()` 拉取 platforms/confs 填充下拉框；`refreshGroups()` 渲染左侧组列表；`pollRun()` 轮询测试状态。
+- `app.js` 分区：弹窗（iframe 沙箱禁用原生 alert/confirm，用自绘弹窗）→ 测试组列表 → 面板 → 发送 → 会话操作 → 创建 → 面板排序 → 轮次对齐 → 选项加载 → 初始化。`loadOptions()` 拉取 platforms/confs 填充下拉框；`refreshGroups()` 渲染左侧组列表；`pollRun()` 轮询测试状态；`updateRunOverview()` 在群发栏实时显示当前打开的会话数与按测试组的分布。
+- 对话历史编辑走**面板头部「历史」按钮的 JSON 编辑器**（`openHistoryEditor`）：直接编辑 `{conversations: [...]}` 全结构，保存调 `saveHistory` 整体替换（编辑/新增/删除对话都在 JSON 里完成）；单条气泡只保留「重新生成」。不做复杂的单轮编辑 UI——没有能力修改结构化历史的用户不建议自己改。
 - `align.js`：`createAlignController(env)` 依赖注入访问器（getOpenIds/getPanelEls/getHistoryCache/getPanelsEl/renderChat），实现轮次对齐 + 滚动同步。
-- `index.html` 的 `<select>` 是静态骨架：`create-platform` 初始为空、`create-conf` 只有 `<option value="">默认配置</option>`，**必须由 loadOptions() 填充**。
-- 平台下拉固定保留 `virtual_test（默认）` 选项；真实平台来自后端 `platforms` 接口（`platform_manager.platform_insts`，含 webchat）。
+- `index.html` 的 `<select>` 是静态骨架：`create-platform` 初始为空（`loadOptions()` 填充后默认项为「默认（webchat）」）、`create-conf` 只有 `<option value="">默认配置</option>`，**必须由 loadOptions() 填充**。
+- 平台下拉默认项为「默认（webchat）」（对应后端 `DEFAULT_PLATFORM_ID="webchat"`，空值即使用默认）；真实平台来自后端 `platforms` 接口（`platform_manager.platform_insts`，含 webchat）。
 
 ## Web API 一览（main.py）
 
@@ -110,7 +111,7 @@ astrbot_plugin_testbench/
 | POST | /sessions/update | update_session | 会话配置覆盖（null 恢复继承组配置） |
 | POST | /sessions/delete | delete_sessions | 删会话 + 联动清理 |
 | GET | /sessions/\<id\>/history | session_history | 对话历史（LLM 上下文消息列表） |
-| POST | /sessions/history/edit | edit_history | 编辑历史单条消息 |
+| POST | /sessions/history/save | save_history | 整体替换对话历史（带 cid 更新、无 cid 新建、未列出删除；JSON 编辑器保存） |
 | POST | /sessions/history/regenerate | regenerate_history | 截断该轮之后历史并重发该轮 user 消息 |
 | POST | /reset | reset_sessions | 重置会话对话历史 |
 | POST | /test/run | run_test | 投递消息，立即返回 test_id |

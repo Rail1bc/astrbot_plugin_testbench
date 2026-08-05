@@ -15,9 +15,9 @@ from typing import Any
 
 from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
 
-DEFAULT_PLATFORM_ID = "virtual_test"
-DEFAULT_SENDER_ID = "virtual_user"
-DEFAULT_SENDER_NAME = "虚拟用户"
+DEFAULT_PLATFORM_ID = "webchat"
+DEFAULT_SENDER_ID = "testbench"
+DEFAULT_SENDER_NAME = "测试台"
 MESSAGE_TYPE = "FriendMessage"
 
 # 用于区分「未传该字段」与「显式传 null（恢复继承组配置）」

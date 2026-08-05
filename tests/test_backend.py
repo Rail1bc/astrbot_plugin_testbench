@@ -36,14 +36,14 @@ duration_stats = stats_mod.duration_stats
 umo_of = gs_mod.umo_of
 
 
-def make_session(i: int, platform_id: str = "virtual_test") -> dict:
+def make_session(i: int, platform_id: str = "webchat") -> dict:
     """构造一个已解析最终配置的会话（供运行器测试直接使用）。"""
     return {
         "id": f"vs_{i}",
         "name": f"虚拟会话{i}",
         "platform_id": platform_id,
-        "sender_id": "virtual_user",
-        "sender_name": "虚拟用户",
+        "sender_id": "testbench",
+        "sender_name": "测试台",
         "created_at": 0,
     }
 
@@ -60,7 +60,7 @@ def test_create_event_fields():
         provider_id="prov_a",
         model="model-b",
     )
-    assert ev.unified_msg_origin == "virtual_test:FriendMessage:vs_1"
+    assert ev.unified_msg_origin == "webchat:FriendMessage:vs_1"
     assert ev.message_str == "你好"
     assert ev.get_sender_id() == "u1"
     assert ev.get_sender_name() == "用户1"
@@ -81,7 +81,7 @@ async def test_send_captures_and_marks_done():
     summary = ev.result_summary()
     assert summary["status"] == "ok"
     assert summary["reply"] == "你好，机器人"
-    assert summary["umo"] == "virtual_test:FriendMessage:vs_1"
+    assert summary["umo"] == "webchat:FriendMessage:vs_1"
 
 
 @pytest.mark.asyncio
@@ -131,7 +131,7 @@ async def test_pipeline_done_signal():
 
 
 def test_umo_of():
-    assert umo_of(make_session(1)) == "virtual_test:FriendMessage:vs_1"
+    assert umo_of(make_session(1)) == "webchat:FriendMessage:vs_1"
     assert (
         umo_of({"id": "vs_1", "platform_id": "aiocqhttp"})
         == "aiocqhttp:FriendMessage:vs_1"
@@ -143,9 +143,7 @@ def test_umo_of():
 
 def test_group_manager_create_persist(tmp_path):
     mgr = VirtualGroupManager(data_dir=tmp_path)
-    group = mgr.create_group(
-        "组A", count=3, platform_id="virtual_test", name_prefix="测试"
-    )
+    group = mgr.create_group("组A", count=3, platform_id="webchat", name_prefix="测试")
     assert len(group["sessions"]) == 3
     assert [s["name"] for s in group["sessions"]] == ["测试1", "测试2", "测试3"]
 
@@ -220,6 +218,17 @@ def test_effective_resolution(tmp_path):
     assert mgr.effective(group, session)["conf_id"] is None
 
 
+def test_effective_defaults(tmp_path):
+    """无组配置时的默认值：平台 webchat，发送者 testbench / 测试台。"""
+    mgr = VirtualGroupManager(data_dir=tmp_path)
+    group = mgr.create_group("组A", count=1)
+    eff = mgr.effective(group, group["sessions"][0])
+    assert eff["platform_id"] == "webchat"
+    assert eff["sender_id"] == "testbench"
+    assert eff["sender_name"] == "测试台"
+    assert umo_of(eff) == f"webchat:FriendMessage:{group['sessions'][0]['id']}"
+
+
 def test_effective_many_order_and_skip(tmp_path):
     mgr = VirtualGroupManager(data_dir=tmp_path)
     group = mgr.create_group("组A", count=3)
@@ -288,6 +297,7 @@ class FakeConvManager:
 
     def __init__(self) -> None:
         self._convs: dict[str, list[object]] = {}
+        self._seq = 0
 
     def add_history(self, umo: str, title: str, history: list[dict]) -> None:
         conv = SimpleNamespace(
@@ -297,6 +307,23 @@ class FakeConvManager:
         )
         self._convs.setdefault(umo, []).append(conv)
 
+    async def new_conversation(
+        self,
+        unified_msg_origin: str,
+        platform_id: str | None = None,
+        content: list[dict] | None = None,
+        title: str | None = None,
+        persona_id: str | None = None,
+    ) -> str:
+        self._seq += 1
+        conv = SimpleNamespace(
+            cid=f"new_cid_{self._seq}",
+            title=title or "",
+            history=json.dumps(content or [], ensure_ascii=False),
+        )
+        self._convs.setdefault(unified_msg_origin, []).append(conv)
+        return conv.cid
+
     async def get_conversations(self, unified_msg_origin: str) -> list[object]:
         return list(self._convs.get(unified_msg_origin, []))
 
@@ -304,6 +331,12 @@ class FakeConvManager:
         removed = len(self._convs.get(unified_msg_origin, []))
         self._convs.pop(unified_msg_origin, None)
         return removed
+
+    async def delete_conversation(
+        self, unified_msg_origin: str, conversation_id: str
+    ) -> None:
+        convs = self._convs.get(unified_msg_origin, [])
+        self._convs[unified_msg_origin] = [c for c in convs if c.cid != conversation_id]
 
     async def get_curr_conversation_id(self, unified_msg_origin: str) -> str | None:
         convs = self._convs.get(unified_msg_origin, [])
@@ -322,12 +355,15 @@ class FakeConvManager:
         unified_msg_origin: str,
         conversation_id: str,
         history: list[dict] | None = None,
+        title: str | None = None,
         **kwargs,
     ) -> None:
         for conv in self._convs.get(unified_msg_origin, []):
             if conv.cid == conversation_id:
                 if history is not None:
                     conv.history = json.dumps(history, ensure_ascii=False)
+                if title is not None:
+                    conv.title = title
                 return
 
 
@@ -555,7 +591,7 @@ async def test_plugin_apply_and_clear_conf_routes(tmp_path):
     context = FakeContext()
     plugin = main_mod.VirtualSessionPlugin(context)
     plugin.group_mgr = VirtualGroupManager(data_dir=tmp_path)
-    group = plugin.group_mgr.create_group("组A", count=2, platform_id="virtual_test")
+    group = plugin.group_mgr.create_group("组A", count=2, platform_id="webchat")
     sessions = [plugin.group_mgr.effective(group, s) for s in group["sessions"]]
     ucr = context.astrbot_config_mgr.ucr
 
@@ -571,13 +607,13 @@ async def test_plugin_sync_conf_route(tmp_path):
     context = FakeContext()
     plugin = main_mod.VirtualSessionPlugin(context)
     ucr = context.astrbot_config_mgr.ucr
-    session = {"id": "vs_1", "platform_id": "virtual_test", "conf_id": "conf_x"}
+    session = {"id": "vs_1", "platform_id": "webchat", "conf_id": "conf_x"}
     await plugin._sync_conf_route(session)
-    assert ucr.umop_to_conf_id["virtual_test:FriendMessage:vs_1"] == "conf_x"
+    assert ucr.umop_to_conf_id["webchat:FriendMessage:vs_1"] == "conf_x"
     # 无绑定档案时确保路由不存在
     session["conf_id"] = None
     await plugin._sync_conf_route(session)
-    assert "virtual_test:FriendMessage:vs_1" not in ucr.umop_to_conf_id
+    assert "webchat:FriendMessage:vs_1" not in ucr.umop_to_conf_id
 
 
 # ---------- 插件 Web 接口（测试组） ----------
@@ -607,7 +643,7 @@ async def test_plugin_create_group_applies_conf_route(tmp_path):
     assert resp.status_code == 200
     body = json.loads(resp.body)
     for s in body["sessions"]:
-        umop = f"virtual_test:FriendMessage:{s['id']}"
+        umop = f"webchat:FriendMessage:{s['id']}"
         assert ucr.umop_to_conf_id[umop] == "conf_c"
 
 
@@ -632,7 +668,7 @@ async def test_plugin_add_group_sessions(tmp_path):
     assert len(created) == 2
     # 新会话继承组配置档案并应用路由
     for s in created:
-        assert ucr.umop_to_conf_id[f"virtual_test:FriendMessage:{s['id']}"] == "conf_a"
+        assert ucr.umop_to_conf_id[f"webchat:FriendMessage:{s['id']}"] == "conf_a"
 
 
 @pytest.mark.asyncio
@@ -650,7 +686,7 @@ async def test_plugin_update_session_syncs_conf_route(tmp_path):
     plugin.group_mgr = VirtualGroupManager(data_dir=tmp_path)
     group = plugin.group_mgr.create_group("组A", count=1, conf_id="conf_a")
     sid = group["sessions"][0]["id"]
-    umop = f"virtual_test:FriendMessage:{sid}"
+    umop = f"webchat:FriendMessage:{sid}"
     ucr = context.astrbot_config_mgr.ucr
     # 模拟组创建时已应用 conf_a 路由
     await ucr.update_route(umop, "conf_a")
@@ -672,7 +708,7 @@ async def test_plugin_update_session_platform_change_cleans_old_route(tmp_path):
     plugin.group_mgr = VirtualGroupManager(data_dir=tmp_path)
     group = plugin.group_mgr.create_group("组A", count=1, conf_id="conf_a")
     sid = group["sessions"][0]["id"]
-    old_umop = f"virtual_test:FriendMessage:{sid}"
+    old_umop = f"webchat:FriendMessage:{sid}"
     new_umop = f"telegram:FriendMessage:{sid}"
     ucr = context.astrbot_config_mgr.ucr
     await ucr.update_route(old_umop, "conf_a")
@@ -701,7 +737,7 @@ async def test_plugin_delete_sessions_cleans_routes(tmp_path):
     plugin.group_mgr = VirtualGroupManager(data_dir=tmp_path)
     group = plugin.group_mgr.create_group("组A", count=2, conf_id="conf_a")
     ucr = context.astrbot_config_mgr.ucr
-    umops = [f"virtual_test:FriendMessage:{s['id']}" for s in group["sessions"]]
+    umops = [f"webchat:FriendMessage:{s['id']}" for s in group["sessions"]]
     for umop in umops:
         await ucr.update_route(umop, "conf_a")
 
@@ -721,7 +757,7 @@ async def test_plugin_delete_groups_cleans_routes(tmp_path):
     plugin.group_mgr = VirtualGroupManager(data_dir=tmp_path)
     group = plugin.group_mgr.create_group("组A", count=2, conf_id="conf_a")
     ucr = context.astrbot_config_mgr.ucr
-    umops = [f"virtual_test:FriendMessage:{s['id']}" for s in group["sessions"]]
+    umops = [f"webchat:FriendMessage:{s['id']}" for s in group["sessions"]]
     for umop in umops:
         await ucr.update_route(umop, "conf_a")
 
@@ -939,7 +975,7 @@ async def test_plugin_test_run_status_not_found():
 
 
 @pytest.mark.asyncio
-async def test_plugin_edit_history(tmp_path):
+async def test_plugin_save_history_updates_existing(tmp_path):
     conv_mgr = FakeConvManager()
     plugin = main_mod.VirtualSessionPlugin(FakeContext(conv_mgr=conv_mgr))
     plugin.group_mgr = VirtualGroupManager(data_dir=tmp_path)
@@ -954,39 +990,131 @@ async def test_plugin_edit_history(tmp_path):
             {"role": "assistant", "content": "在的"},
         ],
     )
+    cid = (await conv_mgr.get_conversations(umo))[0].cid
 
     resp = await call_handler(
-        plugin.edit_history,
-        {"id": session["id"], "index": 1, "content": "改过了"},
+        plugin.save_history,
+        {
+            "id": session["id"],
+            "conversations": [
+                {
+                    "conversation_id": cid,
+                    "title": "改标题",
+                    "history": [
+                        {"role": "user", "content": "改过了"},
+                        {"role": "assistant", "content": "在的"},
+                    ],
+                }
+            ],
+        },
     )
-    body = json.loads(resp.body)
-    assert body["updated"] == 1
-    assert body["history"][1]["content"] == "改过了"
+    assert resp.status_code == 200
+    assert json.loads(resp.body)["saved"] == 1
 
     convs = await conv_mgr.get_conversations(umo)
-    assert json.loads(convs[0].history)[1]["content"] == "改过了"
+    assert convs[0].title == "改标题"
+    assert json.loads(convs[0].history)[0]["content"] == "改过了"
 
 
 @pytest.mark.asyncio
-async def test_plugin_edit_history_parts_content(tmp_path):
+async def test_plugin_save_history_adds_conversation(tmp_path):
     conv_mgr = FakeConvManager()
     plugin = main_mod.VirtualSessionPlugin(FakeContext(conv_mgr=conv_mgr))
     plugin.group_mgr = VirtualGroupManager(data_dir=tmp_path)
     group = plugin.group_mgr.create_group("组A", count=1)
     session = group["sessions"][0]
     umo = umo_of(plugin.group_mgr.effective(group, session))
-    conv_mgr.add_history(
-        umo,
-        "测试",
-        [{"role": "user", "content": [{"type": "text", "text": "原文"}]}],
-    )
+    conv_mgr.add_history(umo, "旧对话", [{"role": "user", "content": "保留"}])
 
     resp = await call_handler(
-        plugin.edit_history,
-        {"id": session["id"], "index": 0, "content": "新文本"},
+        plugin.save_history,
+        {
+            "id": session["id"],
+            "conversations": [
+                {
+                    "conversation_id": (await conv_mgr.get_conversations(umo))[0].cid,
+                    "history": [{"role": "user", "content": "保留"}],
+                },
+                {"title": "新对话", "history": [{"role": "user", "content": "新增"}]},
+            ],
+        },
     )
-    body = json.loads(resp.body)
-    assert body["history"][0]["content"] == [{"type": "text", "text": "新文本"}]
+    assert resp.status_code == 200
+    convs = await conv_mgr.get_conversations(umo)
+    assert len(convs) == 2
+    assert any(c.title == "新对话" for c in convs)
+    assert any(
+        json.loads(c.history) == [{"role": "user", "content": "新增"}] for c in convs
+    )
+
+
+@pytest.mark.asyncio
+async def test_plugin_save_history_deletes_unlisted(tmp_path):
+    conv_mgr = FakeConvManager()
+    plugin = main_mod.VirtualSessionPlugin(FakeContext(conv_mgr=conv_mgr))
+    plugin.group_mgr = VirtualGroupManager(data_dir=tmp_path)
+    group = plugin.group_mgr.create_group("组A", count=1)
+    session = group["sessions"][0]
+    umo = umo_of(plugin.group_mgr.effective(group, session))
+    conv_mgr.add_history(umo, "对话A", [{"role": "user", "content": "a"}])
+    conv_mgr.add_history(umo, "对话B", [{"role": "user", "content": "b"}])
+    cid_a, cid_b = [c.cid for c in (await conv_mgr.get_conversations(umo))]
+
+    # 只保留对话A：对话B 未列出 → 删除
+    resp = await call_handler(
+        plugin.save_history,
+        {
+            "id": session["id"],
+            "conversations": [
+                {
+                    "conversation_id": cid_a,
+                    "history": [{"role": "user", "content": "a"}],
+                }
+            ],
+        },
+    )
+    assert resp.status_code == 200
+    remaining = [c.cid for c in await conv_mgr.get_conversations(umo)]
+    assert remaining == [cid_a]
+    assert cid_b not in remaining
+
+
+@pytest.mark.asyncio
+async def test_plugin_save_history_invalid(tmp_path):
+    conv_mgr = FakeConvManager()
+    plugin = main_mod.VirtualSessionPlugin(FakeContext(conv_mgr=conv_mgr))
+    plugin.group_mgr = VirtualGroupManager(data_dir=tmp_path)
+    group = plugin.group_mgr.create_group("组A", count=1)
+    session = group["sessions"][0]
+
+    # conversations 不是数组
+    resp = await call_handler(
+        plugin.save_history, {"id": session["id"], "conversations": "not-a-list"}
+    )
+    assert resp.status_code == 400
+
+    # history 不是对象数组
+    resp = await call_handler(
+        plugin.save_history,
+        {"id": session["id"], "conversations": [{"history": ["bad"]}]},
+    )
+    assert resp.status_code == 400
+
+    # 引用了不存在的 conversation_id
+    resp = await call_handler(
+        plugin.save_history,
+        {
+            "id": session["id"],
+            "conversations": [
+                {
+                    "conversation_id": "no_such_cid",
+                    "history": [{"role": "user", "content": "x"}],
+                }
+            ],
+        },
+    )
+    assert resp.status_code == 400
+    assert "no_such_cid" in json.loads(resp.body)["message"]
 
 
 @pytest.mark.asyncio
@@ -1065,7 +1193,7 @@ def test_session_history_endpoint(tmp_path):
     conv_mgr = FakeConvManager()
     plugin = main_mod.VirtualSessionPlugin(FakeContext(conv_mgr=conv_mgr))
     plugin.group_mgr = VirtualGroupManager(data_dir=tmp_path)
-    group = plugin.group_mgr.create_group("组A", count=1, platform_id="virtual_test")
+    group = plugin.group_mgr.create_group("组A", count=1, platform_id="webchat")
     session = group["sessions"][0]
 
     conv_mgr.add_history(
@@ -1098,7 +1226,7 @@ def test_session_history_empty_conversations(tmp_path):
     conv_mgr = FakeConvManager()
     plugin = main_mod.VirtualSessionPlugin(FakeContext(conv_mgr=conv_mgr))
     plugin.group_mgr = VirtualGroupManager(data_dir=tmp_path)
-    group = plugin.group_mgr.create_group("组A", count=1, platform_id="virtual_test")
+    group = plugin.group_mgr.create_group("组A", count=1, platform_id="webchat")
     session = group["sessions"][0]
 
     resp = asyncio.run(plugin.session_history(session["id"]))

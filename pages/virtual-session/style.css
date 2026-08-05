@@ -433,6 +433,22 @@ code {
   color: var(--danger);
 }
 
+.run-overview {
+  margin-top: 8px;
+  font-size: 13px;
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.run-overview .overview-total {
+  font-weight: 600;
+}
+
+.run-overview .overview-item {
+  color: var(--text-secondary);
+}
+
 .align-toggle {
   display: flex;
   align-items: center;
@@ -630,7 +646,7 @@ code {
   font-size: 12px;
 }
 
-/* 气泡悬停操作与编辑历史 */
+/* 气泡悬停操作（重新生成） */
 .msg-actions {
   display: none;
   gap: 4px;
@@ -642,29 +658,16 @@ code {
   display: flex;
 }
 
-.msg-edit {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.msg-edit-input {
+/* JSON 对话历史编辑器 */
+.json-editor {
   width: 100%;
-  min-height: 60px;
+  min-height: 360px;
   resize: vertical;
-  background: var(--card-bg);
-  color: var(--text);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 6px 8px;
-  font-size: 13px;
-  box-sizing: border-box;
-}
-
-.msg-edit-actions {
-  display: flex;
-  gap: 6px;
-  justify-content: flex-end;
+  font-family: ui-monospace, "Cascadia Mono", Consolas, "Courier New", monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre;
+  tab-size: 2;
 }
 
 /* ---------- 轮次对齐模式 ---------- */
@@ -741,6 +744,10 @@ code {
   border-radius: 10px;
   padding: 18px 20px;
   width: min(420px, 92vw);
+}
+
+.modal.modal-wide {
+  width: min(780px, 94vw);
 }
 
 .modal p {

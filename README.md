@@ -5,7 +5,7 @@
 一个为 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 设计的虚拟会话并发测试插件。
 
 > [!NOTE]
-> 当前版本 v0.3.0，支持测试组模型、并行会话查看、逐会话独立刷新与历史编辑 / 重新生成。
+> 当前版本 v0.3.0，支持测试组模型、并行会话查看、逐会话独立刷新、群发会话实时统计与历史 JSON 编辑 / 重新生成。
 
 ## ✨ 功能特性
 
@@ -13,8 +13,8 @@
 - **测试组模型**：左侧以「测试组」为单位组织会话。一组共享同一套配置（平台来源、配置档案、发送者 id、发送者昵称），组内单个会话可单独覆盖组配置；组内可随时新增 / 删除会话，测试以组为单位开展。
 - **并行会话查看**：点击会话「打开」在右侧显示会话面板，可同时打开 2–3 个甚至更多面板并行查看对话历史；面板支持拖拽排序与置顶，支持按轮次对齐阅读。
 - **配置档案绑定**：测试组或单个会话可选择配置档案，通过 AstrBot 原生 UCR 路由精确绑定（`platform:type:session` → conf），互不影响、删除时自动清理。
-- **并发测试**：一条消息同时发送给所有已打开的会话，每个会话窗口**独立实时刷新**——谁完成谁更新，无需等待整批结束；不设总超时、不额外分批，消息直接进入 AstrBot 原生 pipeline（与真实环境一致）。每个面板展示状态（成功 / 无回复 / 错误）、回复、耗时与 min / max / avg / p50 / p95 统计；也可在单个面板内单独发送消息。
-- **历史编辑与重新生成**：每个面板的消息气泡悬停可「编辑」直接改写历史消息；用户发言可「重新生成」——截断该轮及之后的历史并重新走 pipeline 生成新回复。
+- **并发测试**：一条消息同时发送给所有已打开的会话，每个会话窗口**独立实时刷新**——谁完成谁更新，无需等待整批结束；不设总超时、不额外分批，消息直接进入 AstrBot 原生 pipeline（与真实环境一致）。群发栏实时显示当前打开的会话数量及其所属测试组分布（如「当前会话:8 提示词测试组:5 模型测试组:3」）。每个面板展示状态（成功 / 无回复 / 错误）、回复、耗时与 min / max / avg / p50 / p95 统计；也可在单个面板内单独发送消息。
+- **历史 JSON 编辑与重新生成**：面板头部「历史」按钮打开 JSON 编辑器，直接编辑 `{conversations: [...]}` 结构化对话历史——编辑单条消息、新增或删除对话都在 JSON 中完成，保存即整体替换（未列出的对话会被删除），供有能力的用户精细调整；用户发言气泡悬停可「重新生成」——截断该轮及之后的历史并重新走 pipeline 生成新回复。
 - **对话历史查看与重置**：每个面板展示该虚拟会话的完整对话历史（含推理内容与工具调用），支持一键重置。
 - **会话管理**：测试组与虚拟会话持久化存储，旧版平铺会话数据自动迁移为「默认测试组」。
 
@@ -33,7 +33,7 @@
 5. **查看结果**：每个面板展示状态（成功 / 无回复 / 错误）与对话历史更新；群发时每个会话窗口**独立刷新**——谁完成谁更新，无需等待整批结束；全部完成后顶部汇总成功 / 无回复 / 错误计数与 min / avg / p95 耗时统计。
 
 > [!TIP]
-> 虚拟会话使用独立的虚拟平台 id（默认 `virtual_test`）。测试以组为单位，组内会话共享平台 / 配置档案 / 发送者信息，单会话可覆盖；运行测试时也可临时指定配置档案或 Provider / 模型进行覆盖。
+> 虚拟会话默认以 `webchat` 为平台来源（与 AstrBot WebUI 一致），发送者默认 `testbench` / `测试台`。测试以组为单位，组内会话共享平台 / 配置档案 / 发送者信息，单会话可覆盖；运行测试时也可临时指定配置档案或 Provider / 模型进行覆盖。
 
 ## 📂 插件目录与结构
 
@@ -54,12 +54,12 @@ data/plugins/astrbot_plugin_testbench/
 ## 🔧 开发与测试
 
 ```bash
-# 单元测试（插件位于 data/plugins 下，测试在插件缺失时会自动跳过）
-.venv/Scripts/python.exe -m pytest tests/unit/test_testbench_plugin.py -v
+# 单元测试（测试随插件仓库维护，位于 data/plugins/astrbot_plugin_testbench/tests/）
+.venv/Scripts/python.exe -m pytest data/plugins/astrbot_plugin_testbench/tests/ -q
 
 # 代码质量检查
-.venv/Scripts/python.exe -m ruff check data/plugins/astrbot_plugin_testbench tests/unit/test_testbench_plugin.py
-.venv/Scripts/python.exe -m ruff format --check data/plugins/astrbot_plugin_testbench tests/unit/test_testbench_plugin.py
+.venv/Scripts/python.exe -m ruff check data/plugins/astrbot_plugin_testbench/tests/
+.venv/Scripts/python.exe -m ruff format --check data/plugins/astrbot_plugin_testbench/tests/
 ```
 
 Windows 开发者可直接运行 `run_ruff.bat` 进行格式化与质量检查。

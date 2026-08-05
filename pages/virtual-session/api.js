@@ -56,8 +56,8 @@ export async function runStatus(testId) {
   return bridge.apiGet("test/run/status", { test_id: testId });
 }
 
-export async function editHistory(payload) {
-  return bridge.apiPost("sessions/history/edit", payload);
+export async function saveHistory(payload) {
+  return bridge.apiPost("sessions/history/save", payload);
 }
 
 export async function regenerateHistory(payload) {

@@ -5,7 +5,6 @@ import {
   createGroup,
   deleteGroups,
   deleteSessions,
-  editHistory,
   getHistory,
   listConfs,
   listGroups,
@@ -15,6 +14,7 @@ import {
   resetSessions,
   runStatus,
   runTest,
+  saveHistory,
   updateSession,
 } from "./api.js";
 
@@ -84,7 +84,7 @@ function effectiveView(id) {
   return {
     id: session.id,
     name: session.name || session.id,
-    platform_id: session.platform_id || group.platform_id || "virtual_test",
+    platform_id: session.platform_id || group.platform_id || "webchat",
     conf_id: confId,
     group_name: group.name,
   };
@@ -94,7 +94,7 @@ function effectiveView(id) {
 
 let modalCallback = null;
 
-function openModal({ title, content, okText = "确定", cancelText = "取消", danger = false, showCancel, onOk, onCancel } = {}) {
+function openModal({ title, content, okText = "确定", cancelText = "取消", danger = false, showCancel, wide = false, onOk, onCancel } = {}) {
   const body = $("modal-body");
   body.innerHTML = "";
   if (title) {
@@ -116,6 +116,7 @@ function openModal({ title, content, okText = "确定", cancelText = "取消", d
   $("modal-ok").classList.toggle("danger", danger);
   $("modal-cancel").textContent = cancelText;
   $("modal-cancel").hidden = !cancel;
+  $("modal-mask").querySelector(".modal").classList.toggle("modal-wide", wide);
   modalCallback = { onOk: onOk || null, onCancel: onCancel || null };
   $("modal-mask").hidden = false;
   const first = body.querySelector("input, select, textarea");
@@ -167,6 +168,7 @@ async function refreshGroups() {
     renderPanels();
   }
   renderGroupList();
+  updateRunOverview();
 }
 
 function renderGroupList() {
@@ -185,7 +187,7 @@ function renderGroupList() {
     const sessions = g.sessions || [];
     const platformBadge = g.platform_id
       ? `<span class="badge">${escapeHtml(platformName(g.platform_id))}</span>`
-      : `<span class="badge">${escapeHtml(platformName("virtual_test"))}</span>`;
+      : `<span class="badge">${escapeHtml(platformName("webchat"))}</span>`;
     const confBadge = g.conf_id
       ? `<span class="badge conf">${escapeHtml(confName(g.conf_id))}</span>`
       : "";
@@ -330,8 +332,7 @@ function openSettings(sid) {
 
   const selP = document.createElement("select");
   selP.innerHTML =
-    `<option value="">使用组配置（${escapeHtml(platformName(group.platform_id || "virtual_test"))}）</option>` +
-    `<option value="virtual_test">virtual_test（默认）</option>` +
+    `<option value="">使用组配置（${escapeHtml(platformName(group.platform_id || "webchat"))}）</option>` +
     platforms
       .map(
         (p) =>
@@ -463,6 +464,7 @@ function openPanel(id) {
     `<span class="panel-title">${escapeHtml(s ? s.name : id)}</span>` +
     groupBadge + platformBadge + confBadge +
     `<span class="panel-actions">` +
+    `<button class="icon-btn" data-action="history" title="编辑对话历史（JSON）">历史</button>` +
     `<button class="icon-btn" data-action="pin" title="置顶">置顶</button>` +
     `<button class="icon-btn" data-action="close" title="关闭">✕</button>` +
     `</span>` +
@@ -478,6 +480,9 @@ function openPanel(id) {
 
   panel.querySelector('[data-action="close"]').addEventListener("click", () => toggleOpen(id));
   panel.querySelector('[data-action="pin"]').addEventListener("click", () => pin(id));
+  panel
+    .querySelector('[data-action="history"]')
+    .addEventListener("click", () => void openHistoryEditor(id));
   const input = panel.querySelector(".msg-input");
   input.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.isComposing) sendToOne(id, input.value);
@@ -622,78 +627,65 @@ function bubbleFor(msg, index) {
       el.textContent = text || "…";
     }
   }
-  // 悬停操作：编辑（全部消息）+ 重新生成（仅 user 发言）
-  const actions = document.createElement("div");
-  actions.className = "msg-actions";
-  const editBtn = document.createElement("button");
-  editBtn.type = "button";
-  editBtn.className = "icon-btn";
-  editBtn.dataset.action = "edit";
-  editBtn.textContent = "编辑";
-  actions.appendChild(editBtn);
+  // 悬停操作：重新生成（仅 user 发言）；整体历史的编辑走面板头部的「历史」JSON 编辑器
   if (role === "user") {
+    const actions = document.createElement("div");
+    actions.className = "msg-actions";
     const regenBtn = document.createElement("button");
     regenBtn.type = "button";
     regenBtn.className = "icon-btn";
     regenBtn.dataset.action = "regenerate";
     regenBtn.textContent = "重新生成";
     actions.appendChild(regenBtn);
+    el.appendChild(actions);
   }
-  el.appendChild(actions);
   return el;
 }
 
-// 在会话历史（conversations）中按全局索引取消息
-function historyMsgAt(conversations, index) {
-  let i = 0;
-  for (const conv of conversations || []) {
-    for (const m of conv.history || []) {
-      if (i === index) return m;
-      i++;
-    }
-  }
-  return null;
-}
-
-function startEditMsg(panel, index) {
-  const id = panel.dataset.id;
-  const convs = historyCache.get(id) || [];
-  const msg = historyMsgAt(convs, index);
-  const msgEl = panel.querySelector(`.msg[data-index="${index}"]`);
-  if (!msg || !msgEl || msgEl.querySelector(".msg-edit")) return;
-  const wrap = document.createElement("div");
-  wrap.className = "msg-edit";
-  const ta = document.createElement("textarea");
-  ta.className = "msg-edit-input";
-  ta.value = extractText(msg.content);
-  const row = document.createElement("div");
-  row.className = "msg-edit-actions";
-  const save = document.createElement("button");
-  save.type = "button";
-  save.className = "btn primary small";
-  save.textContent = "保存";
-  const cancel = document.createElement("button");
-  cancel.type = "button";
-  cancel.className = "btn small";
-  cancel.textContent = "取消";
-  row.append(save, cancel);
-  wrap.append(ta, row);
-  msgEl.innerHTML = "";
-  msgEl.appendChild(wrap);
-  save.addEventListener("click", () => void saveEditMsg(id, index, ta.value));
-  cancel.addEventListener("click", () => renderChat(panel, convs));
-  ta.focus();
-}
-
-async function saveEditMsg(id, index, content) {
-  const panel = panelEls.get(id);
+// 面板头部「历史」：以 JSON 编辑器整体查看 / 替换该会话的对话历史。
+// 结构即 /sessions/<id>/history 返回的 { conversations: [...] }；编辑、
+// 新增（不带 conversation_id）、删除对话都通过直接修改 JSON 完成。
+async function openHistoryEditor(id) {
+  // 每次打开都拉取最新历史，避免缓存为空时保存把全部对话误删
+  let convs;
   try {
-    await editHistory({ id, index, content });
+    const data = await getHistory(id);
+    convs = data.conversations || [];
   } catch (err) {
-    if (panel) panelStatus(panel, "error", "保存失败: " + err.message);
+    showModal("加载对话历史失败: " + err.message);
     return;
   }
-  void loadHistory(id);
+  const s = effectiveView(id);
+  const ta = document.createElement("textarea");
+  ta.className = "json-editor";
+  ta.value = JSON.stringify({ conversations: convs }, null, 2);
+  const hint = document.createElement("p");
+  hint.className = "hint";
+  hint.textContent =
+    "保存将用此 JSON 完全替换对话历史：未列出的对话会被删除，不带 conversation_id 的对象会新建对话。仅建议有能力的用户修改；改坏可用会话的「重置」恢复。";
+  const wrap = document.createElement("div");
+  wrap.className = "form-col";
+  wrap.append(ta, hint);
+  openModal({
+    title: `编辑对话历史 · ${s ? s.name : id}`,
+    content: wrap,
+    okText: "保存",
+    wide: true,
+    onOk: async () => {
+      let parsed;
+      try {
+        parsed = JSON.parse(ta.value);
+      } catch (err) {
+        throw new Error("JSON 解析失败: " + err.message);
+      }
+      if (!parsed || !Array.isArray(parsed.conversations)) {
+        throw new Error("JSON 必须是 { conversations: [...] } 结构");
+      }
+      await saveHistory({ id, conversations: parsed.conversations });
+      void loadHistory(id);
+      showRunStatus("ok", "对话历史已保存");
+    },
+  });
 }
 
 async function regenerateMsg(id, index) {
@@ -870,6 +862,28 @@ function showRunStatus(status, text) {
   el.textContent = text;
 }
 
+// 群发栏实时显示：当前打开的会话总数 + 按所属测试组的分布
+function updateRunOverview() {
+  const el = $("run-overview");
+  if (!openIds.length) {
+    el.hidden = true;
+    return;
+  }
+  const counts = new Map();
+  for (const id of openIds) {
+    const v = effectiveView(id);
+    if (!v) continue;
+    const name = v.group_name || "未分组";
+    counts.set(name, (counts.get(name) || 0) + 1);
+  }
+  let html = `<span class="overview-total">当前会话:${openIds.length}</span>`;
+  for (const [name, n] of counts) {
+    html += `<span class="overview-item">${escapeHtml(name)}:${n}</span>`;
+  }
+  el.hidden = false;
+  el.innerHTML = html;
+}
+
 // ---------- 会话操作 ----------
 
 function resetHistory(id) {
@@ -917,7 +931,7 @@ async function handleCreateGroup() {
     const group = await createGroup({
       name: $("create-group-name").value,
       count,
-      platform_id: platformId && platformId !== "virtual_test" ? platformId : undefined,
+      platform_id: platformId || undefined,
       conf_id: confId || undefined,
       sender_id: $("create-sender-id").value || undefined,
       sender_name: $("create-sender-name").value || undefined,
@@ -975,6 +989,7 @@ function renderPanels() {
   $("empty-hint").hidden = openIds.length > 0;
   $("align-bar").hidden = !align.isAlignMode() || openIds.length === 0;
   if (align.isAlignMode()) align.reflowAlign();
+  updateRunOverview();
 }
 
 // 拖拽排序
@@ -1018,17 +1033,15 @@ panelsEl.addEventListener("dragend", () => {
   document.querySelectorAll(".panel.dragging").forEach((p) => p.classList.remove("dragging"));
 });
 
-// 气泡悬停操作：编辑历史消息 / 重新生成某轮
+// 气泡悬停操作：重新生成某轮（整体历史的编辑走面板头部「历史」）
 panelsEl.addEventListener("click", (e) => {
-  const btn = e.target.closest('[data-action="edit"], [data-action="regenerate"]');
+  const btn = e.target.closest('[data-action="regenerate"]');
   if (!btn) return;
-  const panel = btn.closest(".panel");
   const msgEl = btn.closest(".msg");
-  if (!panel || !msgEl) return;
+  if (!msgEl) return;
   const index = parseInt(msgEl.dataset.index, 10);
   if (Number.isNaN(index)) return;
-  if (btn.dataset.action === "edit") startEditMsg(panel, index);
-  else if (btn.dataset.action === "regenerate") void regenerateMsg(panel.dataset.id, index);
+  void regenerateMsg(btn.closest(".panel").dataset.id, index);
 });
 
 // ---------- 轮次对齐 ----------
@@ -1051,8 +1064,9 @@ async function loadOptions() {
     console.warn("加载配置档案失败:", err);
     confs = [];
   }
+  // 默认平台即 webchat（后端 DEFAULT_PLATFORM_ID），空值表示使用默认；其余为已启用的真实平台
   $("create-platform").innerHTML =
-    '<option value="virtual_test">virtual_test（默认）</option>' +
+    '<option value="">默认（webchat）</option>' +
     platforms
       .map(
         (p) =>

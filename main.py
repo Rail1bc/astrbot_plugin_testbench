@@ -66,7 +66,12 @@ _ROUTES: tuple[tuple[str, str, list[str], str], ...] = (
         ["GET"],
         "查询测试运行状态（已完成的会话逐个返回结果）",
     ),
-    ("/sessions/history/edit", "edit_history", ["POST"], "编辑会话历史中的单条消息"),
+    (
+        "/sessions/history/save",
+        "save_history",
+        ["POST"],
+        "整体替换会话的对话历史（JSON 编辑器保存；未列出的对话将被删除）",
+    ),
     (
         "/sessions/history/regenerate",
         "regenerate_history",
@@ -357,36 +362,83 @@ class VirtualSessionPlugin(Star):
             return error_response("未找到该测试运行", status_code=404)
         return json_response(record)
 
-    async def edit_history(self):
-        """编辑会话历史中的单条消息内容（content 可为文本或 parts 数组）。"""
+    async def save_history(self):
+        """整体替换会话的对话历史（JSON 编辑器保存）。
+
+        接受 ``{id, conversations: [...]}``，其中每个对话为
+        ``{conversation_id?, title?, history: [...]}``：
+
+        - 带已存在 ``conversation_id`` 的对话更新其内容（历史与标题）；
+        - 不带 ``conversation_id`` 的对象新建对话；
+        - 数据库中未被列出的对话将被删除。
+
+        语义与原生对话管理的一致：编辑器展示完整结构，保存即整体替换，
+        编辑、新增、删除对话都通过直接修改 JSON 完成。
+        """
         payload = await request.json(default={})
         session_id = payload.get("id")
-        index = payload.get("index")
-        content = payload.get("content")
+        conversations = payload.get("conversations")
         if not isinstance(session_id, str) or not session_id:
             return error_response("id 不能为空", status_code=400)
-        if not isinstance(index, int) or isinstance(index, bool) or index < 0:
-            return error_response("index 必须是非负整数", status_code=400)
-        if not isinstance(content, str):
-            return error_response("content 必须是字符串", status_code=400)
+        if not isinstance(conversations, list):
+            return error_response("conversations 必须是数组", status_code=400)
         found = self.group_mgr.find_session(session_id)
         if found is None:
             return error_response("未找到该虚拟会话", status_code=404)
         group, session = found
         resolved = self.group_mgr.effective(group, session)
-        hist_info = await self._get_session_history(resolved)
-        if hist_info is None:
-            return error_response("该会话暂无对话历史", status_code=404)
-        history, cid = hist_info
-        if index >= len(history):
-            return error_response(
-                f"index 越界（历史共 {len(history)} 条）", status_code=400
+        umo = umo_of(resolved)
+        conv_mgr = self.context.conversation_manager
+
+        normalized: list[dict] = []
+        for item in conversations:
+            if not isinstance(item, dict):
+                return error_response(
+                    "conversations 中的每一项必须是对象", status_code=400
+                )
+            history = item.get("history")
+            if not isinstance(history, list) or not all(
+                isinstance(msg, dict) for msg in history
+            ):
+                return error_response(
+                    "每个对话的 history 必须是对象数组", status_code=400
+                )
+            cid = item.get("conversation_id")
+            title = item.get("title")
+            normalized.append(
+                {
+                    "cid": cid if isinstance(cid, str) and cid else None,
+                    "title": title if isinstance(title, str) else None,
+                    "history": history,
+                }
             )
-        self._set_msg_content(history[index], content)
-        await self.context.conversation_manager.update_conversation(
-            umo_of(resolved), cid, history=history
-        )
-        return json_response({"updated": index, "history": history})
+
+        existing = await conv_mgr.get_conversations(umo)
+        existing_cids = {conv.cid for conv in existing}
+
+        # 引用了不存在的 conversation_id 时报错，避免把笔误静默变成新建对话
+        for item in normalized:
+            if item["cid"] and item["cid"] not in existing_cids:
+                return error_response(
+                    f"conversation_id {item['cid']} 不存在", status_code=400
+                )
+
+        for item in normalized:
+            if item["cid"]:
+                await conv_mgr.update_conversation(
+                    umo, item["cid"], history=item["history"], title=item["title"]
+                )
+            else:
+                await conv_mgr.new_conversation(
+                    umo, content=item["history"], title=item["title"]
+                )
+
+        keep = {item["cid"] for item in normalized if item["cid"]}
+        for conv in existing:
+            if conv.cid not in keep:
+                await conv_mgr.delete_conversation(umo, conv.cid)
+
+        return json_response({"saved": len(normalized)})
 
     async def regenerate_history(self):
         """重新生成指定轮次：截断该轮（含）之后的历史，重发该轮的 user 消息。"""
@@ -452,19 +504,6 @@ class VirtualSessionPlugin(Star):
         except json.JSONDecodeError:
             history = []
         return history, cid
-
-    @staticmethod
-    def _set_msg_content(msg: dict, new_text: str) -> None:
-        """把消息 content 替换为新文本；parts 数组则替换首个 text part。"""
-        content = msg.get("content")
-        if isinstance(content, list):
-            for part in content:
-                if isinstance(part, dict) and part.get("type") == "text":
-                    part["text"] = new_text
-                    return
-            content.append({"type": "text", "text": new_text})
-        else:
-            msg["content"] = new_text
 
     @staticmethod
     def _msg_text(msg: dict) -> str:
