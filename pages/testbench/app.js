@@ -24,6 +24,7 @@ import {
   runTestset as runTestsetApi,
   runTestsetStatus,
   saveHistory,
+  subscribeEvents,
 } from "./api.js";
 import { openModal, showModal } from "./modal.js";
 import { state } from "./state.js";
@@ -204,7 +205,7 @@ async function regenerateMsg(id, index) {
   try {
     const resp = await regenerateHistory({ id, index });
     if (panel) panelStatus(panel, "warn", "重新生成中…");
-    pollRun(
+    registerTestConsumer(
       resp.test_id,
       (r) => {
         const p = state.panelEls.get(id);
@@ -241,61 +242,76 @@ function clearPanelStatus(panel) {
   el.textContent = "";
 }
 
-// ---------- 发送 ----------
+// ---------- 发送（事件驱动） ----------
 
-// 轮询不重叠：上一轮 await 未完成时跳过本 tick（慢后端下避免请求堆积）；
-// fn 抛错只记日志不中断轮询。runNow 为 true 时立即执行首轮。返回 timer 供停止。
-function startPolling(fn, ms, runNow = true) {
-  let busy = false;
-  async function run() {
-    if (busy) return;
-    busy = true;
-    try {
-      await fn();
-    } catch (err) {
-      console.error("轮询任务出错:", err);
-    } finally {
-      busy = false;
-    }
-  }
-  const timer = setInterval(run, ms);
-  if (runNow) void run();
-  return timer;
+// 手动群发 / 单发的消费者注册表：test_id -> {onSession, onAll, seen, finished}。
+// /events 的 session_done / test_done 事件经 handleEvent 分发到这里（替代旧的
+// pollRun 轮询回调）；seen 去重保证每个会话的结果只反馈一次（断线对账重放不重复）。
+const testConsumers = new Map();
+
+function registerTestConsumer(testId, onSession, onAll) {
+  testConsumers.set(testId, { onSession, onAll, seen: new Set(), finished: false });
 }
 
-// 轮询测试运行状态：每个会话完成时回调 onSession（单独刷新），全部完成回调 onAll
-function pollRun(testId, onSession, onAll) {
-  const seen = new Set();
-  let stopped = false;
-  const timer = startPolling(tick, 1000);
-  async function tick() {
-    if (stopped) return;
-    let record;
-    try {
-      record = await runStatus(testId);
-    } catch (err) {
-      // 运行记录已被清理（404）：轮询永远不可能成功，终止以免 interval 泄漏
-      if (err && /404|未找到/.test(String(err.message || ""))) {
-        stopped = true;
-        clearInterval(timer);
+// 统一的逐会话反馈：手动群发与测试集运行共用（面板显示回复耗时 + 逐会话历史刷新）
+function applySessionFeedback(s) {
+  const panel = state.panelEls.get(s.session_id);
+  if (panel) {
+    if (s.status === "ok") {
+      panelStatus(panel, "ok", `回复成功（${s.duration}s）`);
+    } else {
+      panelStatus(
+        panel,
+        s.status === "error" ? "error" : "warn",
+        statusText(s.status) + (s.error ? `：${s.error}` : ""),
+      );
+    }
+  }
+  void loadHistory(s.session_id);
+}
+
+// 按会话重建各面板在途条（pending 事件是全量快照，一次替换再逐面板渲染）
+function renderAllPendingStrips() {
+  let changed = false;
+  for (const [id, el] of state.panelEls) {
+    const entries = [...state.pendingEntries.values()].filter(
+      (e) => e.session_id === id,
+    );
+    if (renderPendingStrip(el, entries)) changed = true;
+  }
+  if (changed && align.isAlignMode()) align.reflowAlign();
+}
+
+// SSE 事件分发：pending（在途快照）/ session_done / test_done / testset
+function handleEvent(ev) {
+  if (ev.type === "pending") {
+    state.pendingEntries.clear();
+    for (const e of ev.entries || []) state.pendingEntries.set(e.entry_id, e);
+    renderAllPendingStrips();
+    return;
+  }
+  if (ev.type === "session_done") {
+    const cons = testConsumers.get(ev.test_id);
+    if (cons && !cons.seen.has(ev.session_id)) {
+      cons.seen.add(ev.session_id);
+      try {
+        cons.onSession(ev.summary);
+      } catch (err) {
+        console.error("会话结果刷新失败:", err);
       }
-      return; // 其余查询失败下轮重试
     }
-    for (const r of record.results || []) {
-      if (!seen.has(r.session_id)) {
-        seen.add(r.session_id);
-        try {
-          onSession(r);
-        } catch (err) {
-          console.error("会话结果刷新失败:", err);
-        }
-      }
+    return;
+  }
+  if (ev.type === "test_done") {
+    const cons = testConsumers.get(ev.test_id);
+    if (cons) {
+      testConsumers.delete(ev.test_id);
+      cons.onAll(ev.record);
     }
-    if (record.done) {
-      stopped = true;
-      clearInterval(timer);
-      onAll(record);
-    }
+    return;
+  }
+  if (ev.type === "testset") {
+    handleTestsetEvent(ev.run_id, ev.run);
   }
 }
 
@@ -308,24 +324,7 @@ async function sendToOne(id, text) {
   panelStatus(panel, "warn", "发送中…");
   try {
     const resp = await runTest({ sessions: [id], text });
-    pollRun(
-      resp.test_id,
-      (r) => {
-        const p = state.panelEls.get(id);
-        if (!p) return;
-        if (r.status === "ok") {
-          panelStatus(p, "ok", `回复成功（${r.duration}s）`);
-        } else {
-          panelStatus(
-            p,
-            r.status === "error" ? "error" : "warn",
-            statusText(r.status) + (r.error ? `：${r.error}` : ""),
-          );
-        }
-        void loadHistory(id);
-      },
-      () => {},
-    );
+    registerTestConsumer(resp.test_id, applySessionFeedback, () => {});
   } catch (err) {
     panelStatus(panel, "error", "发送失败: " + err.message);
   }
@@ -348,23 +347,9 @@ async function sendToAll() {
   showRunStatus("warn", `正在并发发送给 ${ids.length} 个会话…`);
   try {
     const resp = await runTest({ sessions: ids, text });
-    pollRun(
+    registerTestConsumer(
       resp.test_id,
-      (r) => {
-        const panel = state.panelEls.get(r.session_id);
-        if (panel) {
-          if (r.status === "ok") {
-            panelStatus(panel, "ok", `回复成功（${r.duration}s）`);
-          } else {
-            panelStatus(
-              panel,
-              r.status === "error" ? "error" : "warn",
-              statusText(r.status) + (r.error ? `：${r.error}` : ""),
-            );
-          }
-        }
-        void loadHistory(r.session_id);
-      },
+      applySessionFeedback,
       (record) => {
         const s = record.stats || {};
         const ok = record.results.filter((r) => r.status === "ok").length;
@@ -391,20 +376,21 @@ function showRunStatus(status, text) {
 
 // ---------- 测试集运行（后端驱动） ----------
 
-// 测试集运行由后端后台任务驱动（离开页面不中断），前端只负责启动与轮询进度；
-// 记录可经「最近运行」找回，运行中/结束后均可点「查看」看结果表格。
+// 测试集运行由后端后台任务驱动（离开页面不中断），前端只负责启动；
+// 进度经 /events 事件流推送（handleTestsetEvent），记录可经「最近运行」找回，
+// 运行中/结束后均可点「查看」看结果表格。
 
 async function runTestset(testset, ids) {
   try {
     const resp = await runTestsetApi({ testset_id: testset.id, sessions: ids });
     state.activeRunId = resp.run_id;
+    state.testsetReportedSteps.clear();
     $("btn-abort-run").hidden = false;
     const segText = segmentSummary(testset);
     showRunStatus(
       "warn",
       `测试集「${testset.name}」已启动（${resp.steps} 步${segText}），后台运行中…`,
     );
-    pollTestsetRun(resp.run_id);
   } catch (err) {
     showRunStatus("error", "启动测试集运行失败: " + err.message);
   }
@@ -426,71 +412,54 @@ function segmentLabel(run, idx) {
   return `第 ${idx + 1}/${run.steps.length} 步`;
 }
 
-// 当前测试集轮询定时器：新的轮询开始时停掉旧的，避免重复轮询叠加
-let testsetPollTimer = null;
-
-function pollTestsetRun(runId) {
-  if (testsetPollTimer) clearInterval(testsetPollTimer);
-  let stopped = false;
-  let doneSteps = 0;
-  const timer = startPolling(tick, 1000);
-  testsetPollTimer = timer;
-  async function tick() {
-    if (stopped) return;
-    let run;
-    try {
-      run = await runTestsetStatus(runId);
-    } catch (err) {
-      // 404：运行记录已被清理
-      stopPolling(timer, "warn", "该测试集运行记录已过期，无法继续查看进度");
-      return;
-    }
-    const name = run.testset_name || "测试集";
-    if (run.status === "running") {
-      const idx = Math.max(0, run.current_step);
-      const stepText = run.steps[idx] ? run.steps[idx].text : "";
-      showRunStatus(
-        "warn",
-        `测试集「${name}」运行中：${segmentLabel(run, idx)} — ${stepText}`,
-      );
-      // 步骤推进（完成步数增加）→ 刷新已打开面板的历史（逐条模式每步完成即可见）
-      const completed = run.steps.filter((s) => s.status === "done").length;
-      if (completed > doneSteps) {
-        doneSteps = completed;
-        for (const sid of state.openIds) void loadHistory(sid);
-      }
-      return;
-    }
-    stopPolling(timer);
-    const failSteps = run.steps.filter((s) => s.status === "error").length;
-    // 断言未通过（✗）与步骤/会话错误是两回事：断言失败只落在结果单元格，
-    // 不改变会话 status——总结必须单独计数，否则出现「表格 3 个 ✗ 但总结错误 0」的误导
-    const assertFails = (run.steps || []).reduce(
-      (n, s) => n + (s.results || []).filter((r) => r.assertion && !r.assertion.pass).length,
-      0,
+// 测试集运行进度：由 /events 的 testset 事件（完整 run 快照）驱动。
+// 新完成的步骤经 applySessionFeedback 逐会话反馈（与手动群发同路径）；
+// 终态不自动弹窗，报告暂存 state.runReports 供「查看报告」按需查看。
+function handleTestsetEvent(runId, run) {
+  const name = run.testset_name || "测试集";
+  if (run.status === "running") {
+    state.activeRunId = runId;
+    $("btn-abort-run").hidden = false;
+    const idx = Math.max(0, run.current_step);
+    const stepText = run.steps[idx] ? run.steps[idx].text : "";
+    showRunStatus(
+      "warn",
+      `测试集「${name}」运行中：${segmentLabel(run, idx)} — ${stepText}`,
     );
-    const doneCount = run.steps.filter((s) => s.status === "done").length;
-    const assertText = assertFails ? `，${assertFails} 条断言未通过` : "";
-    const summary =
-      run.status === "done"
-        ? `测试集「${name}」运行完成（${run.steps.length} 步${assertText}）`
-        : run.status === "cancelled"
-          ? `测试集「${name}」已取消：当前步骤已完成，共完成 ${doneCount} 步`
-          : `测试集「${name}」运行出错${failSteps ? `（${failSteps} 步失败）` : ""}${assertText}`;
-    showRunStatus(run.status === "done" ? "ok" : "error", summary);
-    for (const sid of state.openIds) void loadHistory(sid);
-    showTestsetResults(run);
-    void refreshTestsets();
+    // 新完成的步骤 → 逐会话反馈（面板耗时 + 逐会话历史刷新，与手动群发一致）
+    (run.steps || []).forEach((step, i) => {
+      if (step.status === "done" && !state.testsetReportedSteps.has(i)) {
+        state.testsetReportedSteps.add(i);
+        for (const r of step.results || []) applySessionFeedback(r);
+      }
+    });
+    return;
   }
-  function stopPolling(timer, status, text) {
-    if (stopped) return;
-    stopped = true;
-    clearInterval(timer);
-    if (testsetPollTimer === timer) testsetPollTimer = null;
-    state.activeRunId = null;
-    $("btn-abort-run").hidden = true;
-    if (status) showRunStatus(status, text);
-  }
+  // 终态：不自动弹窗，报告暂存供按需查看
+  state.activeRunId = null;
+  state.testsetReportedSteps.clear();
+  $("btn-abort-run").hidden = true;
+  state.runReports[runId] = run;
+  state.latestReportRunId = runId;
+  $("btn-view-report").hidden = false;
+  const failSteps = run.steps.filter((s) => s.status === "error").length;
+  // 断言未通过（✗）与步骤/会话错误是两回事：断言失败只落在结果单元格，
+  // 不改变会话 status——总结必须单独计数，否则出现「表格 3 个 ✗ 但总结错误 0」的误导
+  const assertFails = (run.steps || []).reduce(
+    (n, s) => n + (s.results || []).filter((r) => r.assertion && !r.assertion.pass).length,
+    0,
+  );
+  const doneCount = run.steps.filter((s) => s.status === "done").length;
+  const assertText = assertFails ? `，${assertFails} 条断言未通过` : "";
+  const summary =
+    run.status === "done"
+      ? `测试集「${name}」运行完成（${run.steps.length} 步${assertText}）`
+      : run.status === "cancelled"
+        ? `测试集「${name}」已取消：当前步骤已完成，共完成 ${doneCount} 步`
+        : `测试集「${name}」运行出错${failSteps ? `（${failSteps} 步失败）` : ""}${assertText}`;
+  showRunStatus(run.status === "done" ? "ok" : "error", summary);
+  for (const sid of state.openIds) void loadHistory(sid);
+  void refreshTestsets();
 }
 
 // 结果表格弹窗：行=步骤（文本 + 失败原因），列=会话（状态 + 耗时 + 断言 ✓/✗），
@@ -552,7 +521,7 @@ function showTestsetResults(run) {
   });
 }
 
-// 「最近运行」点查看：运行中则继续轮询，否则直接展示结果表格
+// 「最近运行」点查看：运行中则一次性重建进度（后续由事件流推送），否则直接展示结果表格
 async function viewTestsetRun(runId) {
   let run;
   try {
@@ -564,9 +533,8 @@ async function viewTestsetRun(runId) {
   }
   if (run.status === "running") {
     state.activeRunId = runId;
-    $("btn-abort-run").hidden = false;
-    showRunStatus("warn", `测试集「${run.testset_name || ""}」运行中，继续跟踪…`);
-    pollTestsetRun(runId);
+    state.testsetReportedSteps.clear();
+    handleTestsetEvent(runId, run);
   } else {
     showTestsetResults(run);
   }
@@ -653,25 +621,67 @@ function renderPendingStrip(panel, entries) {
   return true;
 }
 
-// 全局轮询在途消息：一次查询，按会话分发到各面板（单发/群发/重新生成共用）
-function pollPending() {
-  // runNow=false 保持原行为：1s 后首轮（初始化时各面板可能尚未就绪）
-  startPolling(async () => {
-    let pending = [];
+// ---------- 事件流连接与快照对账 ----------
+
+// 订阅 /events 并做一次快照对账：订阅建立后（流已 open）用一次性接口取回
+// 当前权威状态，补上订阅前/断线期间丢失的事件（事件均为全量快照，幂等覆盖）
+async function connectEvents() {
+  await subscribeEvents(handleEvent, () => {
+    // 断线：延迟重连；丢的事件由 reconcileEvents 的一次性取回兜底
+    setTimeout(() => {
+      void connectEvents().catch((err) => console.error("重连事件流失败:", err));
+    }, 3000);
+  });
+  void reconcileEvents();
+}
+
+async function reconcileEvents() {
+  // 1. 在途条目快照（单发/群发/重新生成/测试集共用）
+  let entries = [];
+  try {
+    const data = await getPending();
+    entries = Array.isArray(data.pending) ? data.pending : [];
+  } catch (err) {
+    console.warn("拉取在途条目失败:", err);
+  }
+  state.pendingEntries.clear();
+  for (const e of entries) state.pendingEntries.set(e.entry_id, e);
+  renderAllPendingStrips();
+  // 2. 在途条目带 test_id：逐测试一次性取回结果，喂给已注册消费者（seen 去重）
+  const testIds = [...new Set(entries.map((e) => e.test_id).filter(Boolean))];
+  for (const tid of testIds) {
+    const cons = testConsumers.get(tid);
+    if (!cons) continue;
+    let rec;
     try {
-      const data = await getPending();
-      pending = Array.isArray(data.pending) ? data.pending : [];
+      rec = await runStatus(tid);
     } catch (err) {
-      return; // 查询失败下轮重试
+      continue; // 运行记录已被清理，忽略
     }
-    let changed = false;
-    for (const [id, el] of state.panelEls) {
-      if (renderPendingStrip(el, pending.filter((e) => e.session_id === id))) {
-        changed = true;
+    for (const r of rec.results || []) {
+      if (cons.seen.has(r.session_id)) continue;
+      cons.seen.add(r.session_id);
+      try {
+        cons.onSession(r);
+      } catch (err) {
+        console.error("会话结果刷新失败:", err);
       }
     }
-    if (changed && align.isAlignMode()) align.reflowAlign();
-  }, 1000, false);
+    if (rec.done && !cons.finished) {
+      cons.finished = true;
+      testConsumers.delete(tid);
+      cons.onAll(rec);
+    }
+  }
+  // 3. 测试集运行进度（页面重开找回 / 断线期间推进的步骤）
+  if (state.activeRunId) {
+    try {
+      const run = await runTestsetStatus(state.activeRunId);
+      handleTestsetEvent(run.run_id, run);
+    } catch (err) {
+      console.warn("拉取测试集运行进度失败:", err);
+    }
+  }
 }
 
 // 群发栏实时显示：当前打开的会话总数 + 按所属测试组的分布
@@ -1068,6 +1078,11 @@ $("btn-refresh").addEventListener("click", refreshGroups);
 $("btn-refresh-testsets").addEventListener("click", refreshTestsets);
 $("btn-run-all").addEventListener("click", sendToAll);
 $("btn-abort-run").addEventListener("click", () => abortTestsetRun(state.activeRunId));
+// 「查看报告」：测试集结果不自动弹窗，暂存后由用户按需查看（最近一次完成/取消的运行）
+$("btn-view-report").addEventListener("click", () => {
+  const run = state.latestReportRunId && state.runReports[state.latestReportRunId];
+  if (run) showTestsetResults(run);
+});
 $("btn-run-testset").addEventListener("click", runTestsetFromBar);
 $("run-testset").addEventListener("change", () => {
   $("btn-run-testset").disabled = !$("run-testset").value;
@@ -1106,7 +1121,7 @@ document.querySelectorAll(".rail-btn").forEach((btn) => {
 });
 
 await ready();
-// allSettled：三个初始化步骤相互独立，任一失败不阻塞其余步骤与在途轮询
+// allSettled：三个初始化步骤相互独立，任一失败不阻塞其余步骤与事件流连接
 // （各步骤内部已自行降级，见 refreshGroups / refreshTestsets 的 catch）
 await Promise.allSettled([loadOptions(), refreshGroups(), refreshTestsets()]);
-pollPending();
+void connectEvents();

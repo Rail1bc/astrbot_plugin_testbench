@@ -112,3 +112,34 @@ export async function abortTestsetRun(runId) {
 export async function listTestsetRuns() {
   return bridge.apiGet("testsets/runs");
 }
+
+// ---------- SSE 事件流 ----------
+
+// 单一全局订阅：重复调用返回同一订阅；断线时父窗口报告 onError，
+// 本模块把订阅置空并通知页面（由页面延迟重连 + 快照对账兜底丢失的事件）。
+let eventSub = null;
+
+export async function subscribeEvents(onEvent, onError) {
+  if (eventSub) return eventSub;
+  eventSub = await bridge.subscribeSSE("events", {
+    onMessage: ({ parsed }) => {
+      if (parsed && parsed.type) onEvent(parsed);
+    },
+    onError: () => {
+      eventSub = null;
+      if (onError) onError();
+    },
+  });
+  return eventSub;
+}
+
+export async function unsubscribeEvents() {
+  if (eventSub) {
+    try {
+      await bridge.unsubscribeSSE(eventSub);
+    } catch (err) {
+      console.error("退订事件流失败:", err);
+    }
+  }
+  eventSub = null;
+}

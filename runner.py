@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 from .assertions import evaluate_rule
 from .conf_routes import restore_routes, save_and_apply_routes
+from .event_bus import EventBus
 from .group_store import (
     DEFAULT_PLATFORM_ID,
     DEFAULT_SENDER_ID,
@@ -46,13 +47,25 @@ class VirtualTestRunner:
     → llm → done），由 LLM 阶段 hook 推进状态，供前端面板实时展示。
     """
 
-    def __init__(self, context: Context) -> None:
+    def __init__(self, context: Context, event_bus: EventBus | None = None) -> None:
         self.context = context
+        # 未注入时自建空总线：publish 到无订阅者的总线是 no-op，测试可省去该参数
+        self.event_bus = event_bus or EventBus()
         self._route_lock = asyncio.Lock()
         self._saved_routes: list[tuple[str, str | None]] = []
         self._runs: dict[str, dict] = {}
         self._pending: dict[str, dict] = {}  # entry_id -> 在途条目
         self._run_seq = 0
+
+    def _publish_pending(self) -> None:
+        """广播在途条目全量快照（幂等：新快照覆盖旧快照，丢旧无碍）。
+
+        条目是原地可变的 dict（status 随阶段推进），快照须拷贝，否则已发布事件
+        里的条目会随时间漂移成最新状态，不再是发布时刻的状态。
+        """
+        self.event_bus.publish(
+            {"type": "pending", "entries": [dict(e) for e in self._pending.values()]}
+        )
 
     async def _apply_conf_route(self, sessions: list[dict], conf_id: str) -> None:
         """为每个会话设置精确的 UCR 路由（umo → conf_id），并保存原路由以便恢复。
@@ -166,6 +179,7 @@ class VirtualTestRunner:
                 "created_at": time.time(),
                 "status_at": time.time(),
             }
+        self._publish_pending()
 
     def _discard_pending(self, test_id: str) -> None:
         """入队/建任务失败时清理该测试的在途条目（与路由锁清理一致，防泄漏）。"""
@@ -173,6 +187,7 @@ class VirtualTestRunner:
             eid for eid, entry in self._pending.items() if entry["test_id"] == test_id
         ]:
             self._pending.pop(eid, None)
+        self._publish_pending()
 
     def mark_waiting_llm(self, entry_id: str) -> None:
         """标记消息已到达 LLM 阶段、正在等待会话锁（OnWaitingLLMRequestEvent）。"""
@@ -180,6 +195,7 @@ class VirtualTestRunner:
         if entry is not None and entry["status"] == "submitted":
             entry["status"] = "waiting_llm"
             entry["status_at"] = time.time()
+            self._publish_pending()
 
     def mark_llm(self, entry_id: str) -> None:
         """标记消息正在调用 LLM（OnLLMRequestEvent，会话锁内）。"""
@@ -187,6 +203,7 @@ class VirtualTestRunner:
         if entry is not None and entry["status"] in ("submitted", "waiting_llm"):
             entry["status"] = "llm"
             entry["status_at"] = time.time()
+            self._publish_pending()
 
     def pending_entries(self) -> list[dict]:
         """返回全部在途条目（含刚完成、仍处展示保留期的条目），供前端轮询。"""
@@ -206,6 +223,7 @@ class VirtualTestRunner:
         if entry is not None:
             entry["status"] = "done"
             entry["status_at"] = time.time()
+            self._publish_pending()
         record = self._runs.get(test_id)
         if record is None:
             return
@@ -214,10 +232,21 @@ class VirtualTestRunner:
         if assertion:
             summary["assertion"] = evaluate_rule(assertion, summary.get("reply") or "")
         record["results"][event.session_id] = summary
+        self.event_bus.publish(
+            {
+                "type": "session_done",
+                "test_id": test_id,
+                "session_id": event.session_id,
+                "summary": summary,
+            }
+        )
         if len(record["results"]) >= record["total"] and not record["done"]:
             record["done"] = True
             record["finished_at"] = time.time()
             record["all_done"].set()
+            self.event_bus.publish(
+                {"type": "test_done", "test_id": test_id, "record": self.status(test_id)}
+            )
 
     async def _release_route_after(self, test_id: str) -> None:
         record = self._runs.get(test_id)
@@ -295,3 +324,5 @@ class VirtualTestRunner:
         ]
         for eid in stale_entries:
             self._pending.pop(eid, None)
+        if stale_entries:
+            self._publish_pending()  # 清理后广播快照，防前端残留已过期的「完成」chip

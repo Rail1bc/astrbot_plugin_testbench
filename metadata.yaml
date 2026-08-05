@@ -4,5 +4,5 @@ desc: 支持并发测试：一键创建多个虚拟会话，一条消息同时�
 version: v0.3.0 # 插件版本号
 author: Rail1bc # 作者
 repo: https://github.com/Rail1bc/astrbot_plugin_testbench # 插件的仓库地址
-astrbot_version: ">=4.16" # 插件适配的 AstrBot 版本范围
+astrbot_version: ">=4.24.1" # 插件适配的 AstrBot 版本范围（subscribeSSE 自 v4.24.1 起可用）
 support_platforms: # 虚拟会话不依赖具体 IM 适配器，留空表示与平台无关

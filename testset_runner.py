@@ -18,8 +18,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from copy import deepcopy
 from typing import TYPE_CHECKING
 
+from .event_bus import EventBus
 from .runner import VirtualTestRunner
 
 if TYPE_CHECKING:
@@ -44,12 +46,31 @@ class TestsetRunner:
     # 类名以 Test 开头会触发 pytest 收集，显式标记为非测试类
     __test__ = False
 
-    def __init__(self, context: Context, runner: VirtualTestRunner) -> None:
+    def __init__(
+        self,
+        context: Context,
+        runner: VirtualTestRunner,
+        event_bus: EventBus | None = None,
+    ) -> None:
         self.context = context
         self.runner = runner
+        # 未注入时自建空总线：publish 到无订阅者的总线是 no-op，测试可省去该参数
+        self.event_bus = event_bus or EventBus()
         self._runs: dict[str, dict] = {}
         self._tasks: dict[str, asyncio.Task] = {}
         self._run_seq = 0
+
+    def _publish_run(self, run_id: str) -> None:
+        """广播测试集运行全量快照（幂等：新快照覆盖旧快照，丢旧无碍）。
+
+        run dict 由驱动任务原地更新，快照须深拷贝，否则已发布事件里的 run 会
+        随步骤推进漂移成最新状态，不再是发布时刻的进度。
+        """
+        run = self.status(run_id)
+        if run is not None:
+            self.event_bus.publish(
+                {"type": "testset", "run_id": run_id, "run": deepcopy(run)}
+            )
 
     def start_run(self, testset: dict, sessions: list[dict]) -> str:
         """为测试集创建运行记录并启动后台驱动任务，立即返回 run_id。"""
@@ -81,6 +102,7 @@ class TestsetRunner:
         self._runs[run_id] = run
         self._tasks[run_id] = asyncio.create_task(self._drive(run_id))
         self._prune_runs()
+        self._publish_run(run_id)
         return run_id
 
     # ---------- 后台驱动 ----------
@@ -130,12 +152,14 @@ class TestsetRunner:
             run["status"] = (
                 "error" if any(s["status"] == "error" for s in run["steps"]) else "done"
             )
+        self._publish_run(run["run_id"])
 
     async def _drive_single_step(self, run: dict, index: int) -> None:
         """单步段：发 → 等待全部会话完成；超时/异常 → 该步 error、中止后续。"""
         step = run["steps"][index]
         step["status"] = "running"
         run["current_step"] = index
+        self._publish_run(run["run_id"])
         try:
             test_id = await self.runner.start(
                 sessions=run["sessions"], text=step["text"], assertion=step["rule"]
@@ -158,6 +182,7 @@ class TestsetRunner:
             if run["status"] == "running":
                 run["status"] = "error"
                 run["error"] = f"步骤失败: {e}"
+        self._publish_run(run["run_id"])
 
     async def _drive_batch_segment(self, run: dict, indices: list[int]) -> None:
         """批量段：先全部发出（重叠），再逐个收集；段内错误不中止后续段。"""
@@ -177,6 +202,7 @@ class TestsetRunner:
             except Exception as e:
                 step["status"] = "error"
                 step["error"] = str(e)
+            self._publish_run(run["run_id"])
         for i in indices:
             step = run["steps"][i]
             if step["status"] != "running" or step["test_id"] is None:
@@ -195,6 +221,7 @@ class TestsetRunner:
             except Exception as e:
                 step["status"] = "error"
                 step["error"] = str(e)
+            self._publish_run(run["run_id"])
 
     # ---------- 查询 / 取消 / 清理 ----------
 
@@ -227,6 +254,7 @@ class TestsetRunner:
         if run is None or run["status"] != "running":
             return False
         run["status"] = "cancelled"
+        self._publish_run(run_id)
         return True
 
     def _prune_runs(self) -> None:

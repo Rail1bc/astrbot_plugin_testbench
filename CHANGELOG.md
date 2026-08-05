@@ -29,6 +29,7 @@
 - 测试集运行目标新增「选择测试组」：可多选测试组，勾选组解析为该组全部会话 id（含未打开的会话）作为目标，运行弹窗只需选目标会话、不再选发送模式。
 - 测试集导出 / 导入：编辑窗口可将测试集导出为 JSON 文件（带 `format` / `version` 信封，为未来「测试集市场」从网络下载兼容预留），可导入已有测试集 JSON 文件（复用创建端点，无新后端接口）；导入校验信封格式与版本，非法文件弹窗报错不创建。
 - 会话面板页眉新增「⋯」菜单：编辑历史（JSON 编辑器入口，原页眉「编辑」按钮收敛进菜单）、重置历史（清空对话）、**复制历史**（复制当前会话全部对话历史到剪贴板，跨会话可用，刷新页面后清空）、**克隆会话**（同测试组内新建 N 个会话，对话历史与当前会话完全一致，可应用于同组配置下多会话对照）、**粘贴历史**（有复制内容时以剪贴板整体覆盖当前会话历史）、**衍生测试组**（基于当前会话的历史创建一个全新测试组，组内会话历史均与该会话一致，可命名 / 指定会话数，用于把一次成功调试沉淀为可复用的对照组）；新增 2 个后端接口 `POST /sessions/clone` 与 `POST /sessions/derive`（复制与衍生分别按会话 / 按组拷贝原生对话历史）。
+- 新增进程内事件总线 `EventBus` 与 `/events` SSE 事件流端点：runner / testset_runner 在状态变化点广播**全量快照**事件（在途 `pending`、会话完成 `session_done`、测试完成 `test_done`、测试集进度 `testset`，快照为发布时刻的拷贝），页面经插件页面 `subscribeSSE` 实时订阅，不轮询即可看到在途 / 逐会话 / 测试集进度实时更新；15s 心跳注释行防代理断连。兼容下限提升至 `astrbot_version: ">=4.24.1"`（subscribeSSE 自该版本提供）。
 
 ### 🐛 Bug Fixes (缺陷修复)
 
@@ -67,6 +68,12 @@
 - 修复测试集运行记录清理后后台任务继续驱动的孤儿问题：`_prune_runs` 对超过 1 小时的悬挂运行只移除记录不取消任务，后台仍在真实投递测试消息且用户无法查询 / 中止；现清理时一并 `task.cancel()`。
 - 修复测试集编辑窗口「先保存再导出 / 运行」在保存失败后仍继续的问题：`saveEditor` 吞掉自身错误不返回结果，导出 / 运行在保存失败后仍执行（导出的是编辑器未保存内容、运行的是旧版本）。现 `saveEditor` 返回成功标志，失败即中止后续动作。
 
+### 🔄 Changed (行为变更)
+
+- 前端由 1s 轮询改为**全事件驱动**：移除 `pollRun` / `pollTestsetRun` / `pollPending` 三个轮询器与 `startPolling` 辅助，改订阅 `/events` SSE 事件流（`connectEvents` → `handleEvent` 分发 pending / session_done / test_done / testset）；断线后延迟 3s 重连，并以 `reconcileEvents()` 用轮询接口一次性快照对账（`getPending` + 在途各 test_id 逐个 `runStatus` + 有活动运行则 `runTestsetStatus`），丢失的事件由其兜底——无轮询 fallback。
+- 测试集运行与手动群发统一逐会话反馈路径：共用 `applySessionFeedback`（面板状态 + 回复耗时 + 逐会话历史刷新），测试集运行中**新完成的步骤逐结果实时刷新面板**，不再等终态一次性刷新。
+- 测试集运行结果**不自动弹窗**：终态暂存 `state.runReports`，顶部常显状态条出现「查看报告」按钮按需查看结果表格；会话窗口仍实时显示各会话回复耗时。
+
 ### 🔧 Refactor (代码结构)
 
 - 代码结构拆分，无行为变化：后端 `runner.py` 拆为数据层 `group_store.py`、统计工具 `stats.py` 与运行器 `runner.py`；前端 `app.js` 拆出 `api.js`（bridge 调用统一封装）与 `align.js`（轮次对齐控制器）。
@@ -80,7 +87,7 @@
 - 前端平台 / 配置档案下拉的选项构建收敛为 `platformOptions()` / `confOptions()` 共享辅助（组编辑与会话配置两个弹窗复用），消除重复实现，并让「档案已不存在」占位逻辑只保留一份。
 - `update_group` 的路由同步改为按会话 id 配对旧 / 新会话，不再依赖两个会话列表的顺序一致（原按位置 `zip` 属隐含假设）。
 - 测试集运行不再选「逐条 / 批量」模式：`run_testset` 请求体移除 `mode` 字段，仅 `{testset_id, sessions}`，发送节奏由测试集内 `batch_ranges` 决定（段驱动，语义见「批量发送范围」）。
-- 前端三个轮询器（`pollRun` / `pollTestsetRun` / `pollPending`）收敛为共享 `startPolling` 辅助：busy 标志跳过上一轮未完成时的重叠 tick（慢后端下不再堆积请求），fn 抛错只记日志不中断轮询；行为不变。
+- 前端三个轮询器（`pollRun` / `pollTestsetRun` / `pollPending`）曾收敛为共享 `startPolling` 辅助（busy 标志跳过重叠 tick、fn 抛错只记日志），后随事件驱动改造整体移除（见「行为变更」）。
 
 ---
 

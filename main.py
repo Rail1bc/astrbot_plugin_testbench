@@ -11,6 +11,7 @@ id/昵称）的虚拟会话，组内单个会话可覆盖组配置。测试以�
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import json
 from typing import Any
@@ -18,7 +19,12 @@ from typing import Any
 from astrbot.api.event import AstrMessageEvent
 from astrbot.api.event.filter import on_llm_request, on_waiting_llm_request
 from astrbot.api.star import Context, Star
-from astrbot.api.web import error_response, json_response, request
+from astrbot.api.web import (
+    StreamingResponse,
+    error_response,
+    json_response,
+    request,
+)
 
 from .conf_routes import (
     apply_routes,
@@ -26,6 +32,7 @@ from .conf_routes import (
     delete_route_if_exists,
     sync_route,
 )
+from .event_bus import EventBus
 from .group_store import VirtualGroupManager, umo_of
 from .runner import VirtualTestRunner
 from .testset_runner import TestsetRunner
@@ -147,6 +154,12 @@ _ROUTES: tuple[tuple[str, str, list[str], str], ...] = (
         "请求取消测试集运行（当前步骤完成即止）",
     ),
     ("/testsets/runs", "testset_runs", ["GET"], "最近测试集运行摘要列表"),
+    (
+        "/events",
+        "events",
+        ["GET"],
+        "SSE 事件流（在途/会话完成/测试完成/测试集进度实时推送）",
+    ),
 )
 
 
@@ -154,9 +167,10 @@ class VirtualSessionPlugin(Star):
     def __init__(self, context: Context) -> None:
         super().__init__(context)
         self.group_mgr = VirtualGroupManager()
-        self.runner = VirtualTestRunner(context)
+        self.event_bus = EventBus()
+        self.runner = VirtualTestRunner(context, self.event_bus)
         self.testset_store = TestsetStore()
-        self.testset_runner = TestsetRunner(context, self.runner)
+        self.testset_runner = TestsetRunner(context, self.runner, self.event_bus)
         for path, handler, methods, desc in _ROUTES:
             context.register_web_api(
                 f"/{PLUGIN_NAME}{path}", getattr(self, handler), methods, desc
@@ -793,6 +807,35 @@ class VirtualSessionPlugin(Star):
     async def testset_runs(self):
         """最近测试集运行摘要列表（页面重开后找回运行结果）。"""
         return json_response({"runs": self.testset_runner.list_runs()})
+
+    # ---------- SSE 事件流 ----------
+
+    async def events(self):
+        """SSE 事件流：在途条目 / 会话完成 / 测试完成 / 测试集进度实时推送。
+
+        订阅者拿到独立有界队列（EventBus），断开时（页面关闭/重连）generator
+        在 finally 退订；15s 无事件发心跳注释行防代理断连。事件均为全量快照，
+        前端断线重连后经一次性接口取回当前状态对账，丢失的旧快照无影响。
+        """
+        queue = self.event_bus.subscribe()
+
+        async def gen():
+            try:
+                while True:
+                    try:
+                        event = await asyncio.wait_for(queue.get(), timeout=15)
+                    except TimeoutError:
+                        yield ": ping\n\n"
+                        continue
+                    yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+            finally:
+                self.event_bus.unsubscribe(queue)
+
+        return StreamingResponse(
+            gen(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     async def save_history(self):
         """整体替换会话的对话历史（JSON 编辑器保存）。

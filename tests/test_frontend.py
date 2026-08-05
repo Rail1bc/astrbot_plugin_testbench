@@ -323,15 +323,17 @@ def test_frontend_testset_export_import_and_group_target():
 
 
 def test_frontend_testset_run_is_backend_driven():
-    """测试集运行必须由后端驱动：前端只一次性启动运行并轮询后端记录。
+    """测试集运行必须由后端驱动：前端只一次性启动运行并订阅事件流对账进度。
 
     若退回前端逐条驱动（循环调 runTest 逐步等待），页面刷新/关闭会中断后续
-    步骤。防回归：app.js 必须调用 runTestsetApi（整场运行一次启动）并用
-    pollTestsetRun 轮询后端运行记录，而不是逐条调用 runTest。
+    步骤。防回归：app.js 必须调用 runTestsetApi（整场运行一次启动）并由
+    handleTestsetEvent 消费 /events 的 testset 事件推进进度，而不是轮询
+    pollTestsetRun。
     """
     src = _read_module("app")
     assert "runTestsetApi(" in src, "app.js 未调用 runTestsetApi 启动测试集运行"
-    assert "pollTestsetRun(" in src, "app.js 未实现 pollTestsetRun 轮询后端运行记录"
+    assert "handleTestsetEvent" in src, "app.js 未实现 testset 事件推进 handleTestsetEvent"
+    assert "pollTestsetRun(" not in src, "app.js 仍轮询 pollTestsetRun（已改事件驱动）"
 
 
 def test_frontend_testset_summary_counts_assertion_failures():
@@ -375,12 +377,46 @@ def test_frontend_refresh_groups_defensive():
     assert "Promise.allSettled" in app_js, "初始化未用 Promise.allSettled 隔离失败"
 
 
-def test_frontend_polling_helper():
-    """轮询须经共享 startPolling 辅助，避免慢后端下请求堆积。
+def test_frontend_event_driven_feedback():
+    """前端反馈层必须为事件驱动：无轮询器，统一逐会话反馈 + 消费者注册表。
 
-    三个轮询器（pollRun / pollTestsetRun / pollPending）曾各自 setInterval
-    async tick：tick 耗时超间隔时下一轮重叠发起请求。startPolling 用 busy 标志
-    跳过重叠 tick，轮询辅助只此一处实现。
+    曾有三处 setInterval async tick（pollRun / pollTestsetRun / pollPending），
+    慢后端下 tick 耗时超间隔时请求堆积。现改为订阅 /events：逐会话反馈收敛到
+    applySessionFeedback（手动群发与测试集运行共用同一路径），手动运行经
+    testConsumers 注册表接收 session_done / test_done 事件。
     """
-    src = _read_module("app")
-    assert "function startPolling(" in src, "缺少共享轮询辅助 startPolling"
+    app_js = _read_module("app")
+    api_js = _read_module("api")
+    assert "function applySessionFeedback(" in app_js, (
+        "缺少统一逐会话反馈 applySessionFeedback（手动/测试集共用）"
+    )
+    assert "const testConsumers = new Map()" in app_js, (
+        "缺少手动运行消费者注册表 testConsumers"
+    )
+    assert "startPolling(" not in app_js, "app.js 仍含轮询辅助 startPolling（已改事件驱动）"
+    assert "setInterval(" not in app_js, "app.js 仍含 setInterval 轮询"
+    assert "subscribeEvents(" in api_js, "api.js 缺少 SSE 订阅封装 subscribeEvents"
+    assert "unsubscribeEvents(" in api_js, "api.js 缺少 SSE 退订封装 unsubscribeEvents"
+
+
+def test_frontend_report_on_demand():
+    """测试集结果收集但不自动弹窗：终态暂存 runReports，经「查看报告」按需查看。
+
+    曾自动弹结果表格；现改为终态把报告暂存 state.runReports、显示「查看报告」
+    按钮，用户自主查看报告或会话窗口的实际结果。防回归：handleTestsetEvent
+    函数体内不得直接调用 showTestsetResults（只能暂存），弹窗只出现在
+    viewTestsetRun（最近运行「查看」）与「查看报告」按钮两处按需路径。
+    """
+    import re
+
+    html = _read_html()
+    app_js = _read_module("app")
+    assert 'id="btn-view-report"' in html, "index.html 缺少「查看报告」按钮"
+    assert "runReports" in app_js, "app.js 缺少运行报告暂存 runReports"
+    assert "state.runReports[runId] = run" in app_js, "终态未把报告暂存进 runReports"
+    assert '$("btn-view-report")' in app_js, "「查看报告」按钮未绑定"
+    match = re.search(r"function handleTestsetEvent\([^)]*\)[\s\S]*?\n\}", app_js)
+    assert match, "找不到 handleTestsetEvent 函数体"
+    assert "showTestsetResults" not in match.group(0), (
+        "handleTestsetEvent 直接弹结果表格（应改为暂存 + 按需查看）"
+    )

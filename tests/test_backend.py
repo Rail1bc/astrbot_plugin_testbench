@@ -22,6 +22,7 @@ sys.path.insert(0, str(REPO_ROOT.parent))
 pytest.importorskip("astrbot")
 
 import astrbot_plugin_testbench.assertions as asrt_mod  # noqa: E402
+import astrbot_plugin_testbench.event_bus as eb_mod  # noqa: E402
 import astrbot_plugin_testbench.group_store as gs_mod  # noqa: E402
 import astrbot_plugin_testbench.main as main_mod  # noqa: E402
 import astrbot_plugin_testbench.runner as runner_mod  # noqa: E402
@@ -33,6 +34,7 @@ from astrbot.api.event import MessageChain  # noqa: E402
 from astrbot.api.web import PluginRequest, bind_request_context  # noqa: E402
 from starlette.requests import Request  # noqa: E402
 
+EventBus = eb_mod.EventBus
 VirtualMessageEvent = ve_mod.VirtualMessageEvent
 VirtualGroupManager = gs_mod.VirtualGroupManager
 VirtualTestRunner = runner_mod.VirtualTestRunner
@@ -2904,3 +2906,111 @@ async def test_plugin_run_test_with_assertion(tmp_path):
         plugin.run_test, {"sessions": [sid], "text": "hi", "assertion": "regex"}
     )
     assert resp.status_code == 400
+
+
+# ---------- 事件总线 / SSE 推送 ----------
+
+
+class RecordingBus:
+    """记录全部发布事件的替身总线（duck-typed，仅需 publish）。"""
+
+    def __init__(self) -> None:
+        self.events: list[dict] = []
+
+    def subscribe(self):
+        return None
+
+    def unsubscribe(self, queue) -> None:
+        pass
+
+    def publish(self, event: dict) -> None:
+        self.events.append(event)
+
+
+@pytest.mark.asyncio
+async def test_event_bus_broadcast_and_drop_oldest():
+    bus = EventBus(maxlen=2)
+    q1 = bus.subscribe()
+    q2 = bus.subscribe()
+    bus.publish({"type": "a"})
+    bus.publish({"type": "b"})
+    # 双订阅者各收全量
+    assert q1.get_nowait() == {"type": "a"}
+    assert q2.get_nowait() == {"type": "a"}
+    assert q1.get_nowait() == {"type": "b"}
+    # 队列满（容量 2）→ 丢最旧 "a"，最新 "c"/"d" 仍送达
+    bus.publish({"type": "c"})
+    bus.publish({"type": "d"})
+    assert q1.get_nowait() == {"type": "c"}
+    assert q1.get_nowait() == {"type": "d"}
+    assert q1.empty()
+
+
+@pytest.mark.asyncio
+async def test_event_bus_unsubscribe():
+    bus = EventBus()
+    q = bus.subscribe()
+    bus.unsubscribe(q)
+    bus.publish({"type": "a"})
+    assert q.empty()
+
+
+@pytest.mark.asyncio
+async def test_runner_publishes_pending_session_test_events():
+    bus = RecordingBus()
+    queue = asyncio.Queue()
+    runner = VirtualTestRunner(FakeContext(queue), event_bus=bus)
+
+    async def handler(event):
+        await event.send(MessageChain().message("ok"))
+        event.cleanup_temporary_local_files()
+
+    task = asyncio.create_task(consume(queue, handler))
+    try:
+        test_id = await runner.start(sessions=[make_session(1)], text="你好")
+        rec = await wait_run_done(runner, test_id)
+    finally:
+        task.cancel()
+    assert rec["done"] is True
+    # start → 在途快照（submitted）→ … → 完成快照（done）
+    pending = [e for e in bus.events if e["type"] == "pending"]
+    assert pending, "start 后未发布在途快照"
+    assert pending[0]["entries"][0]["status"] == "submitted"
+    assert pending[-1]["entries"][0]["status"] == "done"
+    # 会话完成事件 → 含结果摘要；测试完成事件 → 含完整 status()
+    session_done = [e for e in bus.events if e["type"] == "session_done"]
+    assert session_done, "未发布 session_done"
+    assert session_done[0]["test_id"] == test_id
+    assert session_done[0]["summary"]["session_id"] == "vs_1"
+    test_done = [e for e in bus.events if e["type"] == "test_done"]
+    assert test_done, "未发布 test_done"
+    assert test_done[0]["record"]["done"] is True
+    assert test_done[0]["record"]["results"][0]["reply"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_testset_runner_publishes_run_events():
+    bus = RecordingBus()
+    queue = asyncio.Queue()
+    context = FakeContext(queue)
+    tsr = TestsetRunner(context, VirtualTestRunner(context), event_bus=bus)
+
+    async def handler(event):
+        await event.send(MessageChain().message("回复"))
+        event.cleanup_temporary_local_files()
+
+    task = asyncio.create_task(consume(queue, handler))
+    try:
+        testset = _make_testset("ts_ev", "事件测试", [("问", None)])
+        run_id = tsr.start_run(testset, [make_session(1)])
+        rec = await wait_testset_done(tsr, run_id)
+    finally:
+        task.cancel()
+    assert rec["status"] == "done"
+    # testset 事件为完整 run 快照：先 running，末条终态 done
+    testset_events = [e for e in bus.events if e["type"] == "testset"]
+    assert testset_events, "未发布 testset 运行快照"
+    assert testset_events[0]["run_id"] == run_id
+    assert testset_events[0]["run"]["status"] == "running"
+    assert testset_events[-1]["run"]["status"] == "done"
+    assert testset_events[-1]["run"]["steps"][0]["status"] == "done"
