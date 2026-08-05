@@ -346,3 +346,17 @@ def test_frontend_testset_summary_counts_assertion_failures():
     assert "条断言未通过" in src, "总结文案未包含断言未通过计数"
     # 表格行尾计数也要标注断言 ✗（与「错误 N」的 status 语义区分）
     assert "断言 ✗" in src, "结果表格行尾未单独标注断言 ✗ 计数"
+
+
+def test_frontend_no_parse_int_on_user_input():
+    """用户数字输入不得用 parseInt 截断解析。
+
+    parseInt("1.5") → 1：用户填 1.5 会被静默截断成 1（数量、断言最少/最多字数
+    都会悄悄改值）。须用 Number()（配合 Number.isInteger 拒绝小数），解析失败
+    报错而不是截断。曾有三处 parseInt：group_list.js 新增会话数量 / 组会话数量、
+    testset_list.js min_len/max_len 断言值。
+    """
+    for name in ("group_list", "testset_list"):
+        assert "parseInt(" not in _read_module(name), (
+            f"{name}.js 仍用 parseInt 解析用户输入（会静默截断小数）"
+        )

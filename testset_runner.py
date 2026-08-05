@@ -181,8 +181,8 @@ class TestsetRunner:
             step = run["steps"][i]
             if step["status"] != "running" or step["test_id"] is None:
                 continue
-            if run["status"] != "running":
-                break  # 已 abort：剩余步骤保持 running（消息已发出）
+            # 不因 abort 中断收集：段内步骤都已发出（消息已入队），必须全部收完，
+            # 否则已发出的步骤永远卡在 running 且结果丢失。
             try:
                 rec = await self.runner.wait_done(
                     step["test_id"], timeout_secs=TESTSET_STEP_TIMEOUT

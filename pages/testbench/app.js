@@ -254,7 +254,12 @@ function pollRun(testId, onSession, onAll) {
     try {
       record = await runStatus(testId);
     } catch (err) {
-      return; // 查询失败下轮重试
+      // 运行记录已被清理（404）：轮询永远不可能成功，终止以免 interval 泄漏
+      if (err && /404|未找到/.test(String(err.message || ""))) {
+        stopped = true;
+        clearInterval(timer);
+      }
+      return; // 其余查询失败下轮重试
     }
     for (const r of record.results || []) {
       if (!seen.has(r.session_id)) {

@@ -376,7 +376,7 @@ export function createTestsetList(env) {
       const v = value.trim();
       if (!v) return null;
       if (type === "min_len" || type === "max_len") {
-        const n = parseInt(v, 10);
+        const n = Number(v);
         return Number.isInteger(n) ? { type, value: n } : null;
       }
       return { type, value: v };
@@ -384,9 +384,47 @@ export function createTestsetList(env) {
     return { type };
   }
 
+  // 断言类型的中文名（错误提示用；RULE_TYPES 是唯一来源）
+  function ruleTypeLabel(type) {
+    const found = RULE_TYPES.find(([v]) => v === type);
+    return found ? found[1] : type;
+  }
+
+  // 保存 / 导出前的断言值校验：值类规则空值、min_len/max_len 非整数会被
+  // buildRule 静默丢弃（规则不生效），这里先带行号提示，而不是无声吞掉。
+  // 返回错误文案；全部合法返回 null。
+  function validateEditorRows() {
+    const rows = $("ts-messages").querySelectorAll(".ts-msg-row");
+    let kept = 0; // 与 collectEditorRows 一致：空文本行不计入
+    for (const row of rows) {
+      const text = row.querySelector(".ts-msg-text").value.trim();
+      if (!text) continue;
+      const type = row.querySelector(".ts-msg-rule-type").value;
+      const value = row.querySelector(".ts-msg-rule-value").value.trim();
+      if (RULE_VALUE_TYPES.has(type)) {
+        if (!value) {
+          return `第 ${kept + 1} 条消息：规则「${ruleTypeLabel(type)}」未填写断言值，该规则不会生效`;
+        }
+        if (type === "min_len" || type === "max_len") {
+          const n = Number(value);
+          if (!Number.isInteger(n)) {
+            return `第 ${kept + 1} 条消息：规则「${ruleTypeLabel(type)}」的断言值必须是整数`;
+          }
+        }
+      }
+      kept += 1;
+    }
+    return null;
+  }
+
   async function saveEditor() {
     const ts = requireSelected();
     if (!ts) return;
+    const err = validateEditorRows();
+    if (err) {
+      showModal(err);
+      return;
+    }
     const name = $("ts-name").value.trim() || "测试集";
     const { messages, batchRanges } = collectEditorRows();
     try {
@@ -423,6 +461,11 @@ export function createTestsetList(env) {
     const ts = requireSelected();
     if (!ts) return;
     const doExport = () => {
+      const err = validateEditorRows();
+      if (err) {
+        showModal(err);
+        return;
+      }
       const { messages, batchRanges } = collectEditorRows();
       const envelope = {
         format: EXPORT_FORMAT,

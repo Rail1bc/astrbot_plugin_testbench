@@ -240,7 +240,7 @@ export function createGroupList(env) {
       content: field("数量", input),
       okText: "新增",
       onOk: async () => {
-        const n = parseInt(input.value, 10);
+        const n = Number(input.value);
         if (!Number.isInteger(n) || n < 1) {
           showModal("数量必须是大于 0 的整数");
           return;
@@ -366,7 +366,7 @@ export function createGroupList(env) {
       content: form,
       okText: "保存",
       onOk: async () => {
-        const count = parseInt(inpCount.value, 10);
+        const count = Number(inpCount.value);
         if (!Number.isInteger(count) || count < 1 || count > MAX_SESSIONS) {
           throw new Error(`会话数量必须是 1-${MAX_SESSIONS} 的整数`);
         }

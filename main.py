@@ -548,9 +548,11 @@ class VirtualSessionPlugin(Star):
         """
         payload = await request.json(default={})
         sessions = payload.get("sessions")
-        text = payload.get("text", "")
+        text = payload.get("text")
         if not isinstance(sessions, list) or not sessions:
             return error_response("sessions 不能为空", status_code=400)
+        if not isinstance(text, str):
+            return error_response("text 必须是字符串", status_code=400)
         requested = list(dict.fromkeys(sessions))  # 去重，保持顺序
         session_objs = self.group_mgr.effective_many(requested)
         if len(session_objs) != len(requested):
@@ -564,7 +566,7 @@ class VirtualSessionPlugin(Star):
         try:
             test_id = await self.runner.start(
                 sessions=session_objs,
-                text=str(text),
+                text=text,
                 provider_id=payload.get("provider_id"),
                 model=payload.get("model"),
                 conf_id=payload.get("conf_id"),

@@ -1357,6 +1357,20 @@ async def test_plugin_run_test_missing_and_duplicate_ids(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_plugin_run_test_text_must_be_string(tmp_path):
+    """非字符串 text 直接 400，不再被静默 str() 强制转换（null → "None"、数字 → "123"）。"""
+    plugin = main_mod.VirtualSessionPlugin(FakeContext())
+    plugin.group_mgr = VirtualGroupManager(data_dir=tmp_path)
+    group = plugin.group_mgr.create_group("组A", count=1)
+    sid = group["sessions"][0]["id"]
+
+    for bad in (123, None, ["hi"]):
+        resp = await call_handler(plugin.run_test, {"sessions": [sid], "text": bad})
+        assert resp.status_code == 400
+        assert "text 必须是字符串" in json.loads(resp.body)["message"]
+
+
+@pytest.mark.asyncio
 async def test_plugin_run_test_returns_test_id(tmp_path):
     queue = asyncio.Queue()
     context = FakeContext(queue)
@@ -2420,6 +2434,54 @@ async def test_testset_runner_abort():
     assert rec["steps"][0]["status"] == "done"  # 当前步骤照常完成并收结果
     assert rec["steps"][1]["status"] == "pending"  # 后续不再发
     assert rec["steps"][1]["test_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_testset_runner_batch_segment_abort_collects_started():
+    """批量段收集中途 abort：段内已发出的步骤必须全部收完结果，不能卡在 running。"""
+    queue = asyncio.Queue()
+    context = FakeContext(queue)
+    tsr = TestsetRunner(context, VirtualTestRunner(context))
+    gate = asyncio.Event()
+    processed: list[str] = []
+
+    async def handler(event):
+        processed.append(event.message_str)
+        await gate.wait()  # 两条都阻塞：保证 abort 落在「收集中」（wait_done 在等）
+        await event.send(MessageChain().message(f"回复 {event.message_str}"))
+        event.cleanup_temporary_local_files()
+
+    # 与真实 EventBus 一致：每个事件并行处理（串行 consume 会卡在阻塞的 b1 上）
+    async def consume_parallel(queue, handler):
+        while True:
+            event = await queue.get()
+            asyncio.create_task(handler(event))
+
+    task = asyncio.create_task(consume_parallel(queue, handler))
+    try:
+        testset = _make_testset(
+            "ts_6", "批量段取消", [("b1", None), ("b2", None)], batch_ranges=[[0, 1]]
+        )
+        run_id = tsr.start_run(testset, [make_session(1)])
+        # 两条已同时发出（批量段重叠）；两条 handler 都在等 gate ⇒ 收集循环必然
+        # 已阻塞在 wait_done 上，abort 精确落在「收集中」
+        async with asyncio.timeout(5.0):
+            while len(processed) < 2:  # noqa: ASYNC110
+                await asyncio.sleep(0.01)
+        assert tsr.abort(run_id) is True
+        gate.set()
+        async with asyncio.timeout(5.0):
+            while True:
+                rec = tsr.status(run_id)
+                if rec["steps"][0]["status"] == "done":
+                    break
+                await asyncio.sleep(0.01)
+    finally:
+        task.cancel()
+    assert rec["status"] == "cancelled"
+    # 已发出的两条都要落定；旧实现收集循环遇 abort 提前 break，步骤 1 永远 running
+    assert [s["status"] for s in rec["steps"]] == ["done", "done"]
+    assert all(s["test_id"] for s in rec["steps"])
 
 
 def test_testset_runner_list_runs_and_prune():
