@@ -48,7 +48,7 @@ astrbot_plugin_testbench/
 │  ├─ testset_list.js   # 测试集列表/编辑窗口/运行弹窗/导出导入与最近运行（createTestsetList(env)）
 │  ├─ api.js            # bridge 调用的统一封装（listPlatforms/listConfs/...）
 │  ├─ align.js          # 轮次对齐控制器（createAlignController，依赖注入）
-│  ├─ chat.js           # 聊天内容渲染（createChatRenderer：气泡/思维链/轮次分组）
+│  ├─ chat.js           # 聊天内容渲染（createChatRenderer：气泡/思维链/工具调用/轮次分组）
 │  └─ style.css         # 亮/暗主题样式
 ├─ CHANGELOG.md         # 变更记录（[Unreleased] 在上）
 ├─ README.md            # 面向用户的说明
@@ -125,13 +125,14 @@ astrbot_plugin_testbench/
 - `modal.js`：自绘弹窗（iframe 沙箱禁用原生 alert/confirm），回调状态 `modalCallback` 封装在模块内部，对外只暴露 `openModal`/`showModal`/`hideModal`。
 - `group_list.js`：左侧测试组列表与组/会话配置弹窗。`createGroupList(env)` 依赖注入视图动作（toggleOpen/openAll/deleteSession/renderPanels/showRunStatus/updateRunOverview），本模块不 import app.js，模块依赖保持单向。`platformOptions()`/`confOptions()` 是平台/档案下拉选项的共享构建（含「档案已不存在」占位，防静默丢绑定）。
 - `testset_list.js`：左侧测试集列表、**右侧编辑窗口**、运行弹窗、导出 / 导入与最近运行。`createTestsetList(env)` 依赖注入视图动作（showRunStatus/runTestset/viewTestsetRun/switchToTestsets），同样不 import app.js。列表条目是**有名字的条目**（点击选中后右侧打开编辑窗口，不再内联展开）；编辑器按行维护「文本 + 断言类型 + 断言值 + 批量勾选」，**`renderMsgRow` 单行构建 + `collectEditorRows` 反向收集是唯二变化点**，`RULE_TYPES` 定义断言类型选项（无 / contains / not_contains / regex / json / non_empty / min_len / max_len / prefix / suffix）为唯一来源，未来新增测试行为只改这两处 + 后端 `_normalize_messages`；连续勾选「批量」的消息合并为批量段（`collectEditorRows` 丢弃空文本行后按索引连续性合并，`batch_ranges` 引用保留后的消息索引），`#ts-segments` 实时显示段摘要；**脏标记** `dirty`（任一行输入 / 勾选变化置位，切换测试集 / 导入 / 导出 / 运行前确认，`refreshTestsets` 在 dirty 时跳过编辑器重渲染以免异步刷新清掉未保存修改；**未选中任何测试集时编辑窗口按钮（添加消息 / 保存 / 运行 / 导出）仍可见，点击须经 `requireSelected` 给指引提示而非静默无效**）。导出走 Blob `<a download>`（iframe 沙箱含 `allow-downloads`），信封 `{format: "astrbot-testbench-testset", version: 1, name, messages, batch_ranges}` 预留「测试集市场」下载兼容；导入复用 `createTestset` 端点（无新后端接口），`parseTestsetEnvelope` 校验 format/version≤1/name/messages/batch_ranges。运行弹窗目标**三选**：已打开的 / 全部 / 选择测试组（`buildGroupCheckboxes` 组多选 → `selectedGroupSessionIds` 把勾选组解析为该组全部会话 id），`env.runTestset(testset, ids)` 只收会话 id 列表。最近运行条目标注状态 chip（运行中/完成/错误/已取消），运行中条目也可点「查看」续轮询。
-- `chat.js`：`createChatRenderer(alignGetter)` 集中聊天内容渲染（气泡 `bubbleFor` / 思维链 `reasoningSection` / 轮次分组 `groupTurns` 与对齐渲染 `renderAligned`）。align 以 getter 注入（渲染时才取），避免与 `createAlignController` 互相创建的循环依赖；`app.js` 提供 `renderChat` 包装函数注入 align 控制器并传给 align.js 的 env。
+- `chat.js`：`createChatRenderer(alignGetter)` 集中聊天内容渲染（气泡 `bubbleFor` / 思维链 `reasoningSection` / 工具调用 `toolCallBlock` 与工具返回 `toolResultBlock` / 轮次分组 `groupTurns` 与对齐渲染 `renderAligned`）。align 以 getter 注入（渲染时才取），避免与 `createAlignController` 互相创建的循环依赖；`app.js` 提供 `renderChat` 包装函数注入 align 控制器并传给 align.js 的 env。
 - `app.js` 分区：面板（openPanel/loadHistory/历史 JSON 编辑/重新生成）→ 发送（pollRun/pollPending/sendToOne/sendToAll/updateRunOverview）→ 会话操作（重置/删除）→ 面板排序（renderPanels/拖拽/置顶）→ **rail 视图切换**（`showView`：同时驱动左侧列表 `.groups-card` / `.testsets-card` 互斥 **与右侧视图 `.sessions-view` / `.testsets-view` 互斥**——左侧选择自动切换右侧视图、不再手动切换；rail 按钮 active 互斥，点当前视图 toggle 折叠，切到测试集时 `refreshTestsets()`）→ **测试集运行编排**（`runTestset(testset, ids)` 一次启动后端运行（**无 mode**，启动文案含批量段摘要 `segmentSummary`）→ `pollTestsetRun` 每秒轮询 `testsets/run/status`，进度文案按 `segmentLabel` 标注「第 s+1–e+1 步（批量）」、逐步骤显示、完成步数变化时刷新已打开面板历史、终态弹结果表格；**终态总结与表格行尾都单独统计断言未通过（`assertFails`/「断言 ✗ N」）**——断言失败不改会话 status，若总结只数 `status=="error"` 会显示「错误 0」而表格一片 ✗，误导用户；`showTestsetResults` 表格行=步骤、列=会话、单元格含断言 ✓/✗、批量段步骤带「批量」徽标 `batchBadge`；`viewTestsetRun` 从「最近运行」找回并续轮询；`abortTestsetRun` 请求取消，当前步骤完成即止；`runTestsetFromBar` 读 `#run-testset` 下拉对已打开会话执行）→ 选项加载 → 初始化（组装 align/chat/group_list/testset_list，绑定全局事件；`#run-testset` change 启用 / 禁用执行按钮）。`loadOptions()` 拉取 platforms/confs 写入 `state`；`refreshGroups()` 来自 group_list（刷新左侧列表并清理失效面板）。
 - 群发**不阻止重叠发送**（真实「重复追问」场景，与真实平台一致由 pipeline 并发处理）；每个面板底部有在途消息条（`.panel-pending`），`pollPending()` 每秒轮询 `sessions/pending` 接口、`renderPendingStrip` 按会话渲染「已入队 / 排队等待 LLM / LLM 生成中 / 完成」chip（`PENDING_STATUS_TEXT`）；**完成且已刷入会话历史的消息即从条内移除**（`loadHistory` 成功记录 `historyRefreshedAt`，过滤掉 `status=="done"` 且完成于该时刻之前的条目，条内只留真正在途与完成后的短暂过渡）；strip 在 `.chat` 外不干扰轮次对齐，显隐变化后按需 `reflowAlign()`。
 - 左侧布局：最左为 `.ui-rail` UI 窄条（方形按钮，当前 2 个「会话列表」/「测试集」，点击切换视图，点当前视图按钮折叠/展开侧栏，为后续扩展预留）；侧栏有两个互斥视图：`.groups-card`——「＋ 新建测试组」块（点击创建默认配置组并弹编辑弹窗）+ 测试组块（可展开组内会话），组头操作：打开全部 / ＋新增 / ✎编辑 / ✕删除，会话行头点击展开配置（`renderSessionConfig` 每行显示有效值 + 「已修改/继承组」chip，`sessionOverrides` 统计已单独修改的项），会话操作按钮：打开 / 删除（配置修改走展开配置中的「编辑配置」弹窗，「重置」在已打开会话的面板页眉）；`.testsets-card`——「＋ 新建测试集」块 + **纯命名条目**（名字 + N 条消息徽标 + 选中高亮，无内联展开 / 无行内操作按钮，点击 → `selectTestset` 打开右侧编辑窗口）+ 底部「最近运行」区。
 - 工作区（`.workspace`）为 flex 列布局：顶部 `#workspace-strip` 常显状态条（运行状态 + 取消按钮，两个视图下都常显）；`.sessions-view`——`.panels-block`（包裹已打开会话面板 + 空态提示，flex:1）、`#align-bar`、`.run-bar` 两行（第 1 行群发输入 + 发送到全部 + 轮次对齐；第 2 行 `#run-testset` 测试集下拉 + `#btn-run-testset` 执行 + `#run-overview`）；`.testsets-view`（初始 hidden）——`.testset-editor` 编辑窗口。`.sessions-view` / `.testsets-view` 必须带 `[hidden]{display:none}` 特例（flex 列元素与 HTML hidden 的已知陷阱，沿用 groups-card）。
 - 面板页眉为多行 flex 布局：标题与徽标包在 `.panel-info`（`flex-wrap: wrap`）内随内容换行撑开页眉，`.panel-actions` 的「编辑 / 重置 / 置顶 / 关闭」按钮始终第一行右对齐；`refreshPanelHead()` / `openPanel()` 都维护该结构。
-- 气泡渲染 `bubbleFor(msg)` 用 `extractParts(msg.content)` 拆分**思维链**（`ThinkPart`，`{type:"think", think:"..."}`）与正文：带推理内容的回复渲染 `.reasoning-wrap`（原生 `<details>`，默认收起，summary 即「展开/收起思维链」按钮）；旧格式的 `assistant_reasoning` / `reasoning` 角色整条按思维链处理。`<details>` 的 `toggle` 事件在轮次对齐模式下 `requestAnimationFrame(() => align.reflowAlign())` 重排高度。
+- 气泡渲染 `bubbleFor(msg, index, ctx)` 用 `extractParts(msg.content)` 拆分**思维链**（`ThinkPart`，`{type:"think", think:"..."}`）与正文：带推理内容的回复渲染 `.reasoning-wrap`（原生 `<details>`，默认收起，summary 即「展开/收起思维链」按钮）；旧格式的 `assistant_reasoning` / `reasoning` 角色整条按思维链处理。`<details>` 的 `toggle` 事件在轮次对齐模式下 `requestAnimationFrame(() => align.reflowAlign())` 重排高度。
+- **工具调用 / 工具返回气泡**（OpenAI 格式历史：助手消息经 `msg.tool_calls`（`{id, function:{name, arguments}}` 数组）携带工具调用，content 部件只有 text/think/image_url/audio_url，工具调用不作为 content 部件；返回为 `role:"tool"` 消息 + `tool_call_id`）：助手消息逐个渲染 `.tool-call` 气泡（`<details>`，summary 即工具名、默认收起，展开显示 `prettyArgs` 美化后的参数 JSON；非 JSON 参数原样）；`role:"tool"` 渲染 `.tool-result` 气泡（头部经 `ctx.toolNames` 用 `tool_call_id` 关联标注「工具返回 · <工具名>」，正文即返回内容）。`ctx = {toolNames: {}}` 是每次 `renderHistory`/`renderAligned` 调用共享的渲染上下文（跨消息收集 id → 工具名），两次渲染循环都创建并传给 `bubbleFor`；`toolCallBlock`/`toolResultBlock` 的 `<details>` toggle 同样在轮次对齐模式下重排高度。思维链内出现工具调用（think 部件与 tool_calls 同消息）时，工具调用以独立气泡紧随思维链渲染，不再以裸文本挂在思维链下。
 - 对话历史编辑走**面板头部「历史」按钮的 JSON 编辑器**（`openHistoryEditor`）：直接编辑 `{conversations: [...]}` 全结构，保存调 `saveHistory` 整体替换（编辑/新增/删除对话都在 JSON 里完成）；单条气泡只保留「重新生成」。不做复杂的单轮编辑 UI——没有能力修改结构化历史的用户不建议自己改。
 - `align.js`：`createAlignController(env)` 依赖注入访问器（getOpenIds/getPanelEls/getHistoryCache/getPanelsEl/renderChat），实现轮次对齐 + 滚动同步。
 - `index.html` 的 `<select>` 是静态骨架：`create-platform` 初始为空（`loadOptions()` 填充后默认项为「默认（webchat）」）、`create-conf` 只有 `<option value="">默认配置</option>`，**必须由 loadOptions() 填充**。
@@ -173,7 +174,7 @@ astrbot_plugin_testbench/
 ## 测试与验证
 
 > **开发流程（2026-08-05 起）**：本地**不跑**测试，修改直接提交推送到 `dev` 分支，
-> 由 GitHub Actions 自动把关——push 到 dev 触发 `pytest.yml`（120 个测试 +
+> 由 GitHub Actions 自动把关——push 到 dev 触发 `pytest.yml`（121 个测试 +
 > 前端 JS 语法检查 `js-check`：node --check 九个页面脚本）+ `ruff-format.yml`；
 > dev 验证通过后合并到 `main`，metadata.yaml 变更即触发 release.yml 自动发版。
 > 本地命令（下面的 pytest/ruff）仅在需要主动排查时使用。
@@ -181,7 +182,7 @@ astrbot_plugin_testbench/
 测试随插件仓库维护（`tests/`，可与主仓库无关地推送、供协作者运行）。
 
 - `tests/test_backend.py`：后端单元测试（107 个），需要 astrbot（PyPI 包，插件运行时依赖）。以 **namespace package** 加载插件：`sys.path.insert(0, str(REPO_ROOT.parent))` 后 `import astrbot_plugin_testbench.*`——插件模块用相对导入（`from .group_store import ...`），必须按包加载，这与 AstrBot 在 data/plugins 下加载插件的方式一致。未安装 astrbot 时整组跳过（`pytest.importorskip`）。
-- `tests/test_frontend.py`：前端脚本静态检查（13 个），零依赖，任何环境可运行。
+- `tests/test_frontend.py`：前端脚本静态检查（14 个），零依赖，任何环境可运行。
 
 本地运行（用主仓库 venv，bash cwd 不稳定，命令先 `cd /e/AstrBot` 或 `git -C` 插件目录）：
 

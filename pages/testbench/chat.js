@@ -1,9 +1,14 @@
-// chat.js — 会话面板聊天内容渲染（气泡 / 思维链 / 轮次分组与对齐渲染）
+// chat.js — 会话面板聊天内容渲染（气泡 / 思维链 / 工具调用 / 轮次分组与对齐渲染）
 // 由 app.js 通过 createChatRenderer(alignGetter) 创建。alignGetter 返回轮次
 // 对齐控制器，仅在渲染时调用——对齐控制器创建时又把 renderChat 注入其 env，
 // 若在创建时直接传入 align 对象会形成互相创建的循环依赖。
 // 与 align.js 的 createAlignController(env) 同模式：控制器持有视图状态，渲染
 // 依赖的数据（会话/历史缓存等）由 app.js 通过 env/闭包注入。
+// 历史消息为 OpenAI 格式 dict：助手消息经 msg.tool_calls（{id, function:
+// {name, arguments}} 数组）携带工具调用（content 部件只有 text/think/image_url/
+// audio_url，工具调用不作为 content 部件），工具返回为 role:"tool" 消息并以
+// tool_call_id 关联调用。渲染时以 ctx.toolNames 收集 id → 工具名，使工具返回
+// 气泡能标注「哪个工具的返回」。
 
 export function createChatRenderer(alignGetter) {
   function isAlignMode() {
@@ -27,10 +32,11 @@ export function createChatRenderer(alignGetter) {
     chat.classList.remove("aligned");
     let count = 0;
     let idx = 0;
+    const ctx = { toolNames: {} };
     for (const conv of conversations) {
       for (const msg of conv.history || []) {
         count++;
-        chat.appendChild(bubbleFor(msg, idx));
+        chat.appendChild(bubbleFor(msg, idx, ctx));
         idx++;
       }
     }
@@ -67,12 +73,13 @@ export function createChatRenderer(alignGetter) {
     chat.classList.add("aligned");
     let count = 0;
     let idx = 0;
+    const ctx = { toolNames: {} };
     for (const conv of conversations) {
       for (const turn of groupTurns(conv.history)) {
         const wrap = document.createElement("div");
         wrap.className = "turn-wrap";
         for (const msg of turn.messages) {
-          wrap.appendChild(bubbleFor(msg, idx));
+          wrap.appendChild(bubbleFor(msg, idx, ctx));
           idx++;
         }
         chat.appendChild(wrap);
@@ -129,9 +136,73 @@ export function createChatRenderer(alignGetter) {
     return details;
   }
 
-  function bubbleFor(msg, index) {
+  // 工具调用参数美化：JSON 字符串解析后按 2 空格缩进输出，非 JSON / 对象原样处理
+  function prettyArgs(raw) {
+    if (raw == null || raw === "") return "（无参数）";
+    if (typeof raw === "string") {
+      try {
+        return JSON.stringify(JSON.parse(raw), null, 2);
+      } catch {
+        return raw;
+      }
+    }
+    try {
+      return JSON.stringify(raw, null, 2);
+    } catch {
+      return String(raw);
+    }
+  }
+
+  // 单个工具调用气泡：summary 即工具名，展开查看参数（默认收起，防长参数撑开面板）
+  function toolCallBlock(tool, ctx) {
+    const id = (tool && tool.id) || "";
+    const name =
+      (tool && tool.function && tool.function.name) ||
+      (tool && tool.name) ||
+      "工具调用";
+    if (ctx && id) ctx.toolNames[id] = name;
+    const details = document.createElement("details");
+    details.className = "tool-call";
+    const summary = document.createElement("summary");
+    const nameEl = document.createElement("span");
+    nameEl.className = "tool-call-name";
+    nameEl.textContent = name;
+    summary.appendChild(nameEl);
+    details.appendChild(summary);
+    const body = document.createElement("div");
+    body.className = "tool-call-args";
+    body.textContent = prettyArgs(
+      tool && tool.function ? tool.function.arguments : tool && tool.arguments
+    );
+    details.appendChild(body);
+    details.addEventListener("toggle", () => {
+      if (isAlignMode()) requestAnimationFrame(() => reflowAlign());
+    });
+    return details;
+  }
+
+  // 工具返回气泡：头部标注「哪个工具的返回」（经 tool_call_id 关联），正文为返回内容
+  function toolResultBlock(msg, ctx) {
+    const { text } = extractParts(msg.content);
+    const linked =
+      ctx && msg.tool_call_id ? ctx.toolNames[msg.tool_call_id] : null;
+    const wrap = document.createElement("div");
+    wrap.className = "tool-result";
+    const head = document.createElement("div");
+    head.className = "tool-result-head";
+    head.textContent = linked ? `工具返回 · ${linked}` : "工具返回";
+    wrap.appendChild(head);
+    const body = document.createElement("div");
+    body.className = "tool-result-body";
+    body.textContent = text || "（无返回内容）";
+    wrap.appendChild(body);
+    return wrap;
+  }
+
+  function bubbleFor(msg, index, ctx) {
     const role = msg.role || "";
     const { reasoning, text } = extractParts(msg.content);
+    const tools = Array.isArray(msg.tool_calls) ? msg.tool_calls : null;
     const el = document.createElement("div");
     el.dataset.index = String(index);
     if (role === "user") {
@@ -142,21 +213,22 @@ export function createChatRenderer(alignGetter) {
       el.className = "msg bot";
       el.appendChild(reasoningSection(reasoning || text || "（推理过程）"));
     } else if (role === "tool") {
+      // 工具返回：结构化气泡（不再是裸文本）
       el.className = "msg tool";
-      el.textContent = text || "（工具调用）";
+      el.appendChild(toolResultBlock(msg, ctx));
     } else if (role === "system") {
       el.className = "msg meta";
       el.textContent = text || "（系统消息）";
     } else {
-      // assistant 等其余角色：正文 + 可折叠思维链
+      // assistant 等其余角色：正文 + 可折叠思维链 + 工具调用气泡（按出现顺序）
       el.className = "msg bot";
       if (reasoning) el.appendChild(reasoningSection(reasoning));
-      if (!text && msg.tool_calls && msg.tool_calls.length) {
-        el.appendChild(document.createTextNode("（调用工具…）"));
-        el.classList.add("tool");
-      } else if (text) {
+      if (tools && tools.length) {
+        for (const t of tools) el.appendChild(toolCallBlock(t, ctx));
+      }
+      if (text) {
         el.appendChild(document.createTextNode(text));
-      } else if (!reasoning) {
+      } else if (!reasoning && !(tools && tools.length)) {
         el.appendChild(document.createTextNode("…"));
       }
     }

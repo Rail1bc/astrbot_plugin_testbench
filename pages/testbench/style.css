@@ -1145,6 +1145,66 @@ code {
   margin-bottom: 6px;
 }
 
+/* 工具调用气泡：summary 即工具名，展开查看参数 */
+.tool-call {
+  margin: 4px 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--border) 12%, transparent);
+  overflow: hidden;
+}
+
+.tool-call summary {
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+  padding: 4px 10px;
+  font-size: 12px;
+  color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 10%, transparent);
+}
+
+.tool-call summary::-webkit-details-marker {
+  display: none;
+}
+
+.tool-call-name {
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-weight: 600;
+}
+
+.tool-call-args {
+  padding: 6px 10px;
+  font-size: 12px;
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text-secondary);
+  border-top: 1px solid var(--border);
+}
+
+/* 工具返回气泡：头部标注关联工具名，正文为返回内容 */
+.tool-result {
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  padding: 4px 10px;
+  text-align: left;
+}
+
+.tool-result-head {
+  font-size: 11px;
+  color: var(--primary);
+  opacity: 0.85;
+  margin-bottom: 2px;
+}
+
+.tool-result-body {
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 /* 气泡悬停操作（重新生成） */
 .msg-actions {
   display: none;

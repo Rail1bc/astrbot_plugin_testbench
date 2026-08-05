@@ -196,6 +196,24 @@ def test_frontend_broadcast_does_not_block_overlap():
     )
 
 
+def test_frontend_tool_call_and_result_bubbles():
+    """会话视图须把工具调用 / 工具返回渲染为结构化气泡。
+
+    曾只有「（调用工具…）」裸占位与纯文本工具返回：助手消息带 tool_calls 时
+    不显示工具名与参数、工具返回消息无标签包裹（工具调用显得「挂在思维链上」）。
+    现须：按 msg.tool_calls 逐个渲染 .tool-call 气泡（summary 含 function.name、
+    参数区为美化后 JSON），tool 角色消息渲染 .tool-result 气泡，并经 ctx.toolNames
+    用 tool_call_id 关联出「哪个工具的返回」。
+    """
+    src = _read_module("chat")
+    assert "toolCallBlock" in src, "缺少工具调用气泡构建函数 toolCallBlock"
+    assert "toolResultBlock" in src, "缺少工具返回气泡构建函数 toolResultBlock"
+    assert "tool-call-args" in src, "工具调用气泡缺少参数区 tool-call-args"
+    assert "toolNames" in src, "缺少 tool_call_id → 工具名的关联映射 ctx.toolNames"
+    assert "tool-result-head" in src, "工具返回气泡缺少头部标注"
+    assert "（调用工具…）" not in src, "旧的裸「（调用工具…）」占位仍存在"
+
+
 def test_frontend_pending_status_labels():
     """面板在途条须覆盖四个状态文案（已入队/排队等待 LLM/LLM 生成中/完成）。
 
