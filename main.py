@@ -45,6 +45,12 @@ _ROUTES: tuple[tuple[str, str, list[str], str], ...] = (
         ["POST"],
         "向测试组内新增虚拟会话",
     ),
+    (
+        "/groups/<group_id>/update",
+        "update_group",
+        ["POST"],
+        "更新测试组配置（组配置变更同步应用到仍继承组配置的会话）",
+    ),
     ("/sessions", "list_sessions", ["GET"], "列出全部虚拟会话（已解析最终配置）"),
     (
         "/sessions/update",
@@ -228,6 +234,39 @@ class VirtualSessionPlugin(Star):
             sessions = [self.group_mgr.effective(group, s) for s in created]
             await self._apply_conf_routes(sessions, conf_id)
         return json_response(created)
+
+    async def update_group(self, group_id: str):
+        """更新测试组配置；组平台/档案变更会同步应用到仍继承组配置的会话。
+
+        会话已单独覆盖的字段不受组配置变更影响（会话覆盖优先）。平台变更使
+        umo 变化：清理旧 umo 的路由，再按新的有效配置同步。
+        """
+        payload = await request.json(default={})
+        group = self.group_mgr.get_group(group_id)
+        if group is None:
+            return error_response("未找到该测试组", status_code=404)
+
+        updates: dict[str, Any] = {}
+        for key in ("name", "platform_id", "conf_id", "sender_id", "sender_name"):
+            if key not in payload:
+                continue
+            value = payload[key]
+            updates[key] = value if isinstance(value, str) and value else None
+
+        old_sessions = [self.group_mgr.effective(group, s) for s in group["sessions"]]
+        self.group_mgr.update_group(group_id, **updates)
+        updated = self.group_mgr.get_group(group_id)
+        if updated is None:
+            return error_response("未找到该测试组", status_code=404)
+
+        for old, session in zip(old_sessions, updated["sessions"]):
+            new = self.group_mgr.effective(updated, session)
+            if old["platform_id"] != new["platform_id"]:
+                await delete_route_if_exists(
+                    self.context.astrbot_config_mgr.ucr, umo_of(old)
+                )
+            await self._sync_conf_route(new)
+        return json_response(updated)
 
     # ---------- 会话 ----------
 

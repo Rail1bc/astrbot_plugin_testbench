@@ -245,6 +245,41 @@ class VirtualGroupManager:
             self._save()
         return group, session
 
+    def update_group(
+        self,
+        group_id: str,
+        *,
+        name: Any = _UNSET,
+        platform_id: Any = _UNSET,
+        conf_id: Any = _UNSET,
+        sender_id: Any = _UNSET,
+        sender_name: Any = _UNSET,
+    ) -> dict | None:
+        """更新测试组配置。
+
+        字段值为 None 表示恢复默认（平台/档案空串归一为 None）；组名空串回退
+        「测试组」。已单独覆盖的会话配置不受影响（仍以会话覆盖优先）。返回更新
+        后的组，组不存在时返回 None。
+        """
+        group = self.get_group(group_id)
+        if group is None:
+            return None
+        for key, value in {
+            "name": name,
+            "platform_id": platform_id,
+            "conf_id": conf_id,
+            "sender_id": sender_id,
+            "sender_name": sender_name,
+        }.items():
+            if value is not _UNSET:
+                if key in ("platform_id", "conf_id") and value == "":
+                    value = None
+                group[key] = value
+        if not (group.get("name") or "").strip():
+            group["name"] = "测试组"
+        self._save()
+        return group
+
     # ---------- 配置解析 ----------
 
     @staticmethod

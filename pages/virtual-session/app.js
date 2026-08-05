@@ -16,6 +16,7 @@ import {
   runStatus,
   runTest,
   saveHistory,
+  updateGroup,
   updateSession,
 } from "./api.js";
 
@@ -30,6 +31,9 @@ const panelEls = new Map();
 const historyCache = new Map();
 let runBusy = false;
 let expandedGroups = new Set();
+let expandedSessions = new Set();
+
+const MAX_SESSIONS = 500;
 
 function escapeHtml(value) {
   if (value === null || value === undefined) return "";
@@ -176,8 +180,19 @@ function renderGroupList() {
   const list = $("group-list");
   list.innerHTML = "";
   $("group-count").textContent = groups.length ? `${groups.length} 个测试组` : "";
+
+  // 列表内「＋」块：点击创建默认配置的测试组
+  const add = document.createElement("button");
+  add.className = "add-block";
+  add.textContent = "＋ 新建测试组";
+  add.addEventListener("click", handleAddGroup);
+  list.appendChild(add);
+
   if (!groups.length) {
-    list.innerHTML = '<div class="empty">暂无测试组，请先创建</div>';
+    const empty = document.createElement("div");
+    empty.className = "empty";
+    empty.textContent = "暂无测试组，点上方「＋」创建";
+    list.appendChild(empty);
     return;
   }
   for (const g of groups) {
@@ -199,8 +214,9 @@ function renderGroupList() {
       `<span class="badge">${sessions.length} 会话</span>` +
       `<span class="group-actions">` +
       `<button class="btn small" data-action="open-all">打开全部</button>` +
-      `<button class="btn small" data-action="add">新增会话</button>` +
-      `<button class="btn small danger" data-action="delete-group">删除组</button>` +
+      `<button class="icon-btn" data-action="add" title="新增会话">＋</button>` +
+      `<button class="icon-btn" data-action="edit" title="编辑测试组">✎</button>` +
+      `<button class="icon-btn danger" data-action="delete-group" title="删除组">✕</button>` +
       `</span>` +
       `</div>` +
       `<div class="group-meta">${platformBadge}${confBadge}</div>` +
@@ -215,54 +231,109 @@ function renderGroupList() {
     });
     item.querySelector('[data-action="open-all"]').addEventListener("click", () => openAll(g.id));
     item.querySelector('[data-action="add"]').addEventListener("click", () => promptAddSessions(g.id));
+    item.querySelector('[data-action="edit"]').addEventListener("click", () => openGroupSettings(g.id));
     item.querySelector('[data-action="delete-group"]').addEventListener("click", () => deleteGroup(g.id));
 
-    // 会话行操作
-    item.querySelectorAll(".session-item [data-action]").forEach((btn) => {
-      const sid = btn.closest(".session-item").dataset.id;
-      const action = btn.dataset.action;
-      if (action === "open") btn.addEventListener("click", () => toggleOpen(sid));
-      else if (action === "config") btn.addEventListener("click", () => openSettings(sid));
-      else if (action === "reset") btn.addEventListener("click", () => resetHistory(sid));
-      else if (action === "delete") btn.addEventListener("click", () => deleteSession(sid));
+    // 会话行：头部点击展开配置，按钮走各自操作
+    item.querySelectorAll(".session-item").forEach((sItem) => {
+      const sid = sItem.dataset.id;
+      const sHead = sItem.querySelector(".session-head");
+      if (sHead) {
+        sHead.addEventListener("click", (e) => {
+          if (e.target.closest("button")) return;
+          toggleSession(sid);
+        });
+      }
+      sItem.querySelectorAll("[data-action]").forEach((btn) => {
+        const action = btn.dataset.action;
+        if (action === "open") btn.addEventListener("click", () => toggleOpen(sid));
+        else if (action === "config") btn.addEventListener("click", () => openSettings(sid));
+        else if (action === "reset") btn.addEventListener("click", () => resetHistory(sid));
+        else if (action === "delete") btn.addEventListener("click", () => deleteSession(sid));
+      });
     });
     list.appendChild(item);
   }
 }
 
+// 统计会话中「已单独修改」的配置项（不再继承组配置）
+function sessionOverrides(s) {
+  const list = [];
+  if (s.platform_id != null && s.platform_id !== "") list.push("平台");
+  if (s.conf_id != null) list.push("档案");
+  if (s.sender_id) list.push("发送者ID");
+  if (s.sender_name) list.push("发送者昵称");
+  return list;
+}
+
+// 会话展开的配置行：显示有效值 + 该项是「已修改」还是「继承组」
+function renderSessionConfig(s, v) {
+  const rows = [
+    ["平台来源", s.platform_id != null && s.platform_id !== "", v.platform_id, platformName(v.platform_id)],
+    ["配置档案", s.conf_id != null, v.conf_id, v.conf_id ? confName(v.conf_id) : "默认"],
+    ["发送者ID", Boolean(s.sender_id), v.sender_id, v.sender_id || "—"],
+    ["发送者昵称", Boolean(s.sender_name), v.sender_name, v.sender_name || "—"],
+  ];
+  return (
+    `<div class="session-config">` +
+    rows
+      .map(
+        ([label, over, , value]) =>
+          `<div class="cfg-row">` +
+          `<span class="cfg-label">${label}</span>` +
+          `<code class="cfg-value">${escapeHtml(value)}</code>` +
+          `<span class="chip ${over ? "override" : "inherit"}">${over ? "已修改" : "继承组"}</span>` +
+          `</div>`,
+      )
+      .join("") +
+    `<div class="cfg-foot">` +
+    `<button class="btn small" data-action="config">编辑配置</button>` +
+    `<span class="hint">未修改项跟随组配置</span>` +
+    `</div>` +
+    `</div>`
+  );
+}
+
 function renderGroupSessions(g) {
   const sessions = g.sessions || [];
-  if (!sessions.length) return '<div class="empty">组内暂无会话，点「新增会话」添加</div>';
+  if (!sessions.length) return '<div class="empty">组内暂无会话，点组名右侧「＋」添加</div>';
   return sessions
     .map((s) => {
       const v = effectiveView(s.id);
       const isOpen = openIds.includes(s.id);
-      const overrides = [
-        ["平台", s.platform_id],
-        ["档案", s.conf_id === "" ? "默认(不绑定)" : s.conf_id],
-        ["发送者", s.sender_id || s.sender_name],
-      ].filter(([, val]) => val);
+      const overrides = sessionOverrides(s);
       const overBadge = overrides.length
-        ? `<span class="badge warn" title="覆盖组配置：${escapeHtml(overrides.map(([k, val]) => `${k}=${val}`).join(", "))}">覆盖${overrides.length}</span>`
+        ? `<span class="badge warn" title="已单独修改：${escapeHtml(overrides.join("、"))}">已改${overrides.length}</span>`
         : "";
+      const sExpanded = expandedSessions.has(s.id);
       return (
         `<div class="session-item" data-id="${escapeHtml(s.id)}">` +
-        `<div class="name">${escapeHtml(s.name || s.id)}</div>` +
+        `<div class="session-head">` +
+        `<span class="group-toggle">${sExpanded ? "▾" : "▸"}</span>` +
+        `<span class="name">${escapeHtml(s.name || s.id)}</span>` +
+        overBadge +
+        `<span class="session-actions">` +
+        `<button class="btn small" data-action="open">${isOpen ? "关闭" : "打开"}</button>` +
+        `<button class="btn small" data-action="config">配置</button>` +
+        `<button class="btn small" data-action="reset">重置</button>` +
+        `<button class="btn small danger" data-action="delete">删除</button>` +
+        `</span>` +
+        `</div>` +
         `<div class="session-meta">` +
         `<span class="badge">${escapeHtml(platformName(v.platform_id))}</span>` +
         (v.conf_id ? `<span class="badge conf">${escapeHtml(confName(v.conf_id))}</span>` : "") +
-        overBadge +
         `</div>` +
-        `<div class="session-actions">` +
-        `<button class="btn small" data-action="open">${isOpen ? "关闭" : "打开"}</button>` +
-        `<button class="btn small" data-action="config">设置</button>` +
-        `<button class="btn small" data-action="reset">重置</button>` +
-        `<button class="btn small danger" data-action="delete">删除</button>` +
-        `</div>` +
+        (sExpanded ? renderSessionConfig(s, v) : "") +
         `</div>`
       );
     })
     .join("");
+}
+
+function toggleSession(id) {
+  if (expandedSessions.has(id)) expandedSessions.delete(id);
+  else expandedSessions.add(id);
+  renderGroupList();
 }
 
 function toggleGroup(id) {
@@ -324,6 +395,115 @@ function deleteGroup(gid) {
       },
     },
   );
+}
+
+// 「＋」块：创建默认配置的测试组，随后弹出编辑弹窗
+async function handleAddGroup() {
+  try {
+    const group = await createGroup({ count: 1 });
+    expandedGroups.add(group.id);
+    await refreshGroups();
+    openGroupSettings(group.id);
+  } catch (err) {
+    showModal("创建失败: " + err.message);
+  }
+}
+
+function buildPlatformSelect(current) {
+  const sel = document.createElement("select");
+  sel.innerHTML =
+    `<option value="">默认（webchat）</option>` +
+    platforms
+      .map(
+        (p) =>
+          `<option value="${escapeHtml(p.id)}">${escapeHtml(p.id)}（${escapeHtml(p.display_name || p.name)}）</option>`,
+      )
+      .join("");
+  if (current) sel.value = current;
+  return sel;
+}
+
+function buildConfSelect(current) {
+  const options = confs.filter((c) => c.id !== "default");
+  // 已绑定的档案若已被删除，保留占位选项，避免保存时静默丢失绑定
+  if (current && !options.some((c) => c.id === current)) {
+    options.unshift({ id: current, name: `${current}（档案已不存在）` });
+  }
+  const sel = document.createElement("select");
+  sel.innerHTML =
+    `<option value="">默认配置</option>` +
+    options
+      .map((c) => `<option value="${escapeHtml(c.id)}">${escapeHtml(c.name)}</option>`)
+      .join("");
+  if (current) sel.value = current;
+  return sel;
+}
+
+// 测试组编辑弹窗：组名 / 会话数量 / 平台来源 / 配置档案 / 发送者 id 与昵称
+function openGroupSettings(gid) {
+  const g = groups.find((x) => x.id === gid);
+  if (!g) return;
+  const sessions = g.sessions || [];
+
+  const inpName = document.createElement("input");
+  inpName.type = "text";
+  inpName.value = g.name || "";
+
+  const inpCount = document.createElement("input");
+  inpCount.type = "number";
+  inpCount.min = "1";
+  inpCount.max = String(MAX_SESSIONS);
+  inpCount.value = String(Math.max(1, sessions.length));
+
+  const selP = buildPlatformSelect(g.platform_id);
+  const selC = buildConfSelect(g.conf_id);
+
+  const inpId = document.createElement("input");
+  inpId.type = "text";
+  inpId.placeholder = "留空使用默认 testbench";
+  inpId.value = g.sender_id || "";
+
+  const inpName2 = document.createElement("input");
+  inpName2.type = "text";
+  inpName2.placeholder = "留空使用默认 测试台";
+  inpName2.value = g.sender_name || "";
+
+  const form = document.createElement("div");
+  form.className = "form-col";
+  form.append(
+    field("组名", inpName),
+    field("会话数量（保存时若少于该值将自动新增）", inpCount),
+    field("平台来源", selP),
+    field("配置档案", selC),
+    field("发送者ID", inpId),
+    field("发送者昵称", inpName2),
+  );
+
+  openModal({
+    title: `编辑测试组 · ${g.name}`,
+    content: form,
+    okText: "保存",
+    onOk: async () => {
+      const count = parseInt(inpCount.value, 10);
+      if (!Number.isInteger(count) || count < 1 || count > MAX_SESSIONS) {
+        throw new Error(`会话数量必须是 1-${MAX_SESSIONS} 的整数`);
+      }
+      await updateGroup({
+        id: gid,
+        name: inpName.value.trim() || null,
+        platform_id: selP.value || null,
+        conf_id: selC.value || null,
+        sender_id: inpId.value.trim() || null,
+        sender_name: inpName2.value.trim() || null,
+      });
+      const cur = (groups.find((x) => x.id === gid) || {}).sessions || [];
+      if (count > cur.length) {
+        await addGroupSessions(gid, count - cur.length);
+      }
+      await refreshGroups();
+      showRunStatus("ok", "测试组配置已更新");
+    },
+  });
 }
 
 function openSettings(sid) {
@@ -467,7 +647,7 @@ function openPanel(id) {
     groupBadge + platformBadge + confBadge +
     `</span>` +
     `<span class="panel-actions">` +
-    `<button class="icon-btn" data-action="history" title="编辑对话历史（JSON）">历史</button>` +
+    `<button class="icon-btn" data-action="history" title="编辑对话历史（JSON）">编辑</button>` +
     `<button class="icon-btn" data-action="pin" title="置顶">置顶</button>` +
     `<button class="icon-btn" data-action="close" title="关闭">✕</button>` +
     `</span>` +
@@ -517,7 +697,7 @@ function renderChat(panel, conversations) {
   return chat.renderChat(panel, conversations);
 }
 
-// 面板头部「历史」：以 JSON 编辑器整体查看 / 替换该会话的对话历史。
+// 面板头部「编辑」：以 JSON 编辑器整体查看 / 替换该会话的对话历史。
 // 结构即 /sessions/<id>/history 返回的 { conversations: [...] }；编辑、
 // 新增（不带 conversation_id）、删除对话都通过直接修改 JSON 完成。
 async function openHistoryEditor(id) {
@@ -790,39 +970,6 @@ function deleteSession(id) {
   });
 }
 
-// ---------- 创建 ----------
-
-async function handleCreateGroup() {
-  const count = parseInt($("create-count").value, 10);
-  if (!Number.isInteger(count) || count < 1) {
-    showModal("数量必须是大于 0 的整数");
-    return;
-  }
-  const platformId = $("create-platform").value;
-  const confId = $("create-conf").value;
-  const btn = $("btn-create");
-  btn.disabled = true;
-  try {
-    const group = await createGroup({
-      name: $("create-group-name").value,
-      count,
-      platform_id: platformId || undefined,
-      conf_id: confId || undefined,
-      sender_id: $("create-sender-id").value || undefined,
-      sender_name: $("create-sender-name").value || undefined,
-      name_prefix: $("create-name-prefix").value || undefined,
-    });
-    await refreshGroups();
-    expandedGroups.add(group.id);
-    renderGroupList();
-    showRunStatus("ok", `已创建测试组「${group.name}」，含 ${(group.sessions || []).length} 个会话`);
-  } catch (err) {
-    showModal("创建失败: " + err.message);
-  } finally {
-    btn.disabled = false;
-  }
-}
-
 // ---------- 面板排序 ----------
 
 function visibleOrder() {
@@ -908,7 +1055,7 @@ panelsEl.addEventListener("dragend", () => {
   document.querySelectorAll(".panel.dragging").forEach((p) => p.classList.remove("dragging"));
 });
 
-// 气泡悬停操作：重新生成某轮（整体历史的编辑走面板头部「历史」）
+// 气泡悬停操作：重新生成某轮（整体历史的编辑走面板头部「编辑」）
 panelsEl.addEventListener("click", (e) => {
   const btn = e.target.closest('[data-action="regenerate"]');
   if (!btn) return;
@@ -939,30 +1086,21 @@ async function loadOptions() {
     console.warn("加载配置档案失败:", err);
     confs = [];
   }
-  // 默认平台即 webchat（后端 DEFAULT_PLATFORM_ID），空值表示使用默认；其余为已启用的真实平台
-  $("create-platform").innerHTML =
-    '<option value="">默认（webchat）</option>' +
-    platforms
-      .map(
-        (p) =>
-          `<option value="${escapeHtml(p.id)}">${escapeHtml(p.id)}（${escapeHtml(p.display_name || p.name)}）</option>`,
-      )
-      .join("");
-  $("create-conf").innerHTML =
-    '<option value="">默认配置</option>' +
-    confs
-      .filter((c) => c.id !== "default")
-      .map((c) => `<option value="${escapeHtml(c.id)}">${escapeHtml(c.name)}</option>`)
-      .join("");
 }
 
 // ---------- 初始化 ----------
 
-$("btn-create").addEventListener("click", handleCreateGroup);
 $("btn-refresh").addEventListener("click", refreshGroups);
 $("btn-run-all").addEventListener("click", sendToAll);
 $("run-text").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.isComposing) sendToAll();
+});
+
+// UI 窄条：会话列表按钮折叠/展开左侧列表（为后续扩展的其他视图预留）
+const railSessionBtn = document.querySelector('.rail-btn[data-view="sessions"]');
+railSessionBtn.addEventListener("click", () => {
+  const collapsed = document.body.classList.toggle("sidebar-collapsed");
+  railSessionBtn.classList.toggle("active", !collapsed);
 });
 
 const align = createAlignController({

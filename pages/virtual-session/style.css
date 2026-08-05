@@ -63,6 +63,49 @@ body {
   min-height: 0;
 }
 
+/* ---------- UI 窄条（方形按钮，供后续扩展） ---------- */
+
+.ui-rail {
+  width: 40px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding-top: 16px;
+}
+
+.rail-btn {
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--card-bg);
+  color: var(--text-secondary);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.rail-btn:hover {
+  color: var(--text);
+  filter: brightness(1.05);
+}
+
+.rail-btn.active {
+  background: var(--primary);
+  color: var(--primary-text);
+  border-color: var(--primary);
+}
+
+body.sidebar-collapsed .sidebar {
+  display: none;
+}
+
 .workspace {
   flex: 1;
   display: flex;
@@ -231,6 +274,10 @@ textarea:focus {
   margin-bottom: 10px;
 }
 
+.toolbar-spacer {
+  flex: 1;
+}
+
 .count-label {
   color: var(--text-secondary);
   font-size: 12px;
@@ -302,10 +349,21 @@ code {
   gap: 6px;
 }
 
-.session-item .name {
+.session-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.session-head .name {
   font-weight: 600;
   font-size: 13px;
-  word-break: break-all;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .session-meta {
@@ -315,8 +373,65 @@ code {
 }
 
 .session-actions {
+  margin-left: auto;
   display: flex;
-  gap: 6px;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+/* 会话展开的配置行：有效值 + 「已修改 / 继承组」状态 */
+.session-config {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding-top: 8px;
+  margin-top: 2px;
+  border-top: 1px dashed var(--border);
+}
+
+.cfg-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  min-width: 0;
+}
+
+.cfg-label {
+  color: var(--text-secondary);
+  flex-shrink: 0;
+  width: 60px;
+}
+
+.cfg-value {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.chip {
+  flex-shrink: 0;
+  font-size: 11px;
+  padding: 0 7px;
+  border-radius: 8px;
+  white-space: nowrap;
+}
+
+.chip.inherit {
+  background: var(--badge-bg);
+  color: var(--text-secondary);
+}
+
+.chip.override {
+  background: color-mix(in srgb, var(--warn) 15%, transparent);
+  color: var(--warn);
+}
+
+.cfg-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
 }
 
 /* ---------- 测试组列表 ---------- */
@@ -335,6 +450,24 @@ code {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+/* 列表内「＋」块：点击创建默认配置测试组 */
+.add-block {
+  flex-shrink: 0;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  padding: 9px 12px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 13px;
+  text-align: left;
+}
+
+.add-block:hover {
+  color: var(--primary);
+  border-color: var(--primary);
 }
 
 .group-item {
@@ -373,8 +506,12 @@ code {
 .group-actions {
   margin-left: auto;
   display: flex;
-  gap: 4px;
+  gap: 2px;
   flex-shrink: 0;
+}
+
+.group-actions .icon-btn {
+  padding: 2px 5px;
 }
 
 .group-meta {
@@ -595,6 +732,15 @@ code {
 .icon-btn:hover {
   background: var(--badge-bg);
   color: var(--text);
+}
+
+.icon-btn.danger {
+  color: var(--danger);
+}
+
+.icon-btn.danger:hover {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  color: var(--danger);
 }
 
 .icon-btn.active {

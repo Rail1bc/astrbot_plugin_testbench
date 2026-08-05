@@ -31,6 +31,10 @@ export async function addGroupSessions(groupId, count) {
   return bridge.apiPost(`groups/${encodeURIComponent(groupId)}/sessions`, { count });
 }
 
+export async function updateGroup(payload) {
+  return bridge.apiPost(`groups/${encodeURIComponent(payload.id)}/update`, payload);
+}
+
 export async function updateSession(payload) {
   return bridge.apiPost("sessions/update", payload);
 }

@@ -242,6 +242,47 @@ def test_update_session_not_found(tmp_path):
     assert mgr.update_session("vs_none", conf_id="x") is None
 
 
+def test_group_update_fields(tmp_path):
+    mgr = VirtualGroupManager(data_dir=tmp_path)
+    group = mgr.create_group("组A", count=2, platform_id="webchat", conf_id="conf_a")
+    gid = group["id"]
+
+    updated = mgr.update_group(
+        gid,
+        name="组B",
+        platform_id="telegram",
+        conf_id="conf_b",
+        sender_id="s1",
+        sender_name="S1",
+    )
+    assert updated["name"] == "组B"
+    assert updated["platform_id"] == "telegram"
+    assert updated["conf_id"] == "conf_b"
+    assert updated["sender_id"] == "s1"
+
+    # 未单独覆盖的会话跟随组配置
+    eff = mgr.effective(updated, updated["sessions"][0])
+    assert eff["platform_id"] == "telegram"
+    assert eff["conf_id"] == "conf_b"
+
+    # 空平台/档案归一为 None；空组名回退默认
+    mgr.update_group(gid, platform_id="", conf_id="", name="")
+    g = mgr.get_group(gid)
+    assert g["platform_id"] is None
+    assert g["conf_id"] is None
+    assert g["name"] == "测试组"
+
+    # 会话覆盖优先于组配置
+    mgr.update_session(updated["sessions"][0]["id"], platform_id="webchat")
+    eff2 = mgr.effective(g, updated["sessions"][0])
+    assert eff2["platform_id"] == "webchat"
+
+
+def test_group_update_not_found(tmp_path):
+    mgr = VirtualGroupManager(data_dir=tmp_path)
+    assert mgr.update_group("g_none", name="x") is None
+
+
 def test_add_sessions_unknown_group(tmp_path):
     mgr = VirtualGroupManager(data_dir=tmp_path)
     with pytest.raises(KeyError):
@@ -725,6 +766,77 @@ async def test_plugin_update_session_not_found(tmp_path):
     plugin = main_mod.VirtualSessionPlugin(FakeContext())
     plugin.group_mgr = VirtualGroupManager(data_dir=tmp_path)
     resp = await call_handler(plugin.update_session, {"id": "vs_none", "conf_id": "x"})
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_plugin_update_group_syncs_routes(tmp_path):
+    context = FakeContext()
+    plugin = main_mod.VirtualSessionPlugin(context)
+    plugin.group_mgr = VirtualGroupManager(data_dir=tmp_path)
+    group = plugin.group_mgr.create_group("组A", count=2, conf_id="conf_a")
+    ucr = context.astrbot_config_mgr.ucr
+    umops = [f"webchat:FriendMessage:{s['id']}" for s in group["sessions"]]
+    for umop in umops:
+        await ucr.update_route(umop, "conf_a")
+
+    resp = await call_handler(
+        plugin.update_group, {"id": group["id"], "conf_id": "conf_b"}, group["id"]
+    )
+    assert resp.status_code == 200
+    # 继承组配置的会话全部切换到新档案
+    assert all(ucr.umop_to_conf_id[umop] == "conf_b" for umop in umops)
+
+
+@pytest.mark.asyncio
+async def test_plugin_update_group_platform_change_cleans_old_routes(tmp_path):
+    context = FakeContext()
+    plugin = main_mod.VirtualSessionPlugin(context)
+    plugin.group_mgr = VirtualGroupManager(data_dir=tmp_path)
+    group = plugin.group_mgr.create_group("组A", count=1, conf_id="conf_a")
+    sid = group["sessions"][0]["id"]
+    old_umop = f"webchat:FriendMessage:{sid}"
+    new_umop = f"telegram:FriendMessage:{sid}"
+    ucr = context.astrbot_config_mgr.ucr
+    await ucr.update_route(old_umop, "conf_a")
+
+    resp = await call_handler(
+        plugin.update_group, {"id": group["id"], "platform_id": "telegram"}, group["id"]
+    )
+    assert resp.status_code == 200
+    # 旧 umo 路由已清理，新 umo 上应用组档案
+    assert old_umop not in ucr.umop_to_conf_id
+    assert ucr.umop_to_conf_id[new_umop] == "conf_a"
+
+
+@pytest.mark.asyncio
+async def test_plugin_update_group_respects_session_override(tmp_path):
+    """会话单独覆盖的字段不随组配置变更。"""
+    context = FakeContext()
+    plugin = main_mod.VirtualSessionPlugin(context)
+    plugin.group_mgr = VirtualGroupManager(data_dir=tmp_path)
+    group = plugin.group_mgr.create_group("组A", count=2, conf_id="conf_a")
+    plugin.group_mgr.update_session(group["sessions"][0]["id"], conf_id="conf_s")
+    ucr = context.astrbot_config_mgr.ucr
+    umop0 = f"webchat:FriendMessage:{group['sessions'][0]['id']}"
+    umop1 = f"webchat:FriendMessage:{group['sessions'][1]['id']}"
+    await ucr.update_route(umop0, "conf_s")
+    await ucr.update_route(umop1, "conf_a")
+
+    resp = await call_handler(
+        plugin.update_group, {"id": group["id"], "conf_id": "conf_b"}, group["id"]
+    )
+    assert resp.status_code == 200
+    # 会话0 保持自己的覆盖，会话1 跟随组变更
+    assert ucr.umop_to_conf_id[umop0] == "conf_s"
+    assert ucr.umop_to_conf_id[umop1] == "conf_b"
+
+
+@pytest.mark.asyncio
+async def test_plugin_update_group_not_found(tmp_path):
+    plugin = main_mod.VirtualSessionPlugin(FakeContext())
+    plugin.group_mgr = VirtualGroupManager(data_dir=tmp_path)
+    resp = await call_handler(plugin.update_group, {"name": "x"}, "g_none")
     assert resp.status_code == 404
 
 
