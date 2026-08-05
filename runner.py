@@ -245,7 +245,11 @@ class VirtualTestRunner:
             record["finished_at"] = time.time()
             record["all_done"].set()
             self.event_bus.publish(
-                {"type": "test_done", "test_id": test_id, "record": self.status(test_id)}
+                {
+                    "type": "test_done",
+                    "test_id": test_id,
+                    "record": self.status(test_id),
+                }
             )
 
     async def _release_route_after(self, test_id: str) -> None:

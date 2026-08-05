@@ -332,7 +332,9 @@ def test_frontend_testset_run_is_backend_driven():
     """
     src = _read_module("app")
     assert "runTestsetApi(" in src, "app.js 未调用 runTestsetApi 启动测试集运行"
-    assert "handleTestsetEvent" in src, "app.js 未实现 testset 事件推进 handleTestsetEvent"
+    assert "handleTestsetEvent" in src, (
+        "app.js 未实现 testset 事件推进 handleTestsetEvent"
+    )
     assert "pollTestsetRun(" not in src, "app.js 仍轮询 pollTestsetRun（已改事件驱动）"
 
 
@@ -393,7 +395,9 @@ def test_frontend_event_driven_feedback():
     assert "const testConsumers = new Map()" in app_js, (
         "缺少手动运行消费者注册表 testConsumers"
     )
-    assert "startPolling(" not in app_js, "app.js 仍含轮询辅助 startPolling（已改事件驱动）"
+    assert "startPolling(" not in app_js, (
+        "app.js 仍含轮询辅助 startPolling（已改事件驱动）"
+    )
     assert "setInterval(" not in app_js, "app.js 仍含 setInterval 轮询"
     assert "subscribeEvents(" in api_js, "api.js 缺少 SSE 订阅封装 subscribeEvents"
     assert "unsubscribeEvents(" in api_js, "api.js 缺少 SSE 退订封装 unsubscribeEvents"
