@@ -12,6 +12,8 @@ export function createAlignController(env) {
   let alignCumulative = [0]; // alignCumulative[i] = 第 i+1 轮顶部的滚动偏移
   let alignScrollGuard = false; // 程序同步滚动时避免 scroll 事件回环
   let alignResizeTimer = 0;
+  let alignSyncFrame = 0; // 合并同帧滚动同步的 rAF id
+  let alignPendingTop = null; // { top, sourceId } 待同步的滚动位置（sourceId=null 同步全部面板）
 
   const $ = (id) => document.getElementById(id);
 
@@ -44,6 +46,34 @@ export function createAlignController(env) {
     refreshAlign();
   }
 
+  // 把同一帧内的多次滚动同步合并为一次 rAF 写操作：只对滚动位置与目标值
+  // 有差异的面板写 scrollTop，避免每个 scroll 事件都强制 N-1 次布局计算
+  function scheduleScrollSync(top, sourceId) {
+    alignPendingTop = { top, sourceId };
+    if (alignSyncFrame) return;
+    alignSyncFrame = requestAnimationFrame(() => {
+      alignSyncFrame = 0;
+      const pending = alignPendingTop;
+      alignPendingTop = null;
+      if (!pending) return;
+      alignScrollGuard = true;
+      try {
+        for (const [id, el] of env.getPanelEls()) {
+          if (pending.sourceId !== null && id === pending.sourceId) continue;
+          const chat = el.querySelector(".chat");
+          if (!chat) continue;
+          const max = chat.scrollHeight - chat.clientHeight;
+          const target = Math.max(0, Math.min(max, pending.top));
+          if (Math.abs(chat.scrollTop - target) > 0.5) {
+            chat.scrollTop = target;
+          }
+        }
+      } finally {
+        alignScrollGuard = false;
+      }
+    });
+  }
+
   // 把统一滑动条定位到指定轮次，同步所有面板的滚动位置
   function setTurn(t, { force = false } = {}) {
     if (!alignMode) return;
@@ -52,15 +82,7 @@ export function createAlignController(env) {
     if (!force && t === alignTurn) return;
     alignTurn = t;
     const top = alignCumulative[t - 1] || 0;
-    alignScrollGuard = true;
-    try {
-      for (const [, panel] of env.getPanelEls()) {
-        const chat = panel.querySelector(".chat");
-        if (chat) chat.scrollTop = top;
-      }
-    } finally {
-      alignScrollGuard = false;
-    }
+    scheduleScrollSync(top, null);
     $("align-slider").value = String(t);
     $("align-turn-label").textContent = `轮次 ${t}/${max}`;
   }
@@ -98,25 +120,16 @@ export function createAlignController(env) {
     if (!(chat instanceof HTMLElement) || !chat.classList.contains("chat")) return;
     const panel = chat.closest(".panel");
     if (!panel) return;
-    alignScrollGuard = true;
-    try {
-      for (const [id, el] of env.getPanelEls()) {
-        if (id === panel.dataset.id) continue;
-        const other = el.querySelector(".chat");
-        if (!other) continue;
-        const max = other.scrollHeight - other.clientHeight;
-        other.scrollTop = Math.max(0, Math.min(max, chat.scrollTop));
-      }
-    } finally {
-      alignScrollGuard = false;
-    }
+    const top = chat.scrollTop;
+    scheduleScrollSync(top, panel.dataset.id);
     let turn = 1;
     for (let i = alignCumulative.length - 2; i >= 0; i--) {
-      if (alignCumulative[i] <= chat.scrollTop + 1) {
+      if (alignCumulative[i] <= top + 1) {
         turn = i + 1;
         break;
       }
     }
+    if (turn === alignTurn) return;
     alignTurn = turn;
     $("align-slider").value = String(turn);
     $("align-turn-label").textContent = `轮次 ${turn}/${alignCumulative.length - 1}`;

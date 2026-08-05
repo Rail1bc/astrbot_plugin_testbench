@@ -52,7 +52,8 @@ export async function runTest(payload) {
 }
 
 export async function runStatus(testId) {
-  return bridge.apiGet(`test/run/status?test_id=${encodeURIComponent(testId)}`);
+  // 查询串必须走第二个参数（params）：父窗口会拒绝端点字符串中的 `?`
+  return bridge.apiGet("test/run/status", { test_id: testId });
 }
 
 export async function editHistory(payload) {
