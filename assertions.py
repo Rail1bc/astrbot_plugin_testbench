@@ -6,7 +6,10 @@
     {"type": "contains", "value": "str | [str]"}   全部出现
     {"type": "not_contains", "value": ...}         全部不出现
     {"type": "regex", "value": "pattern"}          re.search
-    {"type": "json"}                               json.loads 可解析
+    {"type": "json"}                               宽松判定为合法 JSON（剥代码块
+                                                   围栏；直接解析失败则取首个
+                                                   开括号到末个闭括号的子串再试，
+                                                   容忍思维链 / 说明文本夹带）
     {"type": "non_empty"}                          strip 后非空
     {"type": "min_len", "value": int}
     {"type": "max_len", "value": int}
@@ -58,14 +61,43 @@ def _yes(detail: str) -> dict:
 
 def _evaluate_no_value(rule_type: str, reply: str) -> dict:
     if rule_type == "json":
-        try:
-            json.loads(reply)
-        except ValueError:
-            return _no("回复不是合法的 JSON")
-        return _yes("回复是合法 JSON")
+        return (
+            _yes("回复是合法 JSON")
+            if _parse_json_reply(reply)
+            else _no("回复不是合法的 JSON")
+        )
     if rule_type == "non_empty":
         return _yes("回复非空") if reply.strip() else _no("回复为空")
     return _no(f"未知断言类型: {rule_type!r}")
+
+
+def _parse_json_reply(reply: str) -> bool:
+    """宽松判定回复是否为（或包含）合法 JSON。
+
+    LLM 输出常把 JSON 包进 markdown 代码块围栏、或在前后夹带思维链 / 说明
+    文本（如 AstrBot 开启思维链显示时，回复链头会被装饰阶段注入
+    「🤔 思考: …」前缀）。换行缩进不影响 json.loads；先剥围栏直接解析，
+    失败再取首个开括号到末个闭括号的子串解析。
+    """
+    text = reply.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```[a-zA-Z]*\s*", "", text)
+        text = re.sub(r"\s*```\s*$", "", text)
+    try:
+        json.loads(text)
+        return True
+    except ValueError:
+        pass
+    for opener, closer in (("{", "}"), ("[", "]")):
+        start = text.find(opener)
+        end = text.rfind(closer)
+        if start >= 0 and end > start:
+            try:
+                json.loads(text[start : end + 1])
+                return True
+            except ValueError:
+                pass
+    return False
 
 
 def _evaluate_value(rule_type: str, value: Any, reply: str) -> dict:

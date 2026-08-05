@@ -431,13 +431,20 @@ function pollTestsetRun(runId) {
     }
     stopPolling(timer);
     const failSteps = run.steps.filter((s) => s.status === "error").length;
+    // 断言未通过（✗）与步骤/会话错误是两回事：断言失败只落在结果单元格，
+    // 不改变会话 status——总结必须单独计数，否则出现「表格 3 个 ✗ 但总结错误 0」的误导
+    const assertFails = (run.steps || []).reduce(
+      (n, s) => n + (s.results || []).filter((r) => r.assertion && !r.assertion.pass).length,
+      0,
+    );
     const doneCount = run.steps.filter((s) => s.status === "done").length;
+    const assertText = assertFails ? `，${assertFails} 条断言未通过` : "";
     const summary =
       run.status === "done"
-        ? `测试集「${name}」运行完成（${run.steps.length} 步）`
+        ? `测试集「${name}」运行完成（${run.steps.length} 步${assertText}）`
         : run.status === "cancelled"
           ? `测试集「${name}」已取消：当前步骤已完成，共完成 ${doneCount} 步`
-          : `测试集「${name}」运行出错${failSteps ? `（${failSteps} 步失败）` : ""}`;
+          : `测试集「${name}」运行出错${failSteps ? `（${failSteps} 步失败）` : ""}${assertText}`;
     showRunStatus(run.status === "done" ? "ok" : "error", summary);
     for (const sid of state.openIds) void loadHistory(sid);
     showTestsetResults(run);
@@ -487,6 +494,9 @@ function showTestsetResults(run) {
       const ok = (step.results || []).filter((r) => r.status === "ok").length;
       const noReply = (step.results || []).filter((r) => r.status === "no_reply").length;
       const err = (step.results || []).filter((r) => r.status === "error").length;
+      const assertFail = (step.results || []).filter(
+        (r) => r.assertion && !r.assertion.pass,
+      ).length;
       const stepErr = step.error
         ? `<div class="cell-err">失败：${escapeHtml(step.error)}</div>`
         : "";
@@ -497,7 +507,7 @@ function showTestsetResults(run) {
         `<tr>` +
         `<td class="cell-step">${batchBadge}${escapeHtml(step.text)}${stepErr}</td>` +
         cells +
-        `<td>成功 ${ok} / 无回复 ${noReply} / 错误 ${err}</td>` +
+        `<td>成功 ${ok} / 无回复 ${noReply} / 错误 ${err}${assertFail ? ` / 断言 ✗ ${assertFail}` : ""}</td>` +
         `</tr>`
       );
     })

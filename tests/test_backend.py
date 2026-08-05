@@ -1884,6 +1884,31 @@ def test_assertion_json_and_non_empty():
     assert evaluate_rule({"type": "non_empty"}, "有内容")["pass"]
 
 
+def test_assertion_json_lenient_extraction():
+    """json 断言须容忍 LLM 常见包装：换行缩进 / 思维链前缀 / 说明文本 / 代码块围栏。"""
+    # 换行缩进本身合法（json.loads 接受空白），直接解析即过
+    assert evaluate_rule(
+        {"type": "json"},
+        '{\n  "a": 1,\n  "b": 2\n}',
+    )["pass"]
+    # 思维链前缀（AstrBot 开启思维链显示时回复链头会被装饰阶段注入）
+    assert evaluate_rule({"type": "json"}, '🤔 思考: 先想一下\n\n────\n{"a": 1}')[
+        "pass"
+    ]
+    # 前后说明文本
+    assert evaluate_rule({"type": "json"}, '好的，结果如下：\n{"a": 1}')["pass"]
+    assert evaluate_rule({"type": "json"}, '{"a": 1} 以上。')["pass"]
+    # markdown 代码块围栏（带/不带语言标记）
+    assert evaluate_rule({"type": "json"}, '```json\n{"a": 1}\n```')["pass"]
+    assert evaluate_rule({"type": "json"}, '```\n{"a": 1}\n```')["pass"]
+    # 数组兜底提取
+    assert evaluate_rule({"type": "json"}, "结果是 [1, 2, 3]")["pass"]
+    # 仍须拒绝：纯文本 / 花括号只是占位符 / 两个 JSON 对象拼在一起
+    assert not evaluate_rule({"type": "json"}, "不是 json")["pass"]
+    assert not evaluate_rule({"type": "json"}, "模板是 {name} 这样")["pass"]
+    assert not evaluate_rule({"type": "json"}, '{"a": 1} 和 {"b": 2}')["pass"]
+
+
 def test_assertion_len_prefix_suffix():
     assert evaluate_rule({"type": "min_len", "value": 3}, "你好啊")["pass"]
     assert not evaluate_rule({"type": "max_len", "value": 2}, "你好啊")["pass"]

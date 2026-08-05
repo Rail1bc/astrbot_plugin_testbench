@@ -292,3 +292,17 @@ def test_frontend_testset_run_is_backend_driven():
     src = _read_module("app")
     assert "runTestsetApi(" in src, "app.js 未调用 runTestsetApi 启动测试集运行"
     assert "pollTestsetRun(" in src, "app.js 未实现 pollTestsetRun 轮询后端运行记录"
+
+
+def test_frontend_testset_summary_counts_assertion_failures():
+    """测试集运行总结须单独计数断言未通过（✗），与步骤/会话错误区分。
+
+    曾出现：结果表格 3 个会话断言 ✗，但最终总结「运行完成（N 步）」没提任何
+    失败——断言失败只落在结果单元格、不改会话 status，总结若只数
+    status=="error" 就永远显示「错误 0」，误导用户以为断言全过。
+    """
+    src = _read_module("app")
+    assert "assertFails" in src, "总结未计算断言未通过数量"
+    assert "条断言未通过" in src, "总结文案未包含断言未通过计数"
+    # 表格行尾计数也要标注断言 ✗（与「错误 N」的 status 语义区分）
+    assert "断言 ✗" in src, "结果表格行尾未单独标注断言 ✗ 计数"
