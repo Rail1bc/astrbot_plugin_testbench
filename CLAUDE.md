@@ -95,9 +95,9 @@ astrbot_plugin_testbench/
 - `api.js`：`window.AstrBotPluginPage` bridge 的 `apiGet`/`apiPost` 统一封装。bridge 的响应解析是 `response.data?.data ?? response.data`（json_response 的 body 直接作为 data）。
 - `chat.js`：`createChatRenderer(alignGetter)` 集中聊天内容渲染（气泡 `bubbleFor` / 思维链 `reasoningSection` / 轮次分组 `groupTurns` 与对齐渲染 `renderAligned`）。align 以 getter 注入（渲染时才取），避免与 `createAlignController` 互相创建的循环依赖；`app.js` 提供 `renderChat` 包装函数注入 align 控制器并传给 align.js 的 env。
 - `app.js` 分区：弹窗（iframe 沙箱禁用原生 alert/confirm，用自绘弹窗）→ 测试组列表 → 面板 → 发送 → 会话操作 → 面板排序 → 轮次对齐 → 选项加载 → 初始化。`loadOptions()` 拉取 platforms/confs（下拉框由各弹窗动态构建）；`refreshGroups()` 渲染左侧单一列表；`pollRun()` 轮询测试状态；`updateRunOverview()` 在群发栏实时显示当前打开的会话数与按测试组的分布。
-- 左侧布局：最左为 `.ui-rail` UI 窄条（方形按钮，当前 1 个「会话列表」按钮，点击折叠/展开侧栏，为后续扩展预留）；侧栏只有一个列表——「＋ 新建测试组」块（点击创建默认配置组并弹编辑弹窗）+ 测试组块（可展开组内会话）。组头操作：打开全部 / ＋新增 / ✎编辑 / ✕删除；会话行头点击展开配置（`renderSessionConfig` 每行显示有效值 + 「已修改/继承组」chip，`sessionOverrides` 统计已单独修改的项），会话操作按钮：打开 / 配置 / 重置 / 删除。
+- 左侧布局：最左为 `.ui-rail` UI 窄条（方形按钮，当前 1 个「会话列表」按钮，点击折叠/展开侧栏，为后续扩展预留）；侧栏只有一个列表——「＋ 新建测试组」块（点击创建默认配置组并弹编辑弹窗）+ 测试组块（可展开组内会话）。组头操作：打开全部 / ＋新增 / ✎编辑 / ✕删除；会话行头点击展开配置（`renderSessionConfig` 每行显示有效值 + 「已修改/继承组」chip，`sessionOverrides` 统计已单独修改的项），会话操作按钮：打开 / 删除（配置修改走展开配置中的「编辑配置」弹窗，「重置」在已打开会话的面板页眉）。
 - 群发栏（`.run-bar`）位于工作区**下方**（面板在上、群发在右下），`#align-bar` 位于面板与群发栏之间；`.workspace` 为 flex 列布局，`workspace-body` flex:1。
-- 面板页眉为多行 flex 布局：标题与徽标包在 `.panel-info`（`flex-wrap: wrap`）内随内容换行撑开页眉，`.panel-actions` 的「编辑 / 置顶 / 关闭」按钮始终第一行右对齐；`refreshPanelHead()` / `openPanel()` 都维护该结构。
+- 面板页眉为多行 flex 布局：标题与徽标包在 `.panel-info`（`flex-wrap: wrap`）内随内容换行撑开页眉，`.panel-actions` 的「编辑 / 重置 / 置顶 / 关闭」按钮始终第一行右对齐；`refreshPanelHead()` / `openPanel()` 都维护该结构。
 - 气泡渲染 `bubbleFor(msg)` 用 `extractParts(msg.content)` 拆分**思维链**（`ThinkPart`，`{type:"think", think:"..."}`）与正文：带推理内容的回复渲染 `.reasoning-wrap`（原生 `<details>`，默认收起，summary 即「展开/收起思维链」按钮）；旧格式的 `assistant_reasoning` / `reasoning` 角色整条按思维链处理。`<details>` 的 `toggle` 事件在轮次对齐模式下 `requestAnimationFrame(() => align.reflowAlign())` 重排高度。
 - 对话历史编辑走**面板头部「历史」按钮的 JSON 编辑器**（`openHistoryEditor`）：直接编辑 `{conversations: [...]}` 全结构，保存调 `saveHistory` 整体替换（编辑/新增/删除对话都在 JSON 里完成）；单条气泡只保留「重新生成」。不做复杂的单轮编辑 UI——没有能力修改结构化历史的用户不建议自己改。
 - `align.js`：`createAlignController(env)` 依赖注入访问器（getOpenIds/getPanelEls/getHistoryCache/getPanelsEl/renderChat），实现轮次对齐 + 滚动同步。
@@ -168,3 +168,4 @@ cp app.js "$TEMP/app.mjs" && node --check "$TEMP/app.mjs"   # 同理 api.js / al
 5. **防御式读取后端资源**：`list_platforms` 对每个适配器 `meta()` 单独 try/except（单个异常不拖垮整个接口），前端对返回做 `Array.isArray` 校验。
 6. **Windows 路径**：venv 在 `E:\AstrBot\.venv\Scripts\python.exe`（不是 `bin/`）；git bash 里可用 `/e/AstrBot` 风格路径。
 7. **metadata.yaml 版本**：未经用户明确批准不得 bump；发布包由 `.github/workflows/release.yml` 构建，须排除 `data/`（v0.2.1 曾误打包本地运行数据）。
+8. **按钮点击无反应先查 JS 运行时错误**：点击处理函数内抛 ReferenceError（如引用未定义变量）会静默失效——弹窗根本没打开、无任何可见反馈，浏览器控制台有报错；node --check / pytest 都发现不了。曾因此导致会话「配置 / 编辑配置」按钮长期无效（`openSettings` 的弹窗标题用了未定义的 `s`，作用域内实为 `session`，v0.3.0 引入）。

@@ -248,7 +248,6 @@ function renderGroupList() {
         const action = btn.dataset.action;
         if (action === "open") btn.addEventListener("click", () => toggleOpen(sid));
         else if (action === "config") btn.addEventListener("click", () => openSettings(sid));
-        else if (action === "reset") btn.addEventListener("click", () => resetHistory(sid));
         else if (action === "delete") btn.addEventListener("click", () => deleteSession(sid));
       });
     });
@@ -314,8 +313,6 @@ function renderGroupSessions(g) {
         overBadge +
         `<span class="session-actions">` +
         `<button class="btn small" data-action="open">${isOpen ? "关闭" : "打开"}</button>` +
-        `<button class="btn small" data-action="config">配置</button>` +
-        `<button class="btn small" data-action="reset">重置</button>` +
         `<button class="btn small danger" data-action="delete">删除</button>` +
         `</span>` +
         `</div>` +
@@ -554,7 +551,7 @@ function openSettings(sid) {
   );
 
   openModal({
-    title: `会话配置 · ${s.name || sid}`,
+    title: `会话配置 · ${session.name || sid}`,
     content: form,
     okText: "保存",
     onOk: async () => {
@@ -648,6 +645,7 @@ function openPanel(id) {
     `</span>` +
     `<span class="panel-actions">` +
     `<button class="icon-btn" data-action="history" title="编辑对话历史（JSON）">编辑</button>` +
+    `<button class="icon-btn" data-action="reset" title="重置对话历史">重置</button>` +
     `<button class="icon-btn" data-action="pin" title="置顶">置顶</button>` +
     `<button class="icon-btn" data-action="close" title="关闭">✕</button>` +
     `</span>` +
@@ -662,6 +660,7 @@ function openPanel(id) {
     `</div>`;
 
   panel.querySelector('[data-action="close"]').addEventListener("click", () => toggleOpen(id));
+  panel.querySelector('[data-action="reset"]').addEventListener("click", () => resetHistory(id));
   panel.querySelector('[data-action="pin"]').addEventListener("click", () => pin(id));
   panel
     .querySelector('[data-action="history"]')
