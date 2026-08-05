@@ -6,7 +6,9 @@
 import { createChatRenderer } from "./chat.js";
 import { createAlignController } from "./align.js";
 import { createGroupList } from "./group_list.js";
+import { createTestsetList } from "./testset_list.js";
 import {
+  abortTestsetRun as abortTestsetRunApi,
   deleteSessions,
   getHistory,
   getPending,
@@ -17,6 +19,8 @@ import {
   resetSessions,
   runStatus,
   runTest,
+  runTestset as runTestsetApi,
+  runTestsetStatus,
   saveHistory,
 } from "./api.js";
 import { openModal, showModal } from "./modal.js";
@@ -353,6 +357,170 @@ function showRunStatus(status, text) {
   el.textContent = text;
 }
 
+// ---------- 测试集运行（后端驱动） ----------
+
+// 测试集运行由后端后台任务驱动（离开页面不中断），前端只负责启动与轮询进度；
+// 记录可经「最近运行」找回，运行中/结束后均可点「查看」看结果表格。
+
+async function runTestset(testset, mode, ids) {
+  try {
+    const resp = await runTestsetApi({ testset_id: testset.id, mode, sessions: ids });
+    state.activeRunId = resp.run_id;
+    $("btn-abort-run").hidden = false;
+    showRunStatus(
+      "warn",
+      `测试集「${testset.name}」已启动（${mode === "batch" ? "批量" : "逐条"}模式，${resp.steps} 步），后台运行中…`,
+    );
+    pollTestsetRun(resp.run_id);
+  } catch (err) {
+    showRunStatus("error", "启动测试集运行失败: " + err.message);
+  }
+}
+
+// 当前测试集轮询定时器：新的轮询开始时停掉旧的，避免重复轮询叠加
+let testsetPollTimer = null;
+
+function pollTestsetRun(runId) {
+  if (testsetPollTimer) clearInterval(testsetPollTimer);
+  let stopped = false;
+  let doneSteps = 0;
+  const timer = setInterval(tick, 1000);
+  testsetPollTimer = timer;
+  async function tick() {
+    if (stopped) return;
+    let run;
+    try {
+      run = await runTestsetStatus(runId);
+    } catch (err) {
+      // 404：运行记录已被清理
+      stopPolling(timer, "warn", "该测试集运行记录已过期，无法继续查看进度");
+      return;
+    }
+    const name = run.testset_name || "测试集";
+    if (run.status === "running") {
+      const step = Math.max(1, run.current_step + 1);
+      const stepText = run.steps[step - 1] ? run.steps[step - 1].text : "";
+      showRunStatus(
+        "warn",
+        `测试集「${name}」运行中：第 ${step}/${run.steps.length} 步 — ${stepText}`,
+      );
+      // 步骤推进（完成步数增加）→ 刷新已打开面板的历史（逐条模式每步完成即可见）
+      const completed = run.steps.filter((s) => s.status === "done").length;
+      if (completed > doneSteps) {
+        doneSteps = completed;
+        for (const sid of state.openIds) void loadHistory(sid);
+      }
+      return;
+    }
+    stopPolling(timer);
+    const failSteps = run.steps.filter((s) => s.status === "error").length;
+    const doneCount = run.steps.filter((s) => s.status === "done").length;
+    const summary =
+      run.status === "done"
+        ? `测试集「${name}」运行完成（${run.steps.length} 步）`
+        : run.status === "cancelled"
+          ? `测试集「${name}」已取消：当前步骤已完成，共完成 ${doneCount} 步`
+          : `测试集「${name}」运行出错${failSteps ? `（${failSteps} 步失败）` : ""}`;
+    showRunStatus(run.status === "done" ? "ok" : "error", summary);
+    for (const sid of state.openIds) void loadHistory(sid);
+    showTestsetResults(run);
+    void refreshTestsets();
+  }
+  function stopPolling(timer, status, text) {
+    if (stopped) return;
+    stopped = true;
+    clearInterval(timer);
+    if (testsetPollTimer === timer) testsetPollTimer = null;
+    state.activeRunId = null;
+    $("btn-abort-run").hidden = true;
+    if (status) showRunStatus(status, text);
+  }
+  void tick();
+}
+
+// 结果表格弹窗：行=步骤（文本 + 失败原因），列=会话（状态 + 耗时 + 断言 ✓/✗），
+// 行尾为该步 ok/no_reply/error 计数
+function showTestsetResults(run) {
+  const sessions = run.sessions || [];
+  const table = document.createElement("table");
+  table.className = "testset-results";
+  const head = document.createElement("thead");
+  head.innerHTML =
+    `<tr><th>步骤</th>` +
+    sessions.map((s) => `<th class="cell-session">${escapeHtml(s.name || s.id)}</th>`).join("") +
+    `<th>结果</th></tr>`;
+  const body = document.createElement("tbody");
+  body.innerHTML = (run.steps || [])
+    .map((step) => {
+      const cells = sessions
+        .map((s) => {
+          const r = (step.results || []).find((x) => x.session_id === s.id);
+          if (!r) return `<td class="cell-session">—</td>`;
+          const dur = r.duration != null ? `（${r.duration}s）` : "";
+          const assertion = r.assertion
+            ? `<span class="${r.assertion.pass ? "assert-pass" : "assert-fail"}">${r.assertion.pass ? "✓" : "✗"}</span>`
+            : "";
+          return (
+            `<td class="cell-session">` +
+            escapeHtml(statusText(r.status)) + dur + assertion +
+            `</td>`
+          );
+        })
+        .join("");
+      const ok = (step.results || []).filter((r) => r.status === "ok").length;
+      const noReply = (step.results || []).filter((r) => r.status === "no_reply").length;
+      const err = (step.results || []).filter((r) => r.status === "error").length;
+      const stepErr = step.error
+        ? `<div class="cell-err">失败：${escapeHtml(step.error)}</div>`
+        : "";
+      return (
+        `<tr>` +
+        `<td class="cell-step">${escapeHtml(step.text)}${stepErr}</td>` +
+        cells +
+        `<td>成功 ${ok} / 无回复 ${noReply} / 错误 ${err}</td>` +
+        `</tr>`
+      );
+    })
+    .join("");
+  table.append(head, body);
+  openModal({
+    title: `测试集结果 · ${run.testset_name || ""}`,
+    content: table,
+    okText: "关闭",
+    wide: true,
+  });
+}
+
+// 「最近运行」点查看：运行中则继续轮询，否则直接展示结果表格
+async function viewTestsetRun(runId) {
+  let run;
+  try {
+    run = await runTestsetStatus(runId);
+  } catch (err) {
+    showRunStatus("warn", "该测试集运行记录已过期");
+    void refreshTestsets();
+    return;
+  }
+  if (run.status === "running") {
+    state.activeRunId = runId;
+    $("btn-abort-run").hidden = false;
+    showRunStatus("warn", `测试集「${run.testset_name || ""}」运行中，继续跟踪…`);
+    pollTestsetRun(runId);
+  } else {
+    showTestsetResults(run);
+  }
+}
+
+async function abortTestsetRun(runId) {
+  if (!runId) return;
+  try {
+    await abortTestsetRunApi(runId);
+    showRunStatus("warn", "已请求取消：当前步骤完成即止，后续步骤不再发送");
+  } catch (err) {
+    showRunStatus("error", "取消失败: " + err.message);
+  }
+}
+
 // ---------- 在途消息（面板实时状态条） ----------
 
 // 在途消息的状态文案（与后端 runner 的条目状态一一对应）
@@ -614,19 +782,47 @@ const { refreshGroups, renderGroupList } = createGroupList({
   updateRunOverview,
 });
 
-// 静态控件绑定须放在 createGroupList 解构之后：refreshGroups 是 const 解构
-// 绑定，提前引用会触发暂时性死区（ReferenceError），模块求值即中止初始化
+const { refreshTestsets, renderTestsetList } = createTestsetList({
+  showRunStatus,
+  runTestset,
+  viewTestsetRun,
+});
+
+// 静态控件绑定须放在 createGroupList / createTestsetList 解构之后：
+// refreshGroups / refreshTestsets 是 const 解构绑定，提前引用会触发暂时性
+// 死区（ReferenceError），模块求值即中止初始化
 $("btn-refresh").addEventListener("click", refreshGroups);
+$("btn-refresh-testsets").addEventListener("click", refreshTestsets);
 $("btn-run-all").addEventListener("click", sendToAll);
+$("btn-abort-run").addEventListener("click", () => abortTestsetRun(state.activeRunId));
 $("run-text").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.isComposing) sendToAll();
 });
 
-// UI 窄条：会话列表按钮折叠/展开左侧列表（为后续扩展的其他视图预留）
-const railSessionBtn = document.querySelector('.rail-btn[data-view="sessions"]');
-railSessionBtn.addEventListener("click", () => {
-  const collapsed = document.body.classList.toggle("sidebar-collapsed");
-  railSessionBtn.classList.toggle("active", !collapsed);
+// UI 窄条：视图切换（会话列表 / 测试集）。点击当前视图按钮折叠/展开侧栏，
+// 点击其他视图按钮切换视图（展开侧栏并刷新对应视图数据）
+let activeView = "sessions";
+
+function showView(view) {
+  activeView = view;
+  document.body.classList.remove("sidebar-collapsed");
+  document.querySelector(".groups-card").hidden = view !== "sessions";
+  document.querySelector(".testsets-card").hidden = view !== "testsets";
+  document.querySelectorAll(".rail-btn").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.view === view);
+  });
+  if (view === "testsets") void refreshTestsets();
+}
+
+document.querySelectorAll(".rail-btn").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    if (btn.dataset.view === activeView) {
+      const collapsed = document.body.classList.toggle("sidebar-collapsed");
+      btn.classList.toggle("active", !collapsed);
+    } else {
+      showView(btn.dataset.view);
+    }
+  });
 });
 
 await ready();

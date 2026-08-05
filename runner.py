@@ -13,6 +13,7 @@ import logging
 import time
 from typing import TYPE_CHECKING
 
+from .assertions import evaluate_rule
 from .conf_routes import restore_routes, save_and_apply_routes
 from .group_store import (
     DEFAULT_PLATFORM_ID,
@@ -76,6 +77,7 @@ class VirtualTestRunner:
         provider_id: str | None = None,
         model: str | None = None,
         conf_id: str | None = None,
+        assertion: dict | None = None,
     ) -> str:
         """投递消息并立即返回 test_id（不等待回复）。
 
@@ -85,6 +87,7 @@ class VirtualTestRunner:
             provider_id: 可选，覆盖 LLM provider。
             model: 可选，覆盖模型名。
             conf_id: 可选，临时把会话的配置档案路由到指定档案（测试提示词/系统设定）。
+            assertion: 可选，回复断言规则（见 assertions.py），随结果评估返回。
 
         Returns:
             test_id，用于轮询 status()。
@@ -114,6 +117,7 @@ class VirtualTestRunner:
             "id": test_id,
             "total": len(events),
             "results": {},  # session_id -> 结果摘要
+            "assertion": assertion,
             "created_at": time.time(),
             "finished_at": None,
             "done": False,
@@ -205,7 +209,11 @@ class VirtualTestRunner:
         record = self._runs.get(test_id)
         if record is None:
             return
-        record["results"][event.session_id] = event.result_summary()
+        summary = event.result_summary()
+        assertion = record.get("assertion")
+        if assertion:
+            summary["assertion"] = evaluate_rule(assertion, summary.get("reply") or "")
+        record["results"][event.session_id] = summary
         if len(record["results"]) >= record["total"] and not record["done"]:
             record["done"] = True
             record["finished_at"] = time.time()
@@ -242,6 +250,21 @@ class VirtualTestRunner:
             "results": results,
             "stats": duration_stats([r["duration"] for r in results]),
         }
+
+    async def wait_done(self, test_id: str, timeout_secs: float | None = None) -> dict:
+        """等待运行全部完成（含超时），返回 status() 结果。
+
+        供测试集运行编排器逐步骤等待；超时抛 asyncio.TimeoutError。
+        """
+        record = self._runs.get(test_id)
+        if record is None:
+            raise KeyError(f"未找到测试运行: {test_id}")
+        if timeout_secs is not None:
+            async with asyncio.timeout(timeout_secs):
+                await record["all_done"].wait()
+        else:
+            await record["all_done"].wait()
+        return self.status(test_id)
 
     def _prune_runs(self) -> None:
         """清理过期的运行记录与在途条目。

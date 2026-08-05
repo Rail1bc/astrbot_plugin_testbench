@@ -21,10 +21,13 @@ sys.path.insert(0, str(REPO_ROOT.parent))
 
 pytest.importorskip("astrbot")
 
+import astrbot_plugin_testbench.assertions as asrt_mod  # noqa: E402
 import astrbot_plugin_testbench.group_store as gs_mod  # noqa: E402
 import astrbot_plugin_testbench.main as main_mod  # noqa: E402
 import astrbot_plugin_testbench.runner as runner_mod  # noqa: E402
 import astrbot_plugin_testbench.stats as stats_mod  # noqa: E402
+import astrbot_plugin_testbench.testset_runner as tsr_mod  # noqa: E402
+import astrbot_plugin_testbench.testset_store as tss_mod  # noqa: E402
 import astrbot_plugin_testbench.virtual_event as ve_mod  # noqa: E402
 from astrbot.api.event import MessageChain  # noqa: E402
 from astrbot.api.web import PluginRequest, bind_request_context  # noqa: E402
@@ -33,6 +36,9 @@ from starlette.requests import Request  # noqa: E402
 VirtualMessageEvent = ve_mod.VirtualMessageEvent
 VirtualGroupManager = gs_mod.VirtualGroupManager
 VirtualTestRunner = runner_mod.VirtualTestRunner
+TestsetStore = tss_mod.TestsetStore
+TestsetRunner = tsr_mod.TestsetRunner
+evaluate_rule = asrt_mod.evaluate_rule
 duration_stats = stats_mod.duration_stats
 umo_of = gs_mod.umo_of
 
@@ -1840,3 +1846,560 @@ def test_session_history_empty_conversations(tmp_path):
     resp = asyncio.run(plugin.session_history(session["id"]))
     assert resp.status_code == 200
     assert json.loads(resp.body)["conversations"] == []
+
+
+# ---------- 回复断言（assertions 纯函数） ----------
+
+
+def test_assertion_rule_none():
+    assert evaluate_rule(None, "任意回复") is None
+
+
+def test_assertion_contains_and_not_contains():
+    assert evaluate_rule({"type": "contains", "value": "你好"}, "早上好，你好")["pass"]
+    assert not evaluate_rule({"type": "contains", "value": "再见"}, "早上好")["pass"]
+    assert evaluate_rule({"type": "contains", "value": ["a", "b"]}, "a b c")["pass"]
+    assert not evaluate_rule({"type": "contains", "value": ["a", "d"]}, "a b c")["pass"]
+    assert evaluate_rule({"type": "not_contains", "value": "脏话"}, "干净文本")["pass"]
+    assert not evaluate_rule({"type": "not_contains", "value": "脏话"}, "带脏话")[
+        "pass"
+    ]
+    # 空 value 列表视为数据损坏 → 不静默通过
+    assert not evaluate_rule({"type": "not_contains", "value": []}, "x")["pass"]
+
+
+def test_assertion_regex():
+    assert evaluate_rule({"type": "regex", "value": r"\d+"}, "abc123")["pass"]
+    assert not evaluate_rule({"type": "regex", "value": r"\d+"}, "abc")["pass"]
+    # 无效 pattern → pass False（可见，不静默通过）
+    assert not evaluate_rule({"type": "regex", "value": "["}, "x")["pass"]
+    # 缺 value
+    assert not evaluate_rule({"type": "regex"}, "x")["pass"]
+
+
+def test_assertion_json_and_non_empty():
+    assert evaluate_rule({"type": "json"}, '{"a": 1}')["pass"]
+    assert not evaluate_rule({"type": "json"}, "not json")["pass"]
+    assert not evaluate_rule({"type": "non_empty"}, "   ")["pass"]
+    assert evaluate_rule({"type": "non_empty"}, "有内容")["pass"]
+
+
+def test_assertion_len_prefix_suffix():
+    assert evaluate_rule({"type": "min_len", "value": 3}, "你好啊")["pass"]
+    assert not evaluate_rule({"type": "max_len", "value": 2}, "你好啊")["pass"]
+    assert evaluate_rule({"type": "prefix", "value": "你好"}, "你好世界")["pass"]
+    assert evaluate_rule({"type": "suffix", "value": "世界"}, "你好世界")["pass"]
+    assert not evaluate_rule({"type": "suffix", "value": "不是"}, "你好世界")["pass"]
+    # value 类型错误 / 缺失 → pass False
+    assert not evaluate_rule({"type": "min_len", "value": "3"}, "x")["pass"]
+    assert not evaluate_rule({"type": "prefix"}, "x")["pass"]
+
+
+def test_assertion_unknown_type_and_missing_value():
+    assert not evaluate_rule({"type": "nope"}, "x")["pass"]
+    assert not evaluate_rule({"type": "contains"}, "x")["pass"]
+    assert not evaluate_rule({"type": "min_len"}, "x")["pass"]
+
+
+# ---------- 测试集存储 ----------
+
+
+def test_testset_store_crud_persist(tmp_path):
+    store = TestsetStore(data_dir=tmp_path)
+    ts = store.create_testset(
+        "回归",
+        [
+            {"text": "第一问", "rule": {"type": "contains", "value": "在"}},
+            {"text": "第二问"},
+        ],
+    )
+    assert ts["id"].startswith("ts_")
+    assert ts["name"] == "回归"
+    assert len(store.list_testsets()) == 1
+
+    # 重载实例断言持久化
+    reloaded = TestsetStore(data_dir=tmp_path)
+    assert len(reloaded.list_testsets()) == 1
+    assert reloaded.get_testset(ts["id"])["messages"][0]["rule"] == {
+        "type": "contains",
+        "value": "在",
+    }
+
+    updated = store.update_testset(ts["id"], "改名", [{"text": "新问"}])
+    assert updated["name"] == "改名"
+    assert len(updated["messages"]) == 1
+    assert store.update_testset("ts_none", "x", [{"text": "x"}]) is None
+
+    assert store.delete_testsets([ts["id"]]) == 1
+    assert store.list_testsets() == []
+
+
+def test_testset_store_normalize_and_default_name(tmp_path):
+    store = TestsetStore(data_dir=tmp_path)
+    ts = store.create_testset(
+        "  ",
+        [
+            {"text": "  去空白  ", "rule": "不是字典"},
+            {"text": "  "},  # 空文本丢弃
+        ],
+    )
+    assert ts["name"] == "测试集"  # 空名回退
+    assert len(ts["messages"]) == 1
+    assert ts["messages"][0] == {"text": "去空白", "rule": None}
+
+
+def test_testset_store_delete_unknown(tmp_path):
+    store = TestsetStore(data_dir=tmp_path)
+    store.create_testset("A", [{"text": "m"}])
+    assert store.delete_testsets(["ts_none"]) == 0
+    assert len(store.list_testsets()) == 1
+
+
+# ---------- runner.wait_done ----------
+
+
+@pytest.mark.asyncio
+async def test_runner_wait_done_returns_status():
+    queue = asyncio.Queue()
+    runner = VirtualTestRunner(FakeContext(queue))
+
+    async def handler(event):
+        await event.send(MessageChain().message("ok"))
+        event.cleanup_temporary_local_files()
+
+    task = asyncio.create_task(consume(queue, handler))
+    try:
+        test_id = await runner.start(sessions=[make_session(1)], text="hi")
+        rec = await runner.wait_done(test_id, timeout_secs=5.0)
+        assert rec["done"] is True
+        assert rec["results"][0]["status"] == "ok"
+    finally:
+        task.cancel()
+
+
+@pytest.mark.asyncio
+async def test_runner_wait_done_timeout_and_unknown():
+    queue = asyncio.Queue()
+    runner = VirtualTestRunner(FakeContext(queue))
+    # 无人消费：pipeline 永不完成 → 超时抛 asyncio.TimeoutError
+    test_id = await runner.start(sessions=[make_session(1)], text="hi")
+    with pytest.raises(TimeoutError):
+        await runner.wait_done(test_id, timeout_secs=0.05)
+    with pytest.raises(KeyError):
+        await runner.wait_done("t_none", timeout_secs=0.05)
+    # 收尾：放行悬挂的 _await_event，避免挂起任务泄漏
+    queue.get_nowait().cleanup_temporary_local_files()
+    await asyncio.sleep(0.01)
+
+
+# ---------- 测试集运行编排器（TestsetRunner） ----------
+
+
+async def wait_testset_done(
+    tsr: TestsetRunner, run_id: str, max_wait: float = 5.0
+) -> dict:
+    """轮询测试集运行状态直到终态（模拟前端轮询）。"""
+    async with asyncio.timeout(max_wait):
+        while True:
+            rec = tsr.status(run_id)
+            if rec and rec["status"] != "running":
+                return rec
+            await asyncio.sleep(0.01)
+
+
+def _make_testset(
+    testset_id: str, name: str, texts: list[tuple[str, dict | None]]
+) -> dict:
+    return {
+        "id": testset_id,
+        "name": name,
+        "created_at": 0,
+        "messages": [{"text": t, "rule": r} for t, r in texts],
+    }
+
+
+@pytest.mark.asyncio
+async def test_testset_runner_sequential():
+    queue = asyncio.Queue()
+    context = FakeContext(queue)
+    tsr = TestsetRunner(context, VirtualTestRunner(context))
+    processed: list[str] = []
+
+    async def handler(event):
+        processed.append(event.message_str)
+        await event.send(MessageChain().message(f"回复 {event.message_str}"))
+        event.cleanup_temporary_local_files()
+
+    task = asyncio.create_task(consume(queue, handler))
+    try:
+        testset = _make_testset(
+            "ts_1",
+            "顺序测试",
+            [
+                ("第一问", {"type": "contains", "value": "回复 第一问"}),
+                ("第二问", None),
+            ],
+        )
+        run_id = tsr.start_run(
+            testset, [make_session(1), make_session(2)], "sequential"
+        )
+        rec = await wait_testset_done(tsr, run_id)
+    finally:
+        task.cancel()
+    assert rec["status"] == "done"
+    # 逐条模式：每步全部会话完成才发下一条
+    assert processed == ["第一问", "第一问", "第二问", "第二问"]
+    assert [s["status"] for s in rec["steps"]] == ["done", "done"]
+    assert rec["steps"][0]["results"][0]["assertion"]["pass"] is True
+
+
+@pytest.mark.asyncio
+async def test_testset_runner_batch():
+    queue = asyncio.Queue()
+    context = FakeContext(queue)
+    tsr = TestsetRunner(context, VirtualTestRunner(context))
+    processed: list[str] = []
+
+    async def handler(event):
+        processed.append(event.message_str)
+        await event.send(MessageChain().message(f"回复 {event.message_str}"))
+        event.cleanup_temporary_local_files()
+
+    task = asyncio.create_task(consume(queue, handler))
+    try:
+        testset = _make_testset(
+            "ts_2",
+            "批量测试",
+            [("b1", None), ("b2", {"type": "not_contains", "value": "绝对不存在"})],
+        )
+        run_id = tsr.start_run(testset, [make_session(1)], "batch")
+        rec = await wait_testset_done(tsr, run_id)
+    finally:
+        task.cancel()
+    assert rec["status"] == "done"
+    assert sorted(processed) == ["b1", "b2"]  # 两条消息均已发出（batch 不等待）
+    assert rec["steps"][1]["results"][0]["assertion"]["pass"] is True
+
+
+@pytest.mark.asyncio
+async def test_testset_runner_step_timeout(monkeypatch):
+    monkeypatch.setattr(tsr_mod, "TESTSET_STEP_TIMEOUT", 0.05)
+    queue = asyncio.Queue()
+    context = FakeContext(queue)
+    tsr = TestsetRunner(context, VirtualTestRunner(context))
+
+    testset = _make_testset("ts_3", "超时测试", [("m1", None), ("m2", None)])
+    run_id = tsr.start_run(testset, [make_session(1)], "sequential")
+    rec = await wait_testset_done(tsr, run_id)
+    # 收尾：放行悬挂的 _await_event
+    while not queue.empty():
+        queue.get_nowait().cleanup_temporary_local_files()
+    await asyncio.sleep(0.01)
+
+    assert rec["status"] == "error"
+    assert rec["steps"][0]["status"] == "error"
+    assert "超时" in rec["steps"][0]["error"]
+    assert rec["steps"][1]["status"] == "pending"  # 后续步骤未发
+    assert "超时" in rec["error"]
+
+
+@pytest.mark.asyncio
+async def test_testset_runner_abort():
+    queue = asyncio.Queue()
+    context = FakeContext(queue)
+    tsr = TestsetRunner(context, VirtualTestRunner(context))
+    gate = asyncio.Event()
+
+    async def handler(event):
+        if event.message_str == "第一步":
+            await gate.wait()  # 阻塞当前步骤，直到 abort 确认后再放行
+        await event.send(MessageChain().message(f"回复 {event.message_str}"))
+        event.cleanup_temporary_local_files()
+
+    task = asyncio.create_task(consume(queue, handler))
+    try:
+        testset = _make_testset(
+            "ts_4", "取消测试", [("第一步", None), ("第二步", None)]
+        )
+        run_id = tsr.start_run(testset, [make_session(1)], "sequential")
+        async with asyncio.timeout(5.0):
+            while True:
+                if tsr.status(run_id)["current_step"] == 0:
+                    break
+                await asyncio.sleep(0.01)
+        assert tsr.abort(run_id) is True
+        gate.set()  # 放行当前步骤
+        # abort 只置标记：run 状态立即变 cancelled，但当前步骤仍在异步完成——
+        # 因此轮询「步骤 0 落定」而非 run 状态。
+        async with asyncio.timeout(5.0):
+            while True:
+                rec = tsr.status(run_id)
+                if rec["steps"][0]["status"] == "done":
+                    break
+                await asyncio.sleep(0.01)
+    finally:
+        task.cancel()
+    assert rec["status"] == "cancelled"
+    assert rec["steps"][0]["status"] == "done"  # 当前步骤照常完成并收结果
+    assert rec["steps"][1]["status"] == "pending"  # 后续不再发
+    assert rec["steps"][1]["test_id"] is None
+
+
+def test_testset_runner_list_runs_and_prune():
+    context = FakeContext()
+    tsr = TestsetRunner(context, VirtualTestRunner(context))
+    now = time.time()
+    base = {
+        "run_id": "",
+        "testset_id": "ts",
+        "testset_name": "旧完成",
+        "mode": "sequential",
+        "status": "done",
+        "current_step": -1,
+        "steps": [],
+        "started_at": 0,
+        "finished_at": None,
+        "error": None,
+    }
+    old_done = dict(
+        base, run_id="tr_done_old", started_at=now - 3600, finished_at=now - 661
+    )
+    stale = dict(
+        base,
+        run_id="tr_running_stale",
+        testset_name="悬挂",
+        status="running",
+        started_at=now - 3601,
+        finished_at=None,
+    )
+    fresh = dict(
+        base,
+        run_id="tr_fresh",
+        testset_name="新鲜",
+        status="running",
+        started_at=now,
+        finished_at=None,
+    )
+    tsr._runs = {r["run_id"]: r for r in (old_done, stale, fresh)}
+
+    runs = tsr.list_runs()
+    assert [r["run_id"] for r in runs] == ["tr_fresh"]  # 过期完成与悬挂运行被清理
+
+
+# ---------- 测试集 Web 接口 ----------
+
+
+@pytest.mark.asyncio
+async def test_plugin_testset_crud(tmp_path):
+    plugin = main_mod.VirtualSessionPlugin(FakeContext())
+    plugin.testset_store = TestsetStore(data_dir=tmp_path)
+
+    resp = await call_handler(
+        plugin.create_testset,
+        {
+            "name": "回归测试",
+            "messages": [
+                {"text": "第一问", "rule": {"type": "contains", "value": "你好"}},
+                {"text": "第二问"},
+            ],
+        },
+    )
+    assert resp.status_code == 200
+    ts = json.loads(resp.body)
+    assert ts["id"].startswith("ts_")
+    assert len(ts["messages"]) == 2
+    assert ts["messages"][1]["rule"] is None  # 缺 rule → None
+
+    resp = await plugin.list_testsets()
+    assert len(json.loads(resp.body)["testsets"]) == 1
+
+    resp = await call_handler(
+        plugin.update_testset,
+        {"name": "改名", "messages": [{"text": "新问"}]},
+        ts["id"],
+    )
+    body = json.loads(resp.body)
+    assert body["name"] == "改名"
+    assert len(body["messages"]) == 1
+
+    resp = await call_handler(plugin.delete_testsets, {"ids": [ts["id"]]})
+    assert json.loads(resp.body)["deleted"] == 1
+    assert len(plugin.testset_store.list_testsets()) == 0
+
+
+@pytest.mark.asyncio
+async def test_plugin_testset_crud_validation(tmp_path):
+    plugin = main_mod.VirtualSessionPlugin(FakeContext())
+    plugin.testset_store = TestsetStore(data_dir=tmp_path)
+
+    cases = [
+        {"name": "x", "messages": "不是数组"},
+        {"name": "x", "messages": []},
+        {"name": "x", "messages": [{"text": "  "}]},
+        {"name": "x", "messages": [{"text": "ok", "rule": "regex"}]},
+        {
+            "name": "x",
+            "messages": [
+                {"text": f"m{i}"} for i in range(tss_mod.MAX_MESSAGES_PER_TESTSET + 1)
+            ],
+        },
+    ]
+    for payload in cases:
+        resp = await call_handler(plugin.create_testset, payload)
+        assert resp.status_code == 400, payload
+
+    resp = await call_handler(
+        plugin.update_testset, {"name": "x", "messages": [{"text": "ok"}]}, "ts_none"
+    )
+    assert resp.status_code == 404
+
+    resp = await call_handler(plugin.delete_testsets, {"ids": []})
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_plugin_run_testset_validation(tmp_path):
+    plugin = main_mod.VirtualSessionPlugin(FakeContext())
+    plugin.group_mgr = VirtualGroupManager(data_dir=tmp_path)
+    plugin.testset_store = TestsetStore(data_dir=tmp_path)
+    ts = plugin.testset_store.create_testset("T", [{"text": "m1"}])
+    ts_empty = plugin.testset_store.create_testset("空", [{"text": "  "}])
+
+    resp = await call_handler(plugin.run_testset, {"sessions": ["vs_1"]})
+    assert resp.status_code == 400  # 缺 testset_id
+
+    resp = await call_handler(
+        plugin.run_testset, {"testset_id": "ts_none", "sessions": ["vs_1"]}
+    )
+    assert resp.status_code == 404
+
+    resp = await call_handler(
+        plugin.run_testset, {"testset_id": ts_empty["id"], "sessions": ["vs_1"]}
+    )
+    assert resp.status_code == 400  # 测试集没有消息
+
+    resp = await call_handler(
+        plugin.run_testset,
+        {"testset_id": ts["id"], "mode": "crazy", "sessions": ["vs_1"]},
+    )
+    assert resp.status_code == 400
+
+    resp = await call_handler(
+        plugin.run_testset, {"testset_id": ts["id"], "sessions": ["vs_missing"]}
+    )
+    assert resp.status_code == 404  # 会话缺失
+
+
+@pytest.mark.asyncio
+async def test_plugin_run_testset_ok(tmp_path):
+    queue = asyncio.Queue()
+    context = FakeContext(queue)
+    plugin = main_mod.VirtualSessionPlugin(context)
+    plugin.group_mgr = VirtualGroupManager(data_dir=tmp_path)
+    plugin.testset_store = TestsetStore(data_dir=tmp_path)
+    group = plugin.group_mgr.create_group("组A", count=1)
+    sid = group["sessions"][0]["id"]
+    ts = plugin.testset_store.create_testset("T", [{"text": "m1"}])
+
+    async def handler(event):
+        await event.send(MessageChain().message("ok"))
+        event.cleanup_temporary_local_files()
+
+    task = asyncio.create_task(consume(queue, handler))
+    try:
+        resp = await call_handler(
+            plugin.run_testset, {"testset_id": ts["id"], "sessions": [sid]}
+        )
+        assert resp.status_code == 200
+        body = json.loads(resp.body)
+        assert body["run_id"].startswith("tr_")
+        assert body["steps"] == 1
+        rec = await wait_testset_done(plugin.testset_runner, body["run_id"])
+    finally:
+        task.cancel()
+    assert rec["status"] == "done"
+    assert rec["steps"][0]["results"][0]["status"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_plugin_testset_run_status_abort_runs(tmp_path):
+    queue = asyncio.Queue()
+    plugin = main_mod.VirtualSessionPlugin(FakeContext(queue))
+    plugin.group_mgr = VirtualGroupManager(data_dir=tmp_path)
+    plugin.testset_store = TestsetStore(data_dir=tmp_path)
+    group = plugin.group_mgr.create_group("组A", count=1)
+    sid = group["sessions"][0]["id"]
+    ts = plugin.testset_store.create_testset("T", [{"text": "m1"}])
+
+    # 缺 run_id → 400
+    req = make_plugin_request({}, query="")
+    with bind_request_context(req):
+        resp = await plugin.testset_run_status()
+    assert resp.status_code == 400
+
+    # 未知 run_id → 404
+    req = make_plugin_request({}, query="run_id=tr_none")
+    with bind_request_context(req):
+        resp = await plugin.testset_run_status()
+    assert resp.status_code == 404
+
+    # 启动运行 → status 可查询
+    run_id = plugin.testset_runner.start_run(
+        ts, plugin.group_mgr.effective_many([sid]), "sequential"
+    )
+    req = make_plugin_request({}, query=f"run_id={run_id}")
+    with bind_request_context(req):
+        resp = await plugin.testset_run_status()
+    assert resp.status_code == 200
+    assert json.loads(resp.body)["run_id"] == run_id
+
+    # abort：存在 → True；未知 → False
+    resp = await call_handler(plugin.abort_testset_run, {"run_id": run_id})
+    assert json.loads(resp.body)["cancelled"] is True
+    resp = await call_handler(plugin.abort_testset_run, {"run_id": "tr_none"})
+    assert json.loads(resp.body)["cancelled"] is False
+
+    # runs 列表包含该运行
+    resp = await plugin.testset_runs()
+    assert any(r["run_id"] == run_id for r in json.loads(resp.body)["runs"])
+
+    # 收尾：放行悬挂的 _await_event
+    while not queue.empty():
+        queue.get_nowait().cleanup_temporary_local_files()
+    await asyncio.sleep(0.01)
+
+
+@pytest.mark.asyncio
+async def test_plugin_run_test_with_assertion(tmp_path):
+    queue = asyncio.Queue()
+    plugin = main_mod.VirtualSessionPlugin(FakeContext(queue))
+    plugin.group_mgr = VirtualGroupManager(data_dir=tmp_path)
+    group = plugin.group_mgr.create_group("组A", count=1)
+    sid = group["sessions"][0]["id"]
+
+    async def handler(event):
+        await event.send(MessageChain().message("回复内容"))
+        event.cleanup_temporary_local_files()
+
+    task = asyncio.create_task(consume(queue, handler))
+    try:
+        resp = await call_handler(
+            plugin.run_test,
+            {
+                "sessions": [sid],
+                "text": "hi",
+                "assertion": {"type": "contains", "value": "回复内容"},
+            },
+        )
+        body = json.loads(resp.body)
+        assert resp.status_code == 200
+        rec = await wait_run_done(plugin.runner, body["test_id"])
+    finally:
+        task.cancel()
+    assert rec["results"][0]["assertion"]["pass"] is True
+
+    # 非 dict assertion → 400
+    resp = await call_handler(
+        plugin.run_test, {"sessions": [sid], "text": "hi", "assertion": "regex"}
+    )
+    assert resp.status_code == 400

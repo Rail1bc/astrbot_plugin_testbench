@@ -12,4 +12,7 @@ export const state = {
   historyCache: new Map(),
   expandedGroups: new Set(),
   expandedSessions: new Set(),
+  testsets: [],
+  expandedTestsets: new Set(),
+  activeRunId: null,
 };

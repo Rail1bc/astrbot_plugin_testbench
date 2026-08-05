@@ -19,11 +19,18 @@ _FRONTEND_MODULES = (
     "utils",
     "modal",
     "group_list",
+    "testset_list",
 )
 
 
 def _read_module(name: str) -> str:
     return (PLUGIN_DIR / "pages" / "testbench" / f"{name}.js").read_text(
+        encoding="utf-8"
+    )
+
+
+def _read_html() -> str:
+    return (PLUGIN_DIR / "pages" / "testbench" / "index.html").read_text(
         encoding="utf-8"
     )
 
@@ -220,3 +227,29 @@ def test_frontend_pending_hides_done_after_history_refresh():
         "loadHistory 成功路径必须记录刷新时刻"
     )
     assert "status_at" in src, "renderPendingStrip 未按 status_at 过滤已完成条目"
+
+
+def test_frontend_rail_has_testset_view():
+    """测试集视图入口不得丢失。
+
+    左侧窄条是视图切换入口（会话列表 / 测试集）：index.html 必须含
+    data-view="testsets" 按钮；app.js 必须能把该视图切换到 .testsets-card
+    并刷新测试集数据。任一缺失，测试集列表就无法从 UI 进入。
+    """
+    html = _read_html()
+    app_js = _read_module("app")
+    assert 'data-view="testsets"' in html, "index.html 缺少测试集视图入口（rail 按钮）"
+    assert ".testsets-card" in app_js, "app.js 未引用 .testsets-card（视图切换丢失）"
+    assert 'view === "testsets"' in app_js, "app.js 缺少 testsets 视图分支"
+
+
+def test_frontend_testset_run_is_backend_driven():
+    """测试集运行必须由后端驱动：前端只一次性启动运行并轮询后端记录。
+
+    若退回前端逐条驱动（循环调 runTest 逐步等待），页面刷新/关闭会中断后续
+    步骤。防回归：app.js 必须调用 runTestsetApi（整场运行一次启动）并用
+    pollTestsetRun 轮询后端运行记录，而不是逐条调用 runTest。
+    """
+    src = _read_module("app")
+    assert "runTestsetApi(" in src, "app.js 未调用 runTestsetApi 启动测试集运行"
+    assert "pollTestsetRun(" in src, "app.js 未实现 pollTestsetRun 轮询后端运行记录"

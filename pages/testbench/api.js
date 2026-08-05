@@ -71,3 +71,36 @@ export async function saveHistory(payload) {
 export async function regenerateHistory(payload) {
   return bridge.apiPost("sessions/history/regenerate", payload);
 }
+
+export async function listTestsets() {
+  return bridge.apiGet("testsets");
+}
+
+export async function createTestset(payload) {
+  return bridge.apiPost("testsets", payload);
+}
+
+export async function updateTestset(payload) {
+  return bridge.apiPost(`testsets/${encodeURIComponent(payload.id)}/update`, payload);
+}
+
+export async function deleteTestsets(ids) {
+  return bridge.apiPost("testsets/delete", { ids });
+}
+
+export async function runTestset(payload) {
+  return bridge.apiPost("testsets/run", payload);
+}
+
+export async function runTestsetStatus(runId) {
+  // 查询串走第二参数（params），见 runStatus
+  return bridge.apiGet("testsets/run/status", { run_id: runId });
+}
+
+export async function abortTestsetRun(runId) {
+  return bridge.apiPost("testsets/run/abort", { run_id: runId });
+}
+
+export async function listTestsetRuns() {
+  return bridge.apiGet("testsets/runs");
+}

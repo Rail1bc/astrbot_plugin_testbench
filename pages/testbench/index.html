@@ -12,7 +12,9 @@
         <button class="rail-btn active" data-view="sessions" title="会话列表" aria-label="会话列表">
           ☰
         </button>
-        <!-- 后续扩展的方形 UI 按钮放在这里 -->
+        <button class="rail-btn" data-view="testsets" title="测试集" aria-label="测试集">
+          ✎
+        </button>
       </aside>
 
       <aside class="sidebar">
@@ -28,6 +30,19 @@
             <button id="btn-refresh" class="btn small">刷新</button>
           </div>
           <div id="group-list" class="group-list"></div>
+        </section>
+
+        <section class="card testsets-card" hidden>
+          <div class="toolbar">
+            <span id="testset-count" class="count-label"></span>
+            <span class="toolbar-spacer"></span>
+            <button id="btn-refresh-testsets" class="btn small">刷新</button>
+          </div>
+          <div id="testset-list" class="group-list"></div>
+          <div class="recent-runs">
+            <div class="recent-runs-title">最近运行</div>
+            <div id="recent-runs"></div>
+          </div>
         </section>
       </aside>
 
@@ -52,6 +67,7 @@
               <input id="run-text" type="text" placeholder="输入一条消息，发送给所有已打开的会话" />
             </label>
             <button id="btn-run-all" class="btn primary">发送到全部</button>
+            <button id="btn-abort-run" class="btn small danger" hidden>取消测试集运行</button>
             <label class="align-toggle" title="启用后所有面板按对话轮次对齐，滑动条可同步滚动全部窗口">
               <input id="align-toggle" type="checkbox" />
               轮次对齐
