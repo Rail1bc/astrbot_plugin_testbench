@@ -94,6 +94,7 @@
 
 ### 🔄 Changed (行为变更)
 
+- **测试组列表组头简化**：组头首行只保留组名与右侧按钮（打开全部 / 编辑）——会话数徽标移到 `.group-meta` 与平台 / 配置档案 / 安全徽标同行；「＋ 新增会话」与「✕ 删除组」按钮移除——新增会话改走编辑弹窗的「会话数量」（保存时少于目标值自动补建，与原来「＋」功能一致），**删除测试组入口移入编辑弹窗**（danger 按钮 → 原有确认流程，先关编辑弹窗再确认，防弹窗叠加）；组名以 `flex-grow` 占满组头剩余宽度，超长名称悬停 `title` 显示完整值，不再被右侧按钮挤成很短一截。
 - **面板视图切换（LLM 历史 / 消息流）改为全局统一控制**：切换按钮从单个会话页眉移除，移到与「轮次对齐」开关**同一行右侧**（`#view-toggle`，`.run-overview-controls` 成组右对齐），点击统一切换**全部已打开的会话**（新打开的面板沿用当前全局视图）——避免部分会话历史视图、部分消息流视图时轮次对齐含义不一致；**消息流视图也参与轮次对齐**（对齐模式下按 user 发言把消息流分组渲染 `.turn-wrap`，与 LLM 历史的轮次语义一致，reflowAlign 统一各面板每轮高度）。
 - 前端由 1s 轮询改为**全事件驱动**：移除 `pollRun` / `pollTestsetRun` / `pollPending` 三个轮询器与 `startPolling` 辅助，改订阅 `/events` SSE 事件流（`connectEvents` → `handleEvent` 分发 pending / session_done / test_done / testset）；断线后延迟 3s 重连，并以 `reconcileEvents()` 用轮询接口一次性快照对账（`getPending` + 在途各 test_id 逐个 `runStatus` + 有活动运行则 `runTestsetStatus`），丢失的事件由其兜底——无轮询 fallback。
 - 测试集运行与手动群发统一逐会话反馈路径：共用 `applySessionFeedback`（面板状态 + 回复耗时 + 逐会话历史刷新），测试集运行中**新完成的步骤逐结果实时刷新面板**，不再等终态一次性刷新。

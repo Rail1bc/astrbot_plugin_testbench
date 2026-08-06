@@ -557,6 +557,7 @@ code {
   font-size: 13px;
   word-break: break-all;
   min-width: 0;
+  flex: 1 1 auto; /* 组头首行只剩名字与右侧按钮，名字占满剩余宽度（超长省略号） */
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

@@ -106,6 +106,9 @@ export function createGroupList(env) {
       // （会话被单独关闭后自动回到「打开全部」，点击只补开未打开的）
       const allOpen =
         sessions.length > 0 && sessions.every((s) => state.openIds.includes(s.id));
+      // 会话数徽标与平台/档案/安全徽标同处 group-meta：组头首行只留名字与右侧
+      // 按钮，给名字让出显示宽度（超长名称悬停 title 可见完整值）
+      const countBadge = `<span class="badge">${sessions.length} 会话</span>`;
       const platformBadge = g.platform_id
         ? `<span class="badge">${escapeHtml(platformName(g.platform_id))}</span>`
         : `<span class="badge">${escapeHtml(platformName("webchat"))}</span>`;
@@ -119,16 +122,13 @@ export function createGroupList(env) {
       item.innerHTML =
         `<div class="group-head">` +
         `<span class="group-toggle">${expanded ? "▾" : "▸"}</span>` +
-        `<span class="group-name">${escapeHtml(g.name)}</span>` +
-        `<span class="badge">${sessions.length} 会话</span>` +
+        `<span class="group-name" title="${escapeHtml(g.name)}">${escapeHtml(g.name)}</span>` +
         `<span class="group-actions">` +
         `<button class="btn small" data-action="open-all">${allOpen ? "关闭全部" : "打开全部"}</button>` +
-        `<button class="icon-btn" data-action="add" title="新增会话">＋</button>` +
         `<button class="icon-btn" data-action="edit" title="编辑测试组">✎</button>` +
-        `<button class="icon-btn danger" data-action="delete-group" title="删除组">✕</button>` +
         `</span>` +
         `</div>` +
-        `<div class="group-meta">${platformBadge}${confBadge}${warnBadge}</div>` +
+        `<div class="group-meta">${countBadge}${platformBadge}${confBadge}${warnBadge}</div>` +
         (expanded
           ? `<div class="group-sessions">${renderGroupSessions(g)}</div>`
           : "");
@@ -141,15 +141,9 @@ export function createGroupList(env) {
       item.querySelector('[data-action="open-all"]').addEventListener("click", () =>
         openAll(g.id),
       );
-      item.querySelector('[data-action="add"]').addEventListener("click", () =>
-        promptAddSessions(g.id),
-      );
       item.querySelector('[data-action="edit"]').addEventListener("click", () =>
         openGroupSettings(g.id),
       );
-      item
-        .querySelector('[data-action="delete-group"]')
-        .addEventListener("click", () => deleteGroup(g.id));
 
       // 会话行：头部点击展开配置；行内操作按钮（打开/删除）走各自处理
       item.querySelectorAll(".session-item").forEach((sItem) => {
@@ -223,7 +217,7 @@ export function createGroupList(env) {
 
   function renderGroupSessions(g) {
     const sessions = g.sessions || [];
-    if (!sessions.length) return '<div class="empty">组内暂无会话，点组名右侧「＋」添加</div>';
+    if (!sessions.length) return '<div class="empty">组内暂无会话，点「✎ 编辑」在会话数量中设置添加</div>';
     return sessions
       .map((s) => {
         const v = effectiveView(s.id);
@@ -265,29 +259,6 @@ export function createGroupList(env) {
     if (state.expandedGroups.has(id)) state.expandedGroups.delete(id);
     else state.expandedGroups.add(id);
     renderGroupList();
-  }
-
-  function promptAddSessions(gid) {
-    const input = document.createElement("input");
-    input.type = "number";
-    input.min = "1";
-    input.max = "500";
-    input.value = "5";
-    openModal({
-      title: "新增会话",
-      content: field("数量", input),
-      okText: "新增",
-      onOk: async () => {
-        const n = Number(input.value);
-        if (!Number.isInteger(n) || n < 1) {
-          showModal("数量必须是大于 0 的整数");
-          return;
-        }
-        const created = await addGroupSessions(gid, n);
-        await refreshGroups();
-        showRunStatus("ok", `已新增 ${created.length} 个会话`);
-      },
-    });
   }
 
   function deleteGroup(gid) {
@@ -444,6 +415,17 @@ export function createGroupList(env) {
       if (switchToIdentities) switchToIdentities();
     });
 
+    // 删除测试组入口移入编辑弹窗（组头 ✕ 按钮已移除）：先关编辑弹窗，
+    // 再走既有确认流程（确认后级联删除会话并联动清理路由与历史）
+    const deleteBtn = document.createElement("button");
+    deleteBtn.type = "button";
+    deleteBtn.className = "btn small danger";
+    deleteBtn.textContent = "删除测试组…";
+    deleteBtn.addEventListener("click", () => {
+      hideModal();
+      deleteGroup(gid);
+    });
+
     const refreshGroupMode = () => {
       fChatGroup.hidden = selType.value !== "GroupMessage";
     };
@@ -463,6 +445,7 @@ export function createGroupList(env) {
       field("消息类型", selType),
       fChatGroup,
       manageLink,
+      deleteBtn,
     );
 
     openModal({

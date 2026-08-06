@@ -516,6 +516,34 @@ def test_frontend_open_all_toggles_label_and_closes():
     )
 
 
+def test_frontend_group_head_simplified():
+    """组头首行只留名字与右侧按钮（打开全部 / 编辑），会话数徽标与删除入口迁移。
+
+    组头曾同时挤着会话数徽标、＋新增、✎编辑、✕删除，名字可显示长度过小。
+    现会话数徽标移到 group-meta 与平台/档案/安全徽标同行；＋（新增会话）与
+    ✕（删除组）按钮移除——新增会话走编辑弹窗的「会话数量」（保存时少于目标
+    值自动补建，编辑里有相同功能），删除组入口移到编辑弹窗内（danger 按钮 →
+    deleteGroup 确认流程）。超长组名以 flex-grow 占满剩余宽度，悬停 title 可见
+    完整名称。
+    """
+    gl_js = _read_module("group_list")
+    css = (PLUGIN_DIR / "pages" / "testbench" / "style.css").read_text(encoding="utf-8")
+    assert "${countBadge}${platformBadge}${confBadge}${warnBadge}" in gl_js, (
+        "会话数徽标未与平台/档案/安全徽标同处 group-meta"
+    )
+    assert 'data-action="add"' not in gl_js, "组头不应保留 ＋ 新增会话按钮"
+    assert 'data-action="delete-group"' not in gl_js, "组头不应保留 ✕ 删除组按钮"
+    assert "删除测试组…" in gl_js, "编辑弹窗缺少删除测试组入口"
+    assert "promptAddSessions" not in gl_js, "promptAddSessions 已无用应删除"
+    assert 'group-name" title="${escapeHtml(g.name)}"' in gl_js, (
+        "组名缺少悬停显示完整名称的 title"
+    )
+    assert "flex: 1 1 auto" in css, "组名未以 flex-grow 占满组头剩余宽度"
+    assert "点组名右侧「＋」添加" not in gl_js, (
+        "空组提示仍指引已移除的「＋」按钮（新增会话现走编辑弹窗会话数量）"
+    )
+
+
 def test_frontend_group_dialog_new_fields():
     """组配置弹窗须提交消息类型 / 绑定虚拟群聊字段，且不嵌管理弹窗。
 
