@@ -884,10 +884,13 @@ document.querySelectorAll(".rail-btn").forEach((btn) => {
 });
 
 await ready();
+// 配置档案必须先于测试组列表加载：组徽标按 state.confs 映射档案名称，若与
+// refreshGroups 并行，首帧渲染时档案可能尚未就绪，confName 回退显示原始 id
+// （如 eadfcf07…），须手动刷新才恢复名称。loadOptions 内部已各自捕获降级。
+await loadOptions();
 // allSettled：各初始化步骤相互独立，任一失败不阻塞其余步骤与事件流连接
 // （各步骤内部已自行降级，见 refreshGroups / refreshTestsets / refreshIdentities 的 catch）
 await Promise.allSettled([
-  loadOptions(),
   refreshGroups(),
   refreshTestsets(),
   refreshIdentities(),

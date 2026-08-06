@@ -390,6 +390,19 @@ def test_frontend_refresh_groups_defensive():
     assert "Promise.allSettled" in app_js, "初始化未用 Promise.allSettled 隔离失败"
 
 
+def test_frontend_load_options_before_initial_group_list():
+    """初始化须先加载配置档案，再渲染测试组列表。
+
+    组徽标经 confName 按 state.confs 映射档案名称（未命中回退原始 id）；
+    loadOptions 与 refreshGroups 并行时，首帧渲染可能赶在档案就绪之前，把
+    档案 id 直接显示成原始值（如 eadfcf07…），须手动刷新才恢复名称。
+    """
+    app_js = _read_module("app")
+    assert app_js.index("await loadOptions()") < app_js.index("Promise.allSettled"), (
+        "loadOptions 须先于 Promise.allSettled 完成（refreshGroups 首帧依赖 state.confs）"
+    )
+
+
 def test_frontend_event_driven_feedback():
     """前端反馈层必须为事件驱动：无轮询器，统一逐会话反馈 + 消费者注册表。
 
