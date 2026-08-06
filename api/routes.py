@@ -1,0 +1,162 @@
+"""Web API 路由表：一处看全，新增端点只需加一行。
+
+handler 用方法名字符串 + getattr 解析（main.py 的 Star 注册时），构造期即
+校验拼写（拼错直接抛 AttributeError）。
+"""
+
+_ROUTES: tuple[tuple[str, str, list[str], str], ...] = (
+    ("/providers", "list_providers", ["GET"], "列出可用的 LLM Provider 与模型"),
+    ("/confs", "list_confs", ["GET"], "列出配置档案"),
+    ("/platforms", "list_platforms", ["GET"], "列出已启用的平台适配器"),
+    ("/groups", "list_groups", ["GET"], "列出测试组（含组内会话）"),
+    ("/groups", "create_group", ["POST"], "创建测试组并生成组内虚拟会话"),
+    ("/groups/delete", "delete_groups", ["POST"], "删除测试组"),
+    (
+        "/groups/<group_id>/sessions",
+        "add_group_sessions",
+        ["POST"],
+        "向测试组内新增虚拟会话",
+    ),
+    (
+        "/groups/<group_id>/update",
+        "update_group",
+        ["POST"],
+        "更新测试组配置（组配置变更同步应用到仍继承组配置的会话）",
+    ),
+    ("/sessions", "list_sessions", ["GET"], "列出全部虚拟会话（已解析最终配置）"),
+    (
+        "/sessions/pending",
+        "session_pending",
+        ["GET"],
+        "查询全部在途/刚完成测试消息的实时状态",
+    ),
+    (
+        "/sessions/update",
+        "update_session",
+        ["POST"],
+        "设置会话自身的配置（覆盖组配置）",
+    ),
+    ("/sessions/delete", "delete_sessions", ["POST"], "删除虚拟会话"),
+    (
+        "/sessions/clone",
+        "clone_sessions",
+        ["POST"],
+        "克隆会话：同测试组内新建 N 个会话并拷贝其对话历史",
+    ),
+    (
+        "/sessions/derive",
+        "derive_session",
+        ["POST"],
+        "衍生会话：基于某会话历史创建全新测试组（组内会话历史一致）",
+    ),
+    (
+        "/sessions/<session_id>/history",
+        "session_history",
+        ["GET"],
+        "查看虚拟会话的对话历史",
+    ),
+    ("/reset", "reset_sessions", ["POST"], "重置虚拟会话的对话历史"),
+    (
+        "/test/run",
+        "run_test",
+        ["POST"],
+        "向多个虚拟会话投递消息（立即返回 test_id，结果经 status 接口查询）",
+    ),
+    (
+        "/test/run/status",
+        "test_run_status",
+        ["GET"],
+        "查询测试运行状态（已完成的会话逐个返回结果）",
+    ),
+    (
+        "/sessions/history/save",
+        "save_history",
+        ["POST"],
+        "整体替换会话的对话历史（JSON 编辑器保存；未列出的对话将被删除）",
+    ),
+    (
+        "/sessions/history/regenerate",
+        "regenerate_history",
+        ["POST"],
+        "重新生成指定轮次（截断该轮之后的历史并重发该轮用户消息）",
+    ),
+    ("/testsets", "list_testsets", ["GET"], "列出全部测试集"),
+    (
+        "/testsets",
+        "create_testset",
+        ["POST"],
+        "创建测试集（连续 user 消息序列，可带断言规则）",
+    ),
+    ("/testsets/delete", "delete_testsets", ["POST"], "删除测试集"),
+    (
+        "/testsets/<testset_id>/update",
+        "update_testset",
+        ["POST"],
+        "更新测试集（名称与消息序列整体替换）",
+    ),
+    (
+        "/testsets/run",
+        "run_testset",
+        ["POST"],
+        "启动测试集运行（后端后台任务驱动，立即返回 run_id，进度经 status 查询）",
+    ),
+    (
+        "/testsets/run/status",
+        "testset_run_status",
+        ["GET"],
+        "查询测试集运行状态（逐步骤进度与逐会话结果）",
+    ),
+    (
+        "/testsets/run/abort",
+        "abort_testset_run",
+        ["POST"],
+        "请求取消测试集运行（当前步骤完成即止）",
+    ),
+    ("/testsets/runs", "testset_runs", ["GET"], "最近测试集运行摘要列表"),
+    ("/identities", "list_identities", ["GET"], "列出全部测试身份"),
+    (
+        "/identities",
+        "create_identity",
+        ["POST"],
+        "创建测试身份（name 必填，sender_id/sender_name 缺失时回退名称）",
+    ),
+    ("/identities/delete", "delete_identities", ["POST"], "删除测试身份"),
+    (
+        "/identities/<identity_id>/update",
+        "update_identity",
+        ["POST"],
+        "更新测试身份",
+    ),
+    ("/chat-groups", "list_chat_groups", ["GET"], "列出全部虚拟群聊"),
+    (
+        "/chat-groups",
+        "create_chat_group",
+        ["POST"],
+        "创建虚拟群聊（member_ids 引用身份 id）",
+    ),
+    ("/chat-groups/delete", "delete_chat_groups", ["POST"], "删除虚拟群聊"),
+    (
+        "/chat-groups/<group_id>/update",
+        "update_chat_group",
+        ["POST"],
+        "更新虚拟群聊",
+    ),
+    (
+        "/sessions/<session_id>/stream",
+        "session_stream",
+        ["GET"],
+        "查看虚拟会话的消息流（与 LLM 历史并行的运行时记录）",
+    ),
+    (
+        "/sessions/stream/clear",
+        "clear_stream",
+        ["POST"],
+        "清空指定虚拟会话的消息流",
+    ),
+    (
+        "/events",
+        "events",
+        ["GET"],
+        "SSE 事件流（在途/会话完成/测试完成/测试集进度实时推送）",
+    ),
+)

@@ -27,7 +27,8 @@ _UNSET = object()
 def umo_of(session: dict) -> str:
     """根据（已解析的）虚拟会话数据计算 unified_msg_origin。"""
     platform_id = session.get("platform_id") or DEFAULT_PLATFORM_ID
-    return f"{platform_id}:{MESSAGE_TYPE}:{session['id']}"
+    message_type = session.get("message_type") or MESSAGE_TYPE
+    return f"{platform_id}:{message_type}:{session['id']}"
 
 
 class VirtualGroupManager:
@@ -55,7 +56,23 @@ class VirtualGroupManager:
             except (OSError, json.JSONDecodeError):
                 data = None
             if isinstance(data, dict) and isinstance(data.get("groups"), list):
-                return [g for g in data["groups"] if isinstance(g, dict)]
+                groups: list[dict] = []
+                for g in data["groups"]:
+                    if not isinstance(g, dict):
+                        continue
+                    # 旧版数据补齐新增字段，防止缺键崩溃
+                    g.setdefault("message_type", None)
+                    g.setdefault("chat_group_id", None)
+                    # auto@ 已改为发送时选项（群发栏 / 测试集消息级），组/会话配置
+                    # 里的旧 auto_at 键清理掉，防止随全量写 JSON 永久残留
+                    g.pop("auto_at", None)
+                    for s in g.get("sessions", []):
+                        if isinstance(s, dict):
+                            s.setdefault("message_type", None)
+                            s.setdefault("chat_group_id", None)
+                            s.pop("auto_at", None)
+                    groups.append(g)
+                return groups
         return self._migrate_legacy()
 
     def _migrate_legacy(self) -> list[dict]:
@@ -75,6 +92,8 @@ class VirtualGroupManager:
             "conf_id": None,
             "sender_id": None,
             "sender_name": None,
+            "message_type": None,
+            "chat_group_id": None,
             "created_at": int(time.time()),
             "sessions": legacy,
         }
@@ -127,8 +146,15 @@ class VirtualGroupManager:
         sender_id: str | None = None,
         sender_name: str | None = None,
         name_prefix: str | None = None,
+        message_type: str | None = None,
+        chat_group_id: str | None = None,
     ) -> dict:
-        """创建测试组并生成 count 个继承组配置的虚拟会话。"""
+        """创建测试组并生成 count 个继承组配置的虚拟会话。
+
+        ``message_type`` 为 "FriendMessage" / "GroupMessage"（None 走默认私聊）；
+        ``chat_group_id`` 绑定虚拟群聊作为群成员来源（仅 GroupMessage 有意义）。
+        auto@ 是发送时选项（群发栏 / 测试集消息级），不再属于组配置。
+        """
         group = {
             "id": f"g_{uuid.uuid4().hex[:8]}",
             "name": str(name or "").strip() or "测试组",
@@ -136,6 +162,8 @@ class VirtualGroupManager:
             "conf_id": conf_id,
             "sender_id": sender_id,
             "sender_name": sender_name,
+            "message_type": message_type,
+            "chat_group_id": chat_group_id,
             "created_at": int(time.time()),
             "sessions": [],
         }
@@ -169,11 +197,13 @@ class VirtualGroupManager:
                 "id": f"vs_{uuid.uuid4().hex[:8]}",
                 "name": f"{prefix}{base + i + 1}",
                 "created_at": int(time.time()),
-                # 四键均为 None 时表示继承组配置
+                # 六键均为 None 时表示继承组配置
                 "platform_id": None,
                 "conf_id": None,
                 "sender_id": None,
                 "sender_name": None,
+                "message_type": None,
+                "chat_group_id": None,
             }
             for i in range(count)
         ]
@@ -183,13 +213,16 @@ class VirtualGroupManager:
         id_set = set(ids)
         removed: list[tuple[dict, dict]] = []
         kept: list[dict] = []
+        matched = False
         for group in self._groups:
             if group["id"] in id_set:
+                matched = True
                 for session in group.get("sessions", []):
                     removed.append((group, session))
             else:
                 kept.append(group)
-        if removed:
+        # 用 matched 而非 removed：组内 0 会话时 removed 恒为空，但组仍须删除
+        if matched:
             self._groups = kept
             self._save()
         return removed
@@ -221,29 +254,82 @@ class VirtualGroupManager:
         conf_id: Any = _UNSET,
         sender_id: Any = _UNSET,
         sender_name: Any = _UNSET,
-    ) -> tuple[dict, dict] | None:
+        message_type: Any = _UNSET,
+        chat_group_id: Any = _UNSET,
+    ) -> None:
         """更新会话的配置覆盖。
 
         字段值为 None 表示恢复「继承组配置」；conf_id 为 "" 表示显式使用
-        默认配置档案（不绑定）。返回 (组, 会话)，会话不存在时返回 None。
+        默认配置档案（不绑定）。message_type / chat_group_id 空串同样归一为
+        None（继承组）。会话对象原地变更，调用方持有的引用即最新值；会话
+        不存在时不生效（不抛错）。
         """
         found = self.find_session(session_id)
         if found is None:
-            return None
-        group, session = found
+            return
+        _, session = found
         changed = False
         for key, value in {
             "platform_id": platform_id,
             "conf_id": conf_id,
             "sender_id": sender_id,
             "sender_name": sender_name,
+            "message_type": message_type,
+            "chat_group_id": chat_group_id,
         }.items():
             if value is not _UNSET:
+                # conf_id 的空串语义是「显式使用默认档案」（不绑定），须原样保留
+                if (
+                    key in ("platform_id", "message_type", "chat_group_id")
+                    and value == ""
+                ):
+                    value = None
                 session[key] = value
                 changed = True
         if changed:
             self._save()
-        return group, session
+
+    def update_group(
+        self,
+        group_id: str,
+        *,
+        name: Any = _UNSET,
+        platform_id: Any = _UNSET,
+        conf_id: Any = _UNSET,
+        sender_id: Any = _UNSET,
+        sender_name: Any = _UNSET,
+        message_type: Any = _UNSET,
+        chat_group_id: Any = _UNSET,
+    ) -> dict | None:
+        """更新测试组配置。
+
+        字段值为 None 表示恢复默认（平台/档案/message_type/chat_group_id 空串
+        归一为 None）；组名空串回退「测试组」。已单独覆盖的会话配置不受影响
+        （仍以会话覆盖优先）。返回更新后的组，组不存在时返回 None。
+        """
+        group = self.get_group(group_id)
+        if group is None:
+            return None
+        for key, value in {
+            "name": name,
+            "platform_id": platform_id,
+            "conf_id": conf_id,
+            "sender_id": sender_id,
+            "sender_name": sender_name,
+            "message_type": message_type,
+            "chat_group_id": chat_group_id,
+        }.items():
+            if value is not _UNSET:
+                if (
+                    key in ("platform_id", "conf_id", "message_type", "chat_group_id")
+                    and value == ""
+                ):
+                    value = None
+                group[key] = value
+        if not (group.get("name") or "").strip():
+            group["name"] = "测试组"
+        self._save()
+        return group
 
     # ---------- 配置解析 ----------
 
@@ -255,6 +341,16 @@ class VirtualGroupManager:
             conf_id = group.get("conf_id") or None
         else:
             conf_id = conf_id or None  # "" 表示显式使用默认配置档案
+
+        # 消息类型：会话 → 组 → 默认私聊。auto@ 是发送时选项（群发栏 / 测试集
+        # 消息级，见 core/runner.py 的请求级 auto_at 参数），不属于有效配置。
+        message_type = (
+            session.get("message_type") or group.get("message_type") or MESSAGE_TYPE
+        )
+        chat_group_id = session.get("chat_group_id")
+        if chat_group_id is None:
+            chat_group_id = group.get("chat_group_id") or None
+
         return {
             "id": session["id"],
             "name": session.get("name", session["id"]),
@@ -272,6 +368,8 @@ class VirtualGroupManager:
                 or DEFAULT_SENDER_NAME
             ),
             "conf_id": conf_id,
+            "message_type": message_type,
+            "chat_group_id": chat_group_id,
             "created_at": session.get("created_at", 0),
         }
 

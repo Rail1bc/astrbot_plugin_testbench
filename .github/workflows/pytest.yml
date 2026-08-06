@@ -2,7 +2,7 @@ name: 🧪 单元测试
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, dev ]
   pull_request:
     branches: [ main, master, dev/* ]
 
@@ -33,3 +33,25 @@ jobs:
           # 后端测试需要 astrbot（插件运行时依赖，PyPI 包）；
           # 前端静态检查（tests/test_frontend.py）零依赖，任何环境可运行。
           python -m pytest tests/ -q --tb=short
+
+  js-check:
+    name: 前端 JS 语法检查
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v7
+
+      - name: 检查 JS 语法（node --check）
+        run: |
+          set -euo pipefail
+          # ES module import 需 .mjs 后缀才被 node 识别；与本地验证方式一致。
+          # 前端已拆分为多模块：入口 app.js + 事件反馈（events）/ 测试集运行（testset_run）
+          # / 测试集编辑器（testset_editor）/ 身份与群聊（identity_list）
+          # + api/align/chat/state/utils/modal/group_list/testset_list。
+          for f in app api align chat state utils modal group_list testset_list testset_editor events testset_run identity_list; do
+            cp "pages/testbench/$f.js" "$RUNNER_TEMP/$f.mjs"
+            node --check "$RUNNER_TEMP/$f.mjs"
+          done

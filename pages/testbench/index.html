@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>会话测试台</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <div class="layout">
+      <aside class="ui-rail">
+        <button class="rail-btn active" data-view="sessions" title="会话列表" aria-label="会话列表">
+          ☰
+        </button>
+        <button class="rail-btn" data-view="testsets" title="测试集" aria-label="测试集">
+          ✎
+        </button>
+        <button class="rail-btn" data-view="identities" title="身份与群聊" aria-label="身份与群聊">
+          👥
+        </button>
+      </aside>
+
+      <aside class="sidebar">
+        <header class="page-header">
+          <h1>会话测试台</h1>
+          <p class="subtitle">以测试组为单位，创建共享配置的虚拟会话并并行测试</p>
+        </header>
+
+        <section class="card groups-card">
+          <div class="toolbar">
+            <span id="group-count" class="count-label"></span>
+            <span class="toolbar-spacer"></span>
+            <button id="btn-refresh" class="btn small">刷新</button>
+          </div>
+          <div id="group-list" class="group-list"></div>
+        </section>
+
+        <section class="card testsets-card" hidden>
+          <div class="toolbar">
+            <span id="testset-count" class="count-label"></span>
+            <span class="toolbar-spacer"></span>
+            <button id="btn-refresh-testsets" class="btn small">刷新</button>
+          </div>
+          <div id="testset-list" class="group-list"></div>
+          <div class="recent-runs">
+            <div class="recent-runs-title">最近运行</div>
+            <div id="recent-runs"></div>
+          </div>
+        </section>
+
+        <section class="card identities-card" hidden>
+          <div class="toolbar">
+            <div class="tab-bar">
+              <button class="tab-btn active" data-tab="identity">身份</button>
+              <button class="tab-btn" data-tab="chatgroup">群聊</button>
+            </div>
+            <span class="toolbar-spacer"></span>
+            <button id="btn-refresh-identities" class="btn small">刷新</button>
+          </div>
+          <div class="tab-pane" data-pane="identity">
+            <div class="toolbar">
+              <span id="identity-count" class="count-label"></span>
+            </div>
+            <div id="identity-list" class="group-list"></div>
+            <div class="cg-drag-hint">拖拽身份到右侧群聊编辑视图，可快速加入群成员</div>
+          </div>
+          <div class="tab-pane" data-pane="chatgroup" hidden>
+            <div class="toolbar">
+              <span id="chat-group-count" class="count-label"></span>
+            </div>
+            <div id="chat-group-list" class="group-list"></div>
+          </div>
+        </section>
+      </aside>
+
+      <main class="workspace">
+        <div id="workspace-strip" class="workspace-strip">
+          <span id="run-status" class="run-status" hidden></span>
+          <span class="toolbar-spacer"></span>
+          <button id="btn-view-report" class="btn small" hidden>查看报告</button>
+          <button id="btn-abort-run" class="btn small danger" hidden>取消测试集运行</button>
+        </div>
+
+        <div id="sessions-view" class="sessions-view">
+          <div class="panels-block">
+            <div id="panels" class="panels"></div>
+            <div id="empty-hint" class="empty">
+              点左侧「＋」创建默认配置的测试组，展开组后点「打开全部」或单个会话的
+              「打开」即可并行查看；<br />
+              面板可拖拽排序、可置顶，每个面板可单独发送消息。
+            </div>
+          </div>
+
+          <div id="align-bar" class="align-bar" hidden>
+            <span id="align-turn-label" class="align-label">轮次 1/1</span>
+            <input id="align-slider" type="range" min="1" max="1" value="1" step="1" />
+          </div>
+
+          <section class="card run-bar">
+            <div class="run-overview-block">
+              <div class="run-overview-head">
+                <span id="run-overview-count" class="overview-total"></span>
+                <div class="run-overview-controls">
+                  <label class="align-toggle" title="启用后所有面板按对话轮次对齐，滑动条可同步滚动全部窗口">
+                    <input id="align-toggle" type="checkbox" />
+                    轮次对齐
+                  </label>
+                  <button id="view-toggle" class="btn small" title="统一切换全部已打开会话的显示视图（LLM 对话历史 / 真实消息流）">消息流</button>
+                </div>
+              </div>
+              <div id="run-overview" class="run-overview" hidden></div>
+            </div>
+            <div class="run-broadcast-block">
+              <span class="run-caption">群发消息（发送给所有已打开的会话）</span>
+              <div class="run-broadcast-row">
+                <textarea id="run-text" class="run-broadcast-input" rows="3" placeholder="输入一条消息，发送给所有已打开的会话（Ctrl+Enter 发送）"></textarea>
+                <div class="run-broadcast-side">
+                  <select id="run-sender">
+                    <option value="">各会话自身身份</option>
+                  </select>
+                  <label class="run-auto-at-label" title="群聊消息模拟「@机器人」发言直接唤醒；关闭后消息以未唤醒状态进管道，只能被过滤器（如 Heartflow）唤醒">
+                    <input id="run-auto-at" type="checkbox" checked />
+                    自动@
+                  </label>
+                  <button id="btn-run-all" class="btn primary">发送到全部</button>
+                </div>
+              </div>
+            </div>
+            <div class="run-testset-block">
+              <span class="run-caption">执行测试集（发送给所有已打开的会话）</span>
+              <div class="run-field-row">
+                <select id="run-testset">
+                  <option value="">选择测试集…</option>
+                </select>
+                <button id="btn-run-testset" class="btn primary" disabled>执行测试</button>
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <div id="testsets-view" class="testsets-view" hidden>
+          <section class="card testset-editor">
+            <div class="ts-head">
+              <div class="ts-name-wrap">
+                <input id="ts-name" type="text" placeholder="测试集名称" />
+                <span id="ts-meta" class="count-label"></span>
+                <span id="ts-dirty" class="hint warn-hint" hidden>有未保存的修改</span>
+              </div>
+              <div class="ts-actions">
+                <button id="btn-ts-save" class="btn small">保存修改</button>
+                <button id="btn-ts-run" class="btn small primary">▶ 运行</button>
+                <button id="btn-ts-export" class="btn small">导出</button>
+                <button id="btn-ts-import" class="btn small">导入</button>
+                <button id="btn-ts-delete" class="btn small danger">✕ 删除</button>
+                <input id="ts-import-file" type="file" accept=".json,application/json" hidden />
+              </div>
+            </div>
+            <div id="ts-messages" class="ts-messages"></div>
+            <div class="ts-foot">
+              <button id="btn-ts-add-msg" class="add-block">＋ 添加消息</button>
+              <span id="ts-segments" class="ts-segments"></span>
+            </div>
+          </section>
+        </div>
+
+        <div id="chat-group-view" class="chat-group-view" hidden>
+          <section class="card chat-group-editor">
+            <div class="cg-head">
+              <div class="cg-name-wrap">
+                <input id="cg-name" type="text" placeholder="虚拟群聊名称" />
+                <span id="cg-meta" class="count-label"></span>
+              </div>
+              <div class="cg-actions">
+                <button id="btn-cg-save" class="btn small">保存名称</button>
+                <button id="btn-cg-delete" class="btn small danger">✕ 删除</button>
+              </div>
+            </div>
+            <div id="cg-empty" class="empty">
+              在左侧「群聊」标签页选择或新建一个虚拟群聊，在此搜索成员并加入。
+            </div>
+            <div id="cg-members" class="cg-members" hidden>
+              <div class="cg-section-title">群成员（<span id="cg-member-count">0</span>）</div>
+              <div id="cg-member-list" class="cg-member-list"></div>
+              <div class="cg-drag-hint">也可把左侧「身份」列表项拖拽到此处加入</div>
+              <div class="cg-section-title">添加成员</div>
+              <input id="cg-search" type="text" placeholder="搜索成员：名称 / 发送者ID / 昵称…" />
+              <div id="cg-search-results" class="cg-search-results"></div>
+            </div>
+          </section>
+        </div>
+      </main>
+    </div>
+
+    <div id="modal-mask" class="modal-mask" hidden>
+      <div class="modal" role="dialog" aria-modal="true">
+        <div id="modal-body" class="modal-body"></div>
+        <div class="modal-actions">
+          <button id="modal-cancel" class="btn">取消</button>
+          <button id="modal-ok" class="btn primary">确定</button>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

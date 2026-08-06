@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .group_store import umo_of
+from ..store.group_store import umo_of
 
 
 async def delete_route_if_exists(ucr: Any, umop: str) -> None:
@@ -19,10 +19,26 @@ async def delete_route_if_exists(ucr: Any, umop: str) -> None:
         await ucr.delete_route(umop)
 
 
+async def put_route_front(ucr: Any, umop: str, conf_id: str) -> None:
+    """写入 umo → conf_id 路由并置于路由表**表头**。
+
+    AstrBot UCR 的解析是「按 dict 插入顺序首个匹配即返回」（``get_conf_id_for_umop``
+    顺序遍历、先命中先返回），而 ``update_route`` 对新键**追加到末尾**——若用户
+    已配置「全部会话」类兜底路由（如 ``webchat::``），后追加的会话级精确路由会被
+    兜底遮蔽、绑定静默失效。故本插件写入的精确路由移到表头，保证其优先于更宽的
+    既有规则命中；会话级精确 umo 只匹配自身（会话 id 无通配符），不影响其他会话
+    与规则的解析，未绑定的会话仍正常落到兜底路由。
+    """
+    ucr.umop_to_conf_id.pop(umop, None)
+    ucr.umop_to_conf_id = {umop: conf_id, **ucr.umop_to_conf_id}
+    # update_route 对已存在键只改值不改位置，并按整表落盘——值已就位，仅触发持久化
+    await ucr.update_route(umop, conf_id)
+
+
 async def apply_routes(ucr: Any, sessions: list[dict], conf_id: str) -> None:
-    """把每个会话路由到指定配置档案（精确到 umo，不互相影响）。"""
+    """把每个会话路由到指定配置档案（精确到 umo、表头优先，不互相影响）。"""
     for session in sessions:
-        await ucr.update_route(umo_of(session), conf_id)
+        await put_route_front(ucr, umo_of(session), conf_id)
 
 
 async def clear_routes(ucr: Any, sessions: list[dict]) -> None:
@@ -36,7 +52,7 @@ async def sync_route(ucr: Any, session: dict) -> None:
     umop = umo_of(session)
     conf_id = session.get("conf_id")
     if conf_id:
-        await ucr.update_route(umop, conf_id)
+        await put_route_front(ucr, umop, conf_id)
     else:
         await delete_route_if_exists(ucr, umop)
 
@@ -47,12 +63,13 @@ async def save_and_apply_routes(
     """保存每个会话的原路由并应用临时路由，返回 ``[(umo, 原 conf_id)]``。
 
     测试结束后用 :func:`restore_routes` 恢复原路由（原无路由的删除临时路由）。
+    临时路由同样置于表头：测试运行时指定的 conf_id 须优先于「全部会话」类兜底。
     """
     saved: list[tuple[str, str | None]] = []
     for session in sessions:
         umop = umo_of(session)
         saved.append((umop, ucr.umop_to_conf_id.get(umop)))
-        await ucr.update_route(umop, conf_id)
+        await put_route_front(ucr, umop, conf_id)
     return saved
 
 
