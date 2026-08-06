@@ -234,13 +234,11 @@ export function createTestsetRunController(env) {
     runTestset(ts, state.openIds.slice());
   }
 
-  // 群发栏实时显示：当前打开的会话总数 + 按所属测试组的分布
+  // 群发栏第 1 块实时显示：当前打开的会话总数 + 按所属测试组的分布（每行一条）
   function updateRunOverview() {
+    const countEl = $("run-overview-count");
     const el = $("run-overview");
-    if (!state.openIds.length) {
-      el.hidden = true;
-      return;
-    }
+    countEl.textContent = `当前会话:${state.openIds.length}`;
     const counts = new Map();
     for (const id of state.openIds) {
       const v = effectiveView(id);
@@ -248,12 +246,11 @@ export function createTestsetRunController(env) {
       const name = v.group_name || "未分组";
       counts.set(name, (counts.get(name) || 0) + 1);
     }
-    let html = `<span class="overview-total">当前会话:${state.openIds.length}</span>`;
-    for (const [name, n] of counts) {
-      html += `<span class="overview-item">${escapeHtml(name)}:${n}</span>`;
-    }
-    el.hidden = false;
-    el.innerHTML = html;
+    const items = [...counts.entries()].map(
+      ([name, n]) => `<div class="overview-item">${escapeHtml(name)}:${n}</div>`,
+    );
+    el.innerHTML = items.join("");
+    el.hidden = items.length === 0;
   }
 
   return {

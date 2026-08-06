@@ -70,24 +70,31 @@
           </div>
 
           <section class="card run-bar">
-            <div class="run-row">
-              <label class="full">群发消息（发送给所有已打开的会话）
-                <input id="run-text" type="text" placeholder="输入一条消息，发送给所有已打开的会话" />
-              </label>
-              <button id="btn-run-all" class="btn primary">发送到全部</button>
-              <label class="align-toggle" title="启用后所有面板按对话轮次对齐，滑动条可同步滚动全部窗口">
-                <input id="align-toggle" type="checkbox" />
-                轮次对齐
-              </label>
+            <div class="run-overview-block">
+              <div class="run-overview-head">
+                <span id="run-overview-count" class="overview-total"></span>
+                <label class="align-toggle" title="启用后所有面板按对话轮次对齐，滑动条可同步滚动全部窗口">
+                  <input id="align-toggle" type="checkbox" />
+                  轮次对齐
+                </label>
+              </div>
+              <div id="run-overview" class="run-overview" hidden></div>
             </div>
-            <div class="run-row">
-              <label class="full">执行测试集（发送给所有已打开的会话）
+            <div class="run-broadcast-block">
+              <span class="run-caption">群发消息（发送给所有已打开的会话）</span>
+              <div class="run-field-row">
+                <input id="run-text" type="text" placeholder="输入一条消息，发送给所有已打开的会话" />
+                <button id="btn-run-all" class="btn primary">发送到全部</button>
+              </div>
+            </div>
+            <div class="run-testset-block">
+              <span class="run-caption">执行测试集（发送给所有已打开的会话）</span>
+              <div class="run-field-row">
                 <select id="run-testset">
                   <option value="">选择测试集…</option>
                 </select>
-              </label>
-              <button id="btn-run-testset" class="btn primary" disabled>执行测试</button>
-              <div id="run-overview" class="run-overview" hidden></div>
+                <button id="btn-run-testset" class="btn primary" disabled>执行测试</button>
+              </div>
             </div>
           </section>
         </div>
