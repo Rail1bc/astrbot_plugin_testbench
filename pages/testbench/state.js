@@ -36,6 +36,7 @@ export const state = {
   selectedChatGroupId: null,
   // 会话消息流缓存（session_id -> 消息数组），面板「LLM 历史 ↔ 消息流」切换查看
   streamCache: new Map(),
-  // 面板当前视图（session_id -> "history" | "stream"；默认 "history"）
-  panelView: new Map(),
+  // 全局显示视图（"history" | "stream"；默认 "history"）：由轮次对齐旁的
+  // #view-toggle 统一切换，应用到全部已打开的会话（不再按会话分别记忆）
+  globalView: "history",
 };

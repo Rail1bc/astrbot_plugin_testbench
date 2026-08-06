@@ -69,8 +69,8 @@ function openPanel(id) {
   const groupBadge = s
     ? `<span class="badge group-badge" title="所属测试组">${escapeHtml(s.group_name || "")}</span>`
     : "";
-  // 面板上次停留的视图（LLM 历史 / 消息流）；重开后沿用，按钮标签同步
-  const view = state.panelView.get(id) === "stream" ? "stream" : "history";
+  // 面板视图跟随全局切换（#view-toggle 统一控制全部已打开的会话）
+  const view = state.globalView;
 
   panel.innerHTML =
     `<div class="panel-head" title="拖拽排序">` +
@@ -80,7 +80,6 @@ function openPanel(id) {
     groupBadge + platformBadge + confBadge +
     `</span>` +
     `<span class="panel-actions">` +
-    `<button class="icon-btn" data-action="view-toggle" title="${view === "stream" ? "切换为 LLM 对话历史" : "切换为真实消息流"}">${view === "stream" ? "LLM 历史" : "消息流"}</button>` +
     `<div class="panel-menu">` +
     `<button class="icon-btn menu-toggle" data-action="menu" title="更多操作">⋯</button>` +
     `<div class="panel-menu-dropdown" hidden>` +
@@ -108,9 +107,6 @@ function openPanel(id) {
 
   panel.querySelector('[data-action="close"]').addEventListener("click", () => toggleOpen(id));
   panel.querySelector('[data-action="pin"]').addEventListener("click", () => pin(id));
-  panel.querySelector('[data-action="view-toggle"]').addEventListener("click", () => {
-    setPanelView(id, state.panelView.get(id) === "stream" ? "history" : "stream");
-  });
   setupPanelMenu(panel, id);
   const input = panel.querySelector(".msg-input");
   input.addEventListener("keydown", (e) => {
@@ -155,9 +151,9 @@ const historySeq = new Map();
 async function loadHistory(id) {
   const panel = state.panelEls.get(id);
   if (!panel) return;
-  // 面板处于消息流视图时，历史刷新改为刷新消息流（反馈跟随当前视图，
+  // 全局视图为消息流时，历史刷新改为刷新消息流（反馈跟随当前视图，
   // 不把用户正在看的消息流视图切回 LLM 历史）
-  if (state.panelView.get(id) === "stream") {
+  if (state.globalView === "stream") {
     void loadStream(id);
     return;
   }
@@ -179,10 +175,13 @@ async function loadHistory(id) {
   }
 }
 
-// 渲染逻辑拆在 chat.js（createChatRenderer），本包装函数在初始化处注入 align 控制器
+// 渲染逻辑拆在 chat.js（createChatRenderer），本包装函数在初始化处注入 align 控制器。
+// 视图按全局切换（state.globalView）分发：消息流视图下渲染消息流（含对齐模式的
+// 轮次分组），使轮次对齐对消息流视图同样生效
 function renderChat(panel, conversations) {
-  // 消息流视图下面板内容由消息流渲染，对齐重排等历史渲染不覆盖它
-  if (state.panelView.get(panel.dataset.id) === "stream") return;
+  if (state.globalView === "stream") {
+    return chat.renderStream(panel, state.streamCache.get(panel.dataset.id) || []);
+  }
   return chat.renderChat(panel, conversations);
 }
 
@@ -200,6 +199,7 @@ async function loadStream(id) {
     const messages = Array.isArray(data.messages) ? data.messages : [];
     state.streamCache.set(id, messages);
     chat.renderStream(panel, messages);
+    if (align.isAlignMode()) align.reflowAlign();
   } catch (err) {
     if (historySeq.get(id) !== seq) return;
     const chatEl = panel.querySelector(".chat");
@@ -207,18 +207,20 @@ async function loadStream(id) {
   }
 }
 
-// 切换面板视图（LLM 历史 / 消息流），同步按钮标签并加载对应内容
-function setPanelView(id, view) {
-  state.panelView.set(id, view);
-  const panel = state.panelEls.get(id);
-  if (!panel) return;
-  const toggle = panel.querySelector('[data-action="view-toggle"]');
+// 全局切换面板视图（LLM 历史 / 消息流）：按钮在轮次对齐开关旁（#view-toggle），
+// 统一切换全部已打开的会话；新打开的面板也沿用当前全局视图
+function setGlobalView(view) {
+  state.globalView = view;
+  const toggle = $("view-toggle");
   if (toggle) {
     toggle.textContent = view === "stream" ? "LLM 历史" : "消息流";
     toggle.title = view === "stream" ? "切换为 LLM 对话历史" : "切换为真实消息流";
   }
-  if (view === "stream") void loadStream(id);
-  else void loadHistory(id);
+  for (const id of state.openIds) {
+    if (view === "stream") void loadStream(id);
+    else void loadHistory(id);
+  }
+  if (align.isAlignMode()) align.reflowAlign();
 }
 
 // 面板头部「编辑」：以 JSON 编辑器整体查看 / 替换该会话的对话历史。
@@ -830,6 +832,12 @@ $("run-testset").addEventListener("change", () => {
 $("run-text").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && !e.isComposing) sendToAll();
 });
+// 全局视图切换（LLM 历史 / 消息流）：轮次对齐开关旁的 #view-toggle 统一控制
+// 全部已打开的会话；初始化时同步按钮初始标签
+$("view-toggle").addEventListener("click", () => {
+  setGlobalView(state.globalView === "stream" ? "history" : "stream");
+});
+setGlobalView(state.globalView);
 
 // UI 窄条：视图切换（会话列表 / 测试集 / 身份与群聊）。点击当前视图按钮折叠/
 // 展开侧栏，点击其他视图按钮切换视图（展开侧栏并刷新对应视图数据）

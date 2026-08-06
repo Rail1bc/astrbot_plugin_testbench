@@ -1083,6 +1083,13 @@ code {
   white-space: nowrap;
 }
 
+/* 全局视图切换（LLM 历史 / 消息流）：位于轮次对齐开关下方，统一控制全部已打开的会话 */
+.run-overview-viewbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .overview-item {
   color: var(--text-secondary);
   white-space: nowrap;

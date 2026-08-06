@@ -90,6 +90,7 @@
 
 ### 🔄 Changed (行为变更)
 
+- **面板视图切换（LLM 历史 / 消息流）改为全局统一控制**：切换按钮从单个会话页眉移除，移到轮次对齐开关下方（`#view-toggle`），点击统一切换**全部已打开的会话**（新打开的面板沿用当前全局视图）——避免部分会话历史视图、部分消息流视图时轮次对齐含义不一致；**消息流视图也参与轮次对齐**（对齐模式下按 user 发言把消息流分组渲染 `.turn-wrap`，与 LLM 历史的轮次语义一致，reflowAlign 统一各面板每轮高度）。
 - 前端由 1s 轮询改为**全事件驱动**：移除 `pollRun` / `pollTestsetRun` / `pollPending` 三个轮询器与 `startPolling` 辅助，改订阅 `/events` SSE 事件流（`connectEvents` → `handleEvent` 分发 pending / session_done / test_done / testset）；断线后延迟 3s 重连，并以 `reconcileEvents()` 用轮询接口一次性快照对账（`getPending` + 在途各 test_id 逐个 `runStatus` + 有活动运行则 `runTestsetStatus`），丢失的事件由其兜底——无轮询 fallback。
 - 测试集运行与手动群发统一逐会话反馈路径：共用 `applySessionFeedback`（面板状态 + 回复耗时 + 逐会话历史刷新），测试集运行中**新完成的步骤逐结果实时刷新面板**，不再等终态一次性刷新。
 - 测试集运行结果**不自动弹窗**：终态暂存 `state.runReports`，顶部常显状态条出现「查看报告」按钮按需查看结果表格；会话窗口仍实时显示各会话回复耗时。

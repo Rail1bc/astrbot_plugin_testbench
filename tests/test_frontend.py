@@ -529,19 +529,22 @@ def test_frontend_group_dialog_new_fields():
 
 
 def test_frontend_panel_view_toggle():
-    """会话面板须可在「LLM 历史 / 消息流」间切换。
+    """视图切换（LLM 历史 / 消息流）须全局统一控制。
 
-    群消息流与 LLM 历史并行记录：面板页头须有 view-toggle 按钮，app.js 须实现
-    setPanelView（切换并加载对应视图）与 loadStream（拉取消息流渲染）。
+    切换按钮从单会话页眉移到轮次对齐开关下方（#view-toggle），统一控制全部已
+    打开的会话：index.html 须含该按钮；app.js 须实现 setGlobalView（统一切换并
+    加载对应视图）与 loadStream（拉取消息流渲染），视图判断用 state.globalView；
+    面板页头不再有 per-panel view-toggle 按钮。
     """
+    html = _read_html()
     app_js = _read_module("app")
-    assert 'data-action="view-toggle"' in app_js, "面板页头缺少视图切换按钮"
-    assert "function setPanelView(" in app_js, "缺少 setPanelView 视图切换函数"
+    assert 'id="view-toggle"' in html, "index.html 缺少全局视图切换按钮"
+    assert 'data-action="view-toggle"' not in app_js, "面板页头 view-toggle 未移除"
+    assert "function setGlobalView(" in app_js, "缺少 setGlobalView 全局视图切换函数"
     assert "async function loadStream(" in app_js, "缺少 loadStream 消息流加载函数"
     assert "streamCache" in app_js, "app.js 未使用消息流缓存 streamCache"
-    assert 'state.panelView.get(id) === "stream"' in app_js, (
-        "未按 panelView 状态判断当前视图"
-    )
+    assert 'state.globalView === "stream"' in app_js, "未按 globalView 判断当前视图"
+    assert '$("view-toggle").addEventListener' in app_js, "全局视图切换按钮未绑定事件"
 
 
 def test_frontend_identities_view():
