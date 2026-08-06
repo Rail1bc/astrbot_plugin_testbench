@@ -1801,6 +1801,22 @@ code {
   color: var(--text-secondary);
 }
 
+/* 弹窗表单中的 checkbox（身份管理员、运行弹窗测试组多选）：与标签同行显示，
+   方框不再独占一行——全局 input 宽 100% + settings-field 纵向布局所致 */
+.settings-field:has(input[type="checkbox"]) {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+}
+
+.settings-field input[type="checkbox"] {
+  width: auto;
+  margin: 0;
+  flex-shrink: 0;
+  accent-color: var(--primary);
+  cursor: pointer;
+}
+
 .modal-actions {
   display: flex;
   justify-content: flex-end;

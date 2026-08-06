@@ -650,6 +650,21 @@ def test_frontend_chat_group_member_nickname():
     assert src.count("const nick = ") >= 2, "昵称回退逻辑未同时用于成员行与搜索结果行"
 
 
+def test_frontend_chat_group_member_admin_marks():
+    """群聊编辑视图成员行须同时显示昵称与发送者ID，管理员挂管理员与警告徽标。
+
+    成员行除昵称外还要可见发送者ID（title 为「发送者ID」的徽标，身份列表的
+    title 是 sender_id/sender_name，不会误命中）；管理员成员须与身份列表一致
+    挂「管理员」+「⚠ 危险」徽标（可调用需管理员权限的危险工具）。
+    """
+    src = _read_module("identity_list")
+    assert 'title="发送者ID">${escapeHtml(ident.sender_id)}' in src, (
+        "成员行缺少发送者ID徽标"
+    )
+    # 身份列表 1 处 + 群成员行 2 处（管理员 + 危险警告）
+    assert src.count("ident.is_admin") >= 3, "管理员标记未同时用于身份列表与群成员行"
+
+
 def test_frontend_identity_drag_join():
     """身份须可拖拽到群聊编辑视图加入群成员。
 
@@ -726,13 +741,17 @@ def test_frontend_identity_admin_field():
     """身份表单须提交 is_admin，身份列表须按管理员身份显示徽标。
 
     身份实体新增「是否管理员」配置：identity_list.js 的 openIdentityForm 表单
-    须含管理员 checkbox 并把 is_admin 合入创建/更新 payload；renderIdentityList
-    须在身份 meta 区按 is_admin 渲染管理员徽标。管理员身份可调用危险工具，
-    列表徽标旁须有警告提示，表单勾选管理员时须显示内联警告条。
+    须含管理员 checkbox 并把 is_admin 合入创建/更新 payload；管理员单选框须
+    checkbox 在前、与标签同行（field() 的纵向布局会让方框独占一行，故不走
+    field()）；renderIdentityList 须在身份 meta 区按 is_admin 渲染管理员徽标。
+    管理员身份可调用危险工具，列表徽标旁须有警告提示，表单勾选管理员时须显示
+    内联警告条。
     """
     src = _read_module("identity_list")
     assert "is_admin: inpAdmin.checked" in src, "身份表单未提交 is_admin"
-    assert 'field("管理员' in src, "身份表单缺少管理员字段"
+    assert "管理员（发送时自动按管理员身份设置角色）" in src, "身份表单缺少管理员字段"
+    assert "fAdmin.append(inpAdmin" in src, "管理员单选框未与标签同行（checkbox 在前）"
+    assert 'fAdmin.className = "settings-field"' in src, "管理员行未复用 settings-field"
     assert 'inpAdmin.type = "checkbox"' in src, "管理员字段不是 checkbox"
     assert "ident.is_admin" in src, "身份列表未按 is_admin 渲染管理员徽标"
     # 管理员身份旁的警告提示（列表徽标 + 表单内联警告条）

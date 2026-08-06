@@ -172,13 +172,20 @@ export function createIdentityList(env) {
       adminWarn.hidden = !inpAdmin.checked;
     });
 
+    // 管理员：checkbox 在前、与标签同行（field() 的纵向布局会让方框独占一行）
+    const fAdmin = document.createElement("label");
+    fAdmin.className = "settings-field";
+    const adminText = document.createElement("span");
+    adminText.textContent = "管理员（发送时自动按管理员身份设置角色）";
+    fAdmin.append(inpAdmin, adminText);
+
     const form = document.createElement("div");
     form.className = "form-col";
     form.append(
       field("名称", inpName),
       field("发送者ID（留空使用名称）", inpId),
       field("发送者昵称（留空使用名称）", inpName2),
-      field("管理员（发送时自动按管理员身份设置角色）", inpAdmin),
+      fAdmin,
       adminWarn,
     );
 
@@ -355,8 +362,12 @@ export function createIdentityList(env) {
         // 昵称列优先展示 sender_name（无昵称回退 sender_id），悬停显示完整信息
         const nick = ident.sender_name || ident.sender_id || "—";
         row.innerHTML =
-          `<span class="cg-member-name" title="${escapeHtml(nick)}">${escapeHtml(ident.name)}</span>` +
+          `<span class="cg-member-name" title="${escapeHtml(ident.name)}">${escapeHtml(ident.name)}</span>` +
+          `<span class="badge" title="发送者ID">${escapeHtml(ident.sender_id)}</span>` +
           `<span class="badge" title="昵称 ${escapeHtml(nick)}">${escapeHtml(nick)}</span>` +
+          // 管理员成员挂「管理员」+「⚠ 危险」徽标（与身份列表一致）
+          `${ident.is_admin ? '<span class="badge admin" title="管理员身份，发送时自动设置 event.role=admin">管理员</span>' : ""}` +
+          `${ident.is_admin ? '<span class="badge warn" title="管理员身份可调用需管理员权限的工具（本地/沙箱执行、联网搜索、定时任务等），可能执行危险操作">⚠ 危险</span>' : ""}` +
           `<button class="icon-btn danger" data-action="remove" title="移出该群">✕</button>`;
       } else {
         // 身份已删除：成员 id 悬空引用，保留占位并允许移除
