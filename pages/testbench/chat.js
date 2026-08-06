@@ -9,6 +9,7 @@
 // audio_url，工具调用不作为 content 部件），工具返回为 role:"tool" 消息并以
 // tool_call_id 关联调用。渲染时以 ctx.toolNames 收集 id → 工具名，使工具返回
 // 气泡能标注「哪个工具的返回」。
+import { statusText } from "./utils.js";
 
 export function createChatRenderer(alignGetter) {
   function isAlignMode() {
@@ -248,5 +249,44 @@ export function createChatRenderer(alignGetter) {
     return el;
   }
 
-  return { renderChat, renderHistory, renderAligned, bubbleFor };
+  // 消息流视图：与 LLM 历史并行的纯记录（真实会话中 user 发言 + bot 回复），
+  // 轻量渲染——无 LLM 格式的思维链/工具调用。user 气泡标注发送者身份、@ 标记
+  // 与回复状态（成功/无回复/错误），bot 气泡即回复内容。
+  function renderStream(panel, messages) {
+    const chatEl = panel.querySelector(".chat");
+    chatEl.innerHTML = "";
+    chatEl.classList.remove("aligned");
+    if (!messages.length) {
+      const p = document.createElement("div");
+      p.className = "empty";
+      p.textContent = "暂无消息流记录（在此面板发送消息后可见）";
+      chatEl.appendChild(p);
+      return;
+    }
+    for (const m of messages) {
+      const role = m.role === "bot" ? "bot" : "user";
+      const el = document.createElement("div");
+      el.className = "msg " + role;
+      const head = document.createElement("div");
+      head.className = "stream-msg-head";
+      head.textContent =
+        (m.sender_name || m.sender_id || (role === "bot" ? "virtual_bot" : "发送者")) +
+        (m.at_bot ? " @" : "");
+      el.appendChild(head);
+      const body = document.createElement("div");
+      body.className = "stream-msg-body";
+      body.textContent = m.text || "（空消息）";
+      el.appendChild(body);
+      if (role === "user" && m.reply_status) {
+        const st = document.createElement("span");
+        st.className = "stream-status " + m.reply_status;
+        st.textContent = statusText(m.reply_status);
+        el.appendChild(st);
+      }
+      chatEl.appendChild(el);
+    }
+    chatEl.scrollTop = chatEl.scrollHeight;
+  }
+
+  return { renderChat, renderHistory, renderAligned, bubbleFor, renderStream };
 }

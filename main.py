@@ -24,6 +24,7 @@ from .api import (
     ConfRouteMixin,
     EventsAPI,
     GroupsAPI,
+    IdentitiesAPI,
     MetaAPI,
     RunsAPI,
     SessionsAPI,
@@ -32,9 +33,11 @@ from .api import (
 from .core.event_bus import EventBus
 from .core.runner import VirtualTestRunner
 from .core.testset_runner import TestsetRunner
-from .core.virtual_event import VirtualMessageEvent
+from .core.virtual_event import TESTBENCH_LLM_REQUESTED_EXTRA_KEY, VirtualMessageEvent
 from .history_ops import HistoryOps
 from .store.group_store import VirtualGroupManager
+from .store.identity_store import ChatGroupStore, IdentityStore
+from .store.stream_store import StreamStore
 from .store.testset_store import TestsetStore
 
 PLUGIN_NAME = "astrbot_plugin_testbench"
@@ -47,14 +50,24 @@ class VirtualSessionPlugin(
     SessionsAPI,
     RunsAPI,
     TestsetsAPI,
+    IdentitiesAPI,
     EventsAPI,
     ConfRouteMixin,
 ):
     def __init__(self, context: Context) -> None:
         super().__init__(context)
         self.group_mgr = VirtualGroupManager()
+        self.identity_store = IdentityStore()
+        self.chat_group_store = ChatGroupStore()
+        self.stream_store = StreamStore()
         self.event_bus = EventBus()
-        self.runner = VirtualTestRunner(context, self.event_bus)
+        self.runner = VirtualTestRunner(
+            context,
+            self.event_bus,
+            stream_store=self.stream_store,
+            identity_store=self.identity_store,
+            chat_group_store=self.chat_group_store,
+        )
         self.testset_store = TestsetStore()
         self.testset_runner = TestsetRunner(context, self.runner, self.event_bus)
         self.history_ops = HistoryOps(
@@ -78,3 +91,4 @@ class VirtualSessionPlugin(
         """消息正在调用 LLM（会话锁内、流式/非流式分叉之前触发）。"""
         if isinstance(event, VirtualMessageEvent) and event.entry_id:
             self.runner.mark_llm(event.entry_id)
+            event.set_extra(TESTBENCH_LLM_REQUESTED_EXTRA_KEY, True)

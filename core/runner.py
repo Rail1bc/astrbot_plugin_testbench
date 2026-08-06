@@ -13,6 +13,8 @@ import logging
 import time
 from typing import TYPE_CHECKING
 
+from astrbot.api.platform import MessageType
+
 from ..eval.mechanical import evaluate_rule
 from ..stats import duration_stats
 from ..store.group_store import (
@@ -20,9 +22,11 @@ from ..store.group_store import (
     DEFAULT_SENDER_ID,
     DEFAULT_SENDER_NAME,
 )
+from ..store.identity_store import ChatGroupStore, IdentityStore
+from ..store.stream_store import StreamStore
 from .conf_routes import restore_routes, save_and_apply_routes
 from .event_bus import EventBus
-from .virtual_event import VirtualMessageEvent
+from .virtual_event import BOT_SELF_ID, VirtualMessageEvent
 
 if TYPE_CHECKING:
     from astrbot.api.star import Context
@@ -47,10 +51,20 @@ class VirtualTestRunner:
     → llm → done），由 LLM 阶段 hook 推进状态，供前端面板实时展示。
     """
 
-    def __init__(self, context: Context, event_bus: EventBus | None = None) -> None:
+    def __init__(
+        self,
+        context: Context,
+        event_bus: EventBus | None = None,
+        stream_store: StreamStore | None = None,
+        identity_store: IdentityStore | None = None,
+        chat_group_store: ChatGroupStore | None = None,
+    ) -> None:
         self.context = context
         # 未注入时自建空总线：publish 到无订阅者的总线是 no-op，测试可省去该参数
         self.event_bus = event_bus or EventBus()
+        self.stream_store = stream_store
+        self.identity_store = identity_store
+        self.chat_group_store = chat_group_store
         self._route_lock = asyncio.Lock()
         self._saved_routes: list[tuple[str, str | None]] = []
         self._runs: dict[str, dict] = {}
@@ -91,6 +105,8 @@ class VirtualTestRunner:
         model: str | None = None,
         conf_id: str | None = None,
         assertion: dict | None = None,
+        sender_id: str | None = None,
+        sender_name: str | None = None,
     ) -> str:
         """投递消息并立即返回 test_id（不等待回复）。
 
@@ -101,6 +117,8 @@ class VirtualTestRunner:
             model: 可选，覆盖模型名。
             conf_id: 可选，临时把会话的配置档案路由到指定档案（测试提示词/系统设定）。
             assertion: 可选，回复断言规则（见 assertions.py），随结果评估返回。
+            sender_id: 可选，消息级发送者 id 覆盖（优先级高于会话绑定的群聊默认成员）。
+            sender_name: 可选，消息级发送者昵称覆盖。
 
         Returns:
             test_id，用于查询 status()（实时结果经事件流推送）。
@@ -110,19 +128,29 @@ class VirtualTestRunner:
         if not text or not text.strip():
             raise ValueError("text 不能为空")
 
-        events = [
-            VirtualMessageEvent.create(
-                session_id=s["id"],
-                sender_id=s.get("sender_id") or DEFAULT_SENDER_ID,
-                sender_name=s.get("sender_name") or DEFAULT_SENDER_NAME,
-                text=text,
-                platform_id=s.get("platform_id") or DEFAULT_PLATFORM_ID,
-                platform_name=s.get("platform_id") or DEFAULT_PLATFORM_ID,
-                provider_id=provider_id,
-                model=model,
+        events = []
+        for s in sessions:
+            sid, sname = self._resolve_sender(s, sender_id, sender_name)
+            message_type = s.get("message_type") or MessageType.FRIEND_MESSAGE.value
+            # 仅群聊消息的 auto_at 有意义：模拟「@机器人」发言直接唤醒
+            auto_at = (
+                bool(s.get("auto_at"))
+                and message_type == MessageType.GROUP_MESSAGE.value
             )
-            for s in sessions
-        ]
+            events.append(
+                VirtualMessageEvent.create(
+                    session_id=s["id"],
+                    sender_id=sid,
+                    sender_name=sname,
+                    text=text,
+                    platform_id=s.get("platform_id") or DEFAULT_PLATFORM_ID,
+                    platform_name=s.get("platform_id") or DEFAULT_PLATFORM_ID,
+                    provider_id=provider_id,
+                    model=model,
+                    message_type=message_type,
+                    auto_at=auto_at,
+                )
+            )
 
         self._run_seq += 1
         test_id = f"t_{int(time.time() * 1000)}_{self._run_seq}"
@@ -137,7 +165,7 @@ class VirtualTestRunner:
             "all_done": asyncio.Event(),
         }
         self._runs[test_id] = record
-        self._register_pending(test_id, events, text)
+        await self._register_pending(test_id, events, text)
         self._prune_runs()
 
         if conf_id:
@@ -164,13 +192,17 @@ class VirtualTestRunner:
                 raise
         return test_id
 
-    def _register_pending(
+    async def _register_pending(
         self, test_id: str, events: list[VirtualMessageEvent], text: str
     ) -> None:
-        """为每个事件登记在途条目（供前端实时显示已入队/排队等待 LLM/LLM 生成中）。"""
+        """为每个事件登记在途条目（供前端实时显示已入队/排队等待 LLM/LLM 生成中）。
+
+        顺带把 user 消息写入会话消息流（入队前），把返回的流消息 id 记到条目，
+        pipeline 结束后据此回填回复状态。
+        """
         for i, event in enumerate(events):
             event.entry_id = f"e_{test_id}_{i}"
-            self._pending[event.entry_id] = {
+            entry = {
                 "entry_id": event.entry_id,
                 "session_id": event.session_id,
                 "test_id": test_id,
@@ -179,6 +211,18 @@ class VirtualTestRunner:
                 "created_at": time.time(),
                 "status_at": time.time(),
             }
+            if self.stream_store is not None:
+                entry["stream_msg_id"] = await self.stream_store.append(
+                    event.session_id,
+                    {
+                        "role": "user",
+                        "sender_id": event.get_sender_id(),
+                        "sender_name": event.get_sender_name(),
+                        "text": text,
+                        "at_bot": event.auto_at,
+                    },
+                )
+            self._pending[event.entry_id] = entry
         self._publish_pending()
 
     def _discard_pending(self, test_id: str) -> None:
@@ -188,6 +232,38 @@ class VirtualTestRunner:
         ]:
             self._pending.pop(eid, None)
         self._publish_pending()
+
+    def _resolve_sender(
+        self,
+        session: dict,
+        sender_id: str | None,
+        sender_name: str | None,
+    ) -> tuple[str, str]:
+        """解析最终发送者：请求级 > 绑定群聊默认成员 > 会话/组配置 > 默认。
+
+        请求级只给 sender_id 时昵称回退到 sender_id；会话绑定的虚拟群聊取首
+        个成员身份作为默认发送者。
+        """
+        if sender_id is not None:
+            return sender_id, sender_name or sender_id
+        chat_group_id = session.get("chat_group_id")
+        if chat_group_id:
+            member = self._default_member_of(chat_group_id)
+            if member is not None:
+                return member["sender_id"], member["sender_name"]
+        return (
+            session.get("sender_id") or DEFAULT_SENDER_ID,
+            session.get("sender_name") or DEFAULT_SENDER_NAME,
+        )
+
+    def _default_member_of(self, chat_group_id: str) -> dict | None:
+        """取绑定虚拟群聊的首个成员身份（成员池的默认发送者）。"""
+        if self.chat_group_store is None or self.identity_store is None:
+            return None
+        chat_group = self.chat_group_store.get_chat_group(chat_group_id)
+        if chat_group is None or not chat_group.get("member_ids"):
+            return None
+        return self.identity_store.get_identity(chat_group["member_ids"][0])
 
     def mark_waiting_llm(self, entry_id: str) -> None:
         """标记消息已到达 LLM 阶段、正在等待会话锁（OnWaitingLLMRequestEvent）。"""
@@ -232,6 +308,8 @@ class VirtualTestRunner:
         if assertion:
             summary["assertion"] = evaluate_rule(assertion, summary.get("reply") or "")
         record["results"][event.session_id] = summary
+        if self.stream_store is not None:
+            await self._write_stream_reply(entry, event, summary)
         self.event_bus.publish(
             {
                 "type": "session_done",
@@ -250,6 +328,28 @@ class VirtualTestRunner:
                     "test_id": test_id,
                     "record": self.status(test_id),
                 }
+            )
+
+    async def _write_stream_reply(
+        self,
+        entry: dict | None,
+        event: VirtualMessageEvent,
+        summary: dict,
+    ) -> None:
+        """pipeline 结束后把 bot 回复写入会话消息流，并回填 user 消息的回复状态。"""
+        if entry is not None and entry.get("stream_msg_id"):
+            await self.stream_store.update_reply(
+                event.session_id, entry["stream_msg_id"], summary["status"]
+            )
+        if summary.get("reply"):
+            await self.stream_store.append(
+                event.session_id,
+                {
+                    "role": "bot",
+                    "sender_id": BOT_SELF_ID,
+                    "sender_name": BOT_SELF_ID,
+                    "text": summary["reply"],
+                },
             )
 
     async def _release_route_after(self, test_id: str) -> None:

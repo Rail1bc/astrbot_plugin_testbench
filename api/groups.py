@@ -38,6 +38,9 @@ class GroupsAPI(ConfRouteMixin):
             sender_id=payload.get("sender_id"),
             sender_name=payload.get("sender_name"),
             name_prefix=payload.get("name_prefix"),
+            message_type=payload.get("message_type"),
+            auto_at=payload.get("auto_at", True),
+            chat_group_id=payload.get("chat_group_id"),
         )
         if conf_id:
             sessions = [self.group_mgr.effective(group, s) for s in group["sessions"]]
@@ -45,7 +48,7 @@ class GroupsAPI(ConfRouteMixin):
         return json_response(group)
 
     async def delete_groups(self):
-        """删除测试组，并联动清理组内会话的配置档案路由与原生对话历史。"""
+        """删除测试组，并联动清理组内会话的配置档案路由、原生对话历史与消息流。"""
         payload = await request.json(default={})
         ids = payload.get("ids")
         if not isinstance(ids, list) or not ids:
@@ -54,6 +57,7 @@ class GroupsAPI(ConfRouteMixin):
         sessions = [self.group_mgr.effective(group, s) for group, s in removed]
         await self._clear_conf_routes(sessions)
         await self.history_ops.delete_session_conversations(sessions)
+        await self.stream_store.delete_sessions([s["id"] for s in sessions])
         return json_response(
             {
                 "deleted": len(removed),
@@ -87,10 +91,10 @@ class GroupsAPI(ConfRouteMixin):
         return json_response(created)
 
     async def update_group(self, group_id: str):
-        """更新测试组配置；组平台/档案变更会同步应用到仍继承组配置的会话。
+        """更新测试组配置；组平台/消息类型/档案变更会同步应用到仍继承组配置的会话。
 
-        会话已单独覆盖的字段不受组配置变更影响（会话覆盖优先）。平台变更使
-        umo 变化：清理旧 umo 的路由，再按新的有效配置同步。
+        会话已单独覆盖的字段不受组配置变更影响（会话覆盖优先）。平台或消息
+        类型变更使 umo 变化：清理旧 umo 的路由与对话历史，再按新的有效配置同步。
         """
         payload = await request.json(default={})
         group = self.group_mgr.get_group(group_id)
@@ -98,11 +102,21 @@ class GroupsAPI(ConfRouteMixin):
             return error_response("未找到该测试组", status_code=404)
 
         updates: dict[str, Any] = {}
-        for key in ("name", "platform_id", "conf_id", "sender_id", "sender_name"):
+        for key in (
+            "name",
+            "platform_id",
+            "conf_id",
+            "sender_id",
+            "sender_name",
+            "message_type",
+            "chat_group_id",
+        ):
             if key not in payload:
                 continue
             value = payload[key]
             updates[key] = value if isinstance(value, str) and value else None
+        if "auto_at" in payload:
+            updates["auto_at"] = bool(payload["auto_at"])
 
         old_sessions = [self.group_mgr.effective(group, s) for s in group["sessions"]]
         self.group_mgr.update_group(group_id, **updates)
@@ -118,13 +132,15 @@ class GroupsAPI(ConfRouteMixin):
             if old is None:
                 continue
             new = self.group_mgr.effective(updated, session)
-            platform_changed = old["platform_id"] != new["platform_id"]
+            umo_changed = old["platform_id"] != new["platform_id"] or (
+                old["message_type"] != new["message_type"]
+            )
             conf_changed = old["conf_id"] != new["conf_id"]
-            if platform_changed:
+            if umo_changed:
                 await delete_route_if_exists(
                     self.context.astrbot_config_mgr.ucr, umo_of(old)
                 )
                 await self.history_ops.delete_session_conversations([old])
-            if platform_changed or conf_changed:
+            if umo_changed or conf_changed:
                 await self._sync_conf_route(new)
         return json_response(updated)

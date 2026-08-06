@@ -88,6 +88,8 @@ class TestsetRunner:
                 {
                     "text": m["text"],
                     "rule": m.get("rule"),
+                    "sender_id": m.get("sender_id"),
+                    "sender_name": m.get("sender_name"),
                     "status": "pending",
                     "test_id": None,
                     "results": [],
@@ -165,7 +167,11 @@ class TestsetRunner:
         self._publish_run(run["run_id"])
         try:
             test_id = await self.runner.start(
-                sessions=run["sessions"], text=step["text"], assertion=step["rule"]
+                sessions=run["sessions"],
+                text=step["text"],
+                assertion=step["rule"],
+                sender_id=step.get("sender_id"),
+                sender_name=step.get("sender_name"),
             )
             step["test_id"] = test_id
             rec = await self.runner.wait_done(
@@ -200,6 +206,8 @@ class TestsetRunner:
                     sessions=run["sessions"],
                     text=step["text"],
                     assertion=step["rule"],
+                    sender_id=step.get("sender_id"),
+                    sender_name=step.get("sender_name"),
                 )
                 step["test_id"] = test_id
             except Exception as e:

@@ -32,7 +32,14 @@ class SessionsAPI(ConfRouteMixin):
         old_session = self.group_mgr.effective(group, session)
 
         overrides: dict[str, Any] = {}
-        for key in ("platform_id", "conf_id", "sender_id", "sender_name"):
+        for key in (
+            "platform_id",
+            "conf_id",
+            "sender_id",
+            "sender_name",
+            "message_type",
+            "chat_group_id",
+        ):
             if key not in payload:
                 continue
             value = payload[key]
@@ -44,24 +51,29 @@ class SessionsAPI(ConfRouteMixin):
                 overrides[key] = value
             else:
                 overrides[key] = None
+        if "auto_at" in payload:
+            value = payload["auto_at"]
+            overrides["auto_at"] = value if isinstance(value, bool) else None
 
         self.group_mgr.update_session(session_id, **overrides)
         new_session = self.group_mgr.effective(group, session)
 
-        # 平台变更会使 umo 变化：清理旧 umo 的路由与对话历史，再按新 umo 同步
-        platform_changed = old_session["platform_id"] != new_session["platform_id"]
+        # 平台或消息类型变更会使 umo 变化：清理旧 umo 的路由与对话历史，再按新 umo 同步
+        umo_changed = old_session["platform_id"] != new_session["platform_id"] or (
+            old_session["message_type"] != new_session["message_type"]
+        )
         conf_changed = old_session["conf_id"] != new_session["conf_id"]
-        if platform_changed:
+        if umo_changed:
             await delete_route_if_exists(
                 self.context.astrbot_config_mgr.ucr, umo_of(old_session)
             )
             await self.history_ops.delete_session_conversations([old_session])
-        if platform_changed or conf_changed:
+        if umo_changed or conf_changed:
             await self._sync_conf_route(new_session)
         return json_response(new_session)
 
     async def delete_sessions(self):
-        """删除虚拟会话，并联动清理其配置档案路由与原生对话历史。"""
+        """删除虚拟会话，并联动清理其配置档案路由、原生对话历史与消息流。"""
         payload = await request.json(default={})
         ids = payload.get("ids")
         if not isinstance(ids, list) or not ids:
@@ -70,6 +82,7 @@ class SessionsAPI(ConfRouteMixin):
         sessions = [self.group_mgr.effective(group, s) for group, s in removed]
         await self._clear_conf_routes(sessions)
         await self.history_ops.delete_session_conversations(sessions)
+        await self.stream_store.delete_sessions([s["id"] for s in sessions])
         return json_response({"deleted": len(sessions)})
 
     async def clone_sessions(self):
@@ -196,13 +209,15 @@ class SessionsAPI(ConfRouteMixin):
         return json_response({"conversations": conversations})
 
     async def reset_sessions(self):
-        """重置虚拟会话的对话历史（删除该 umo 下的全部对话）。"""
+        """重置虚拟会话的对话历史与消息流（删除该 umo 下的全部对话）。"""
         payload = await request.json(default={})
         ids = payload.get("ids")
         if not isinstance(ids, list) or not ids:
             return error_response("ids 不能为空", status_code=400)
         sessions = self.group_mgr.effective_many(ids)
         reset = await self.history_ops.delete_session_conversations(sessions)
+        for session in sessions:
+            await self.stream_store.clear(session["id"])
         return json_response({"reset": reset})
 
     async def save_history(self):

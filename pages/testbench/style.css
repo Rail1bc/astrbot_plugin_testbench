@@ -794,6 +794,11 @@ code {
   flex-shrink: 0;
 }
 
+.ts-msg-sender {
+  width: 120px;
+  flex-shrink: 0;
+}
+
 .ts-msg-batch {
   display: flex;
   align-items: center;
@@ -1294,6 +1299,40 @@ code {
   color: var(--text-secondary);
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* 消息流视图（与 LLM 历史并行的纯记录）：发送者头 + 正文 + 回复状态 */
+.stream-msg-head {
+  font-size: 11px;
+  opacity: 0.85;
+  margin-bottom: 2px;
+}
+
+.stream-msg-body {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.stream-status {
+  display: inline-block;
+  margin-top: 4px;
+  padding: 0 6px;
+  border-radius: 8px;
+  font-size: 11px;
+  background: var(--badge-bg);
+  color: var(--text-secondary);
+}
+
+.stream-status.ok {
+  color: var(--ok);
+}
+
+.stream-status.no_reply {
+  color: var(--warn);
+}
+
+.stream-status.error {
+  color: var(--danger);
 }
 
 /* 气泡悬停操作（重新生成） */

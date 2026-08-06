@@ -30,8 +30,12 @@ import astrbot_plugin_testbench.history_ops as hops_mod  # noqa: E402
 import astrbot_plugin_testbench.main as main_mod  # noqa: E402
 import astrbot_plugin_testbench.stats as stats_mod  # noqa: E402
 import astrbot_plugin_testbench.store.group_store as gs_mod  # noqa: E402
+import astrbot_plugin_testbench.store.identity_store as ids_mod  # noqa: E402
+import astrbot_plugin_testbench.store.stream_store as stm_mod  # noqa: E402
 import astrbot_plugin_testbench.store.testset_store as tss_mod  # noqa: E402
 from astrbot.api.event import MessageChain  # noqa: E402
+from astrbot.api.message_components import At, Plain  # noqa: E402
+from astrbot.api.platform import MessageType  # noqa: E402
 from astrbot.api.web import PluginRequest, bind_request_context  # noqa: E402
 from starlette.requests import Request  # noqa: E402
 
@@ -41,6 +45,10 @@ VirtualGroupManager = gs_mod.VirtualGroupManager
 VirtualTestRunner = runner_mod.VirtualTestRunner
 TestsetStore = tss_mod.TestsetStore
 TestsetRunner = tsr_mod.TestsetRunner
+IdentityStore = ids_mod.IdentityStore
+ChatGroupStore = ids_mod.ChatGroupStore
+StreamStore = stm_mod.StreamStore
+MAX_STREAM_MESSAGES = stm_mod.MAX_STREAM_MESSAGES
 evaluate_rule = asrt_mod.evaluate_rule
 duration_stats = stats_mod.duration_stats
 umo_of = gs_mod.umo_of
@@ -3149,3 +3157,298 @@ async def test_testset_runner_drive_exception_publishes_terminal_event(monkeypat
     assert testset_events[-1]["run"]["error"] == "运行器内部异常"
     # 步骤保持在 pending（异常发生在段驱动前），但 run 已落终态
     assert testset_events[-1]["run"]["steps"][0]["status"] == "pending"
+
+
+# ---------- 消息类型 / 自动@ / 测试身份 / 虚拟群聊 / 消息流 ----------
+
+
+def test_umo_of_uses_message_type():
+    """umo 格式随消息类型变化：FriendMessage 与 GroupMessage 的键不同。"""
+    assert umo_of(make_session(1)) == "webchat:FriendMessage:vs_1"
+    assert (
+        umo_of({"id": "vs_1", "platform_id": "webchat", "message_type": "GroupMessage"})
+        == "webchat:GroupMessage:vs_1"
+    )
+    assert (
+        umo_of({"id": "vs_1", "platform_id": "aiocqhttp", "message_type": "GroupMessage"})
+        == "aiocqhttp:GroupMessage:vs_1"
+    )
+
+
+def test_effective_resolves_new_fields(tmp_path):
+    """message_type / auto_at / chat_group_id 的三态解析（会话 → 组 → 默认）。"""
+    mgr = VirtualGroupManager(data_dir=tmp_path)
+    group = mgr.create_group(
+        "群聊组", count=1, message_type="GroupMessage", auto_at=False, chat_group_id="cg_1"
+    )
+    session = group["sessions"][0]
+    eff = mgr.effective(group, session)
+    assert eff["message_type"] == "GroupMessage"
+    assert eff["auto_at"] is False
+    assert eff["chat_group_id"] == "cg_1"
+
+    # 默认：私聊 + auto_at 开启 + 无绑定
+    group2 = mgr.create_group("默认组", count=1)
+    eff2 = mgr.effective(group2, group2["sessions"][0])
+    assert eff2["message_type"] == "FriendMessage"
+    assert eff2["auto_at"] is True
+    assert eff2["chat_group_id"] is None
+
+    # 会话覆盖组配置；None 恢复继承组
+    mgr.update_session(session["id"], message_type="FriendMessage", auto_at=True)
+    eff3 = mgr.effective(group, session)
+    assert eff3["message_type"] == "FriendMessage"
+    assert eff3["auto_at"] is True
+    mgr.update_session(session["id"], message_type=None, auto_at=None, chat_group_id=None)
+    eff4 = mgr.effective(group, session)
+    assert eff4["message_type"] == "GroupMessage"
+    assert eff4["auto_at"] is False
+    assert eff4["chat_group_id"] == "cg_1"
+
+
+def test_virtual_event_group_type():
+    ev = VirtualMessageEvent.create(
+        session_id="vs_1",
+        sender_id="u1",
+        sender_name="用户1",
+        text="hi",
+        message_type="GroupMessage",
+    )
+    assert ev.message_obj.type == MessageType.GROUP_MESSAGE
+    assert ev.get_message_type().value == "GroupMessage"
+    assert ev.unified_msg_origin == "webchat:GroupMessage:vs_1"
+
+
+def test_virtual_event_auto_at_chain():
+    """auto_at 开启：消息链以 At(self_id) 开头 + Plain(text)，message_str 保持纯文本。"""
+    ev = VirtualMessageEvent.create(
+        session_id="vs_1",
+        sender_id="u1",
+        sender_name="用户1",
+        text="你好",
+        message_type="GroupMessage",
+        auto_at=True,
+    )
+    chain = ev.get_messages()
+    assert isinstance(chain[0], At)
+    assert chain[0].qq == "virtual_bot"
+    assert isinstance(chain[1], Plain)
+    assert chain[1].text == "你好"
+    assert ev.message_str == "你好"
+
+    # 关闭 auto_at：链只有 Plain
+    ev2 = VirtualMessageEvent.create(
+        session_id="vs_1",
+        sender_id="u1",
+        sender_name="用户1",
+        text="hi",
+        message_type="GroupMessage",
+        auto_at=False,
+    )
+    chain2 = ev2.get_messages()
+    assert len(chain2) == 1
+    assert isinstance(chain2[0], Plain)
+    assert ev2.message_str == "hi"
+
+
+def test_result_summary_wake_fields():
+    """唤醒状态与 no_reply 原因：未唤醒 / 已唤醒但无回复。"""
+    ev = VirtualMessageEvent.create(
+        session_id="vs_1", sender_id="u1", sender_name="用户1", text="hi"
+    )
+    ev.is_wake = True
+    ev.is_at_or_wake_command = True
+    ev.set_extra("_testbench_llm_requested", True)
+    ev.cleanup_temporary_local_files()
+    summary = ev.result_summary()
+    assert summary["wake"]["woken"] is True
+    assert summary["wake"]["at_or_wake"] is True
+    assert summary["wake"]["stopped"] is False
+    assert summary["wake"]["llm_requested"] is True
+    # 已唤醒但无回复 → woken_no_reply
+    assert summary["status"] == "no_reply"
+    assert summary["reason"] == "woken_no_reply"
+    # 有回复 → 无 reason
+    assert ev.result_summary(status="ok")["reason"] is None
+
+    # 未唤醒 → not_woken
+    ev2 = VirtualMessageEvent.create(
+        session_id="vs_2", sender_id="u1", sender_name="用户1", text="hi"
+    )
+    ev2.cleanup_temporary_local_files()
+    s2 = ev2.result_summary()
+    assert s2["wake"]["woken"] is False
+    assert s2["wake"]["at_or_wake"] is False
+    assert s2["reason"] == "not_woken"
+
+
+# ---------- 身份 / 虚拟群聊 / 消息流 store ----------
+
+
+def test_identity_store_crud(tmp_path):
+    store = IdentityStore(data_dir=tmp_path)
+    ident = store.create_identity("小明", "xiaoming", "小明同学")
+    assert ident["sender_id"] == "xiaoming"
+    assert ident["sender_name"] == "小明同学"
+
+    # 重新加载（新实例）确认持久化
+    store2 = IdentityStore(data_dir=tmp_path)
+    assert store2.get_identity(ident["id"])["sender_id"] == "xiaoming"
+
+    # sender 缺省回退名称
+    ident2 = store2.create_identity("小红")
+    assert ident2["sender_id"] == "小红"
+    assert ident2["sender_name"] == "小红"
+
+    # 更新；未传字段保持不变
+    updated = store2.update_identity(ident["id"], name="小刚", sender_id="xiaogang")
+    assert updated["sender_id"] == "xiaogang"
+    assert updated["sender_name"] == "小明同学"
+
+    # 空串重置为名称回退
+    store2.update_identity(ident["id"], sender_id="")
+    assert store2.get_identity(ident["id"])["sender_id"] == "小刚"
+
+    # 删除
+    assert store2.delete_identities([ident["id"]]) == 1
+    assert store2.get_identity(ident["id"]) is None
+    # 更新不存在的身份 → None
+    assert store2.update_identity("id_none", name="x") is None
+
+
+def test_chat_group_store_crud(tmp_path):
+    store = ChatGroupStore(data_dir=tmp_path)
+    grp = store.create_chat_group("测试群", ["id_a", "id_b"])
+    assert grp["member_ids"] == ["id_a", "id_b"]
+    # 清洗：非字符串 / 空串 / 重复去除
+    grp2 = store.create_chat_group("空群", ["", None, "id_x", "id_x"])
+    assert grp2["member_ids"] == ["id_x"]
+
+    # 重新加载（新实例）确认持久化
+    store2 = ChatGroupStore(data_dir=tmp_path)
+    assert store2.get_chat_group(grp["id"])["name"] == "测试群"
+
+    # 更新成员
+    updated = store2.update_chat_group(grp["id"], member_ids=["id_c"])
+    assert updated["member_ids"] == ["id_c"]
+
+    # 删除
+    assert store2.delete_chat_groups([grp["id"]]) == 1
+    assert store2.get_chat_group(grp["id"]) is None
+
+
+@pytest.mark.asyncio
+async def test_stream_store_append_read_clear(tmp_path):
+    store = StreamStore(data_dir=tmp_path)
+    mid = await store.append(
+        "vs_1",
+        {"role": "user", "sender_id": "u1", "sender_name": "用户1", "text": "hi", "at_bot": True},
+    )
+    msgs = await store.read_stream("vs_1")
+    assert len(msgs) == 1
+    assert msgs[0]["id"] == mid
+    assert msgs[0]["text"] == "hi"
+    assert msgs[0]["at_bot"] is True
+    # 不存在的会话返回空列表
+    assert await store.read_stream("vs_none") == []
+    # 更新回复状态
+    await store.update_reply("vs_1", mid, "ok")
+    assert (await store.read_stream("vs_1"))[0]["reply_status"] == "ok"
+    # 清空
+    await store.clear("vs_1")
+    assert await store.read_stream("vs_1") == []
+
+
+@pytest.mark.asyncio
+async def test_stream_store_truncate_oldest(tmp_path):
+    store = StreamStore(data_dir=tmp_path)
+    for i in range(MAX_STREAM_MESSAGES + 5):
+        await store.append("vs_1", {"role": "user", "text": str(i)})
+    msgs = await store.read_stream("vs_1")
+    assert len(msgs) == MAX_STREAM_MESSAGES
+    assert msgs[0]["text"] == str(5)  # 最旧 5 条被截断
+    assert msgs[-1]["text"] == str(MAX_STREAM_MESSAGES + 4)
+
+
+@pytest.mark.asyncio
+async def test_stream_store_delete_sessions(tmp_path):
+    store = StreamStore(data_dir=tmp_path)
+    await store.append("vs_1", {"role": "user", "text": "a"})
+    await store.append("vs_2", {"role": "user", "text": "b"})
+    await store.delete_sessions(["vs_1"])
+    assert await store.read_stream("vs_1") == []
+    assert len(await store.read_stream("vs_2")) == 1
+
+
+# ---------- 运行器：发送者优先级与消息流写入 ----------
+
+
+def test_runner_sender_precedence(tmp_path):
+    """发送者优先级：请求级 > 绑定群聊默认成员 > 手动 sender > 默认。"""
+    identity_store = IdentityStore(data_dir=tmp_path)
+    chat_group_store = ChatGroupStore(data_dir=tmp_path)
+    member = identity_store.create_identity("群友A", "member_a", "群友A")
+    identity_store.create_identity("群友B", "member_b", "群友B")
+    cg = chat_group_store.create_chat_group("测试群", [member["id"]])
+    runner = VirtualTestRunner(
+        FakeContext(),
+        identity_store=identity_store,
+        chat_group_store=chat_group_store,
+    )
+    session = {
+        "id": "vs_1",
+        "sender_id": "manual",
+        "sender_name": "手动发送者",
+        "chat_group_id": cg["id"],
+    }
+    # 请求级 > 绑定群聊默认成员；仅给 sender_id 时昵称回退 sender_id
+    assert runner._resolve_sender(session, "req", "请求者") == ("req", "请求者")
+    assert runner._resolve_sender(session, "req", None) == ("req", "req")
+    # 绑定群聊默认成员（成员池首个身份）
+    assert runner._resolve_sender(session, None, None) == ("member_a", "群友A")
+    # 未绑定群聊 → 手动 sender
+    session2 = dict(session)
+    session2["chat_group_id"] = None
+    assert runner._resolve_sender(session2, None, None) == ("manual", "手动发送者")
+    # 全缺 → 默认
+    session3 = {"id": "vs_3"}
+    assert runner._resolve_sender(session3, None, None) == ("testbench", "测试台")
+
+
+@pytest.mark.asyncio
+async def test_runner_writes_stream(tmp_path):
+    """start → 流含 user 消息；pipeline 完成后流含 bot 回复并回填 reply_status。"""
+    stream_store = StreamStore(data_dir=tmp_path)
+    queue = asyncio.Queue()
+    runner = VirtualTestRunner(FakeContext(queue), stream_store=stream_store)
+    session = make_session(1)
+    session["message_type"] = "GroupMessage"
+    session["auto_at"] = True
+
+    async def handler(event):
+        await event.send(MessageChain().message("回复"))
+        event.cleanup_temporary_local_files()
+
+    task = asyncio.create_task(consume(queue, handler))
+    try:
+        test_id = await runner.start(
+            sessions=[session], text="群聊消息", sender_id="xiaoming", sender_name="小明"
+        )
+        # start 后（pipeline 完成前）user 消息已写入流
+        msgs = await stream_store.read_stream("vs_1")
+        assert len(msgs) == 1
+        assert msgs[0]["role"] == "user"
+        assert msgs[0]["sender_id"] == "xiaoming"
+        assert msgs[0]["sender_name"] == "小明"
+        assert msgs[0]["at_bot"] is True  # 群聊 + auto_at
+        rec = await wait_run_done(runner, test_id)
+    finally:
+        task.cancel()
+    assert rec["results"][0]["status"] == "ok"
+    # 完成后 bot 回复写入流，user 消息回填 reply_status
+    msgs = await stream_store.read_stream("vs_1")
+    assert len(msgs) == 2
+    assert msgs[0]["reply_status"] == "ok"
+    assert msgs[1]["role"] == "bot"
+    assert msgs[1]["sender_id"] == "virtual_bot"
+    assert msgs[1]["text"] == "回复"

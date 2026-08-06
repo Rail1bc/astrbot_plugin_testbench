@@ -21,7 +21,7 @@ import time
 from collections.abc import AsyncGenerator
 
 from astrbot.api.event import AstrMessageEvent, MessageChain
-from astrbot.api.message_components import Plain
+from astrbot.api.message_components import At, Plain
 from astrbot.api.platform import (
     AstrBotMessage,
     MessageMember,
@@ -31,6 +31,10 @@ from astrbot.api.platform import (
 
 # 与 astrbot.core.astr_main_agent.LLM_ERROR_MESSAGE_EXTRA_KEY 保持一致
 LLM_ERROR_MESSAGE_EXTRA_KEY = "_llm_error_message"
+# 与 main.py 的 on_llm hook 约定的 extra 键：标记 LLM 阶段确实被触发
+TESTBENCH_LLM_REQUESTED_EXTRA_KEY = "_testbench_llm_requested"
+# 虚拟会话的机器人自身 id（模拟 @机器人 时 At 的目标）
+BOT_SELF_ID = "virtual_bot"
 
 
 class VirtualMessageEvent(AstrMessageEvent):
@@ -59,6 +63,8 @@ class VirtualMessageEvent(AstrMessageEvent):
         """pipeline 执行完毕后置位"""
         self.entry_id: str | None = None
         """运行器登记的在途条目 id（LLM 阶段 hook 经它与条目关联）；由 runner.start() 赋值"""
+        self.auto_at = False
+        """是否为模拟「@机器人」发言（runner 解析消息类型后设置，用于写入消息流）"""
 
     @classmethod
     def create(
@@ -72,8 +78,10 @@ class VirtualMessageEvent(AstrMessageEvent):
         provider_id: str | None = None,
         model: str | None = None,
         done_event: asyncio.Event | None = None,
+        message_type: MessageType | str = MessageType.FRIEND_MESSAGE,
+        auto_at: bool = False,
     ) -> VirtualMessageEvent:
-        """构造一条虚拟私聊消息事件。
+        """构造一条虚拟消息事件。
 
         Args:
             session_id: 虚拟会话 id（会成为 umo 中的 session_id 部分）。
@@ -85,13 +93,24 @@ class VirtualMessageEvent(AstrMessageEvent):
             provider_id: 可选，覆盖本次测试使用的 LLM provider。
             model: 可选，覆盖本次测试使用的模型名。
             done_event: 可选，外部传入的完成事件（测试时便于注入）。
+            message_type: 消息类型（私聊 / 群聊），决定 umo 与唤醒检查分支。
+            auto_at: 群聊消息是否模拟「@机器人」发言——开启时消息链以
+                At(self_id) 开头，唤醒检查直接命中；关闭时以未唤醒状态进管道。
         """
+        if isinstance(message_type, str):
+            message_type = MessageType(message_type)
         abm = AstrBotMessage()
-        abm.self_id = "virtual_bot"
+        abm.self_id = BOT_SELF_ID
         abm.sender = MessageMember(sender_id, sender_name)
-        abm.type = MessageType.FRIEND_MESSAGE
+        abm.type = message_type
         abm.session_id = session_id
-        abm.message = [Plain(text)] if text else []
+        if auto_at:
+            abm.message = [
+                At(qq=abm.self_id, name=abm.self_id),
+                *([Plain(text)] if text else []),
+            ]
+        else:
+            abm.message = [Plain(text)] if text else []
         abm.message_str = text or ""
         abm.raw_message = None
 
@@ -108,6 +127,7 @@ class VirtualMessageEvent(AstrMessageEvent):
             session_id=session_id,
             done_event=done_event,
         )
+        event.auto_at = auto_at
         if provider_id:
             event.set_extra("selected_provider", provider_id)
         if model:
@@ -182,7 +202,8 @@ class VirtualMessageEvent(AstrMessageEvent):
             error: 错误信息；缺省时读取 pipeline 写入的错误文案。
 
         Returns:
-            包含 umo、session_id、status、duration、reply、reasoning、error 的字典。
+            包含 umo、session_id、status、duration、reply、reasoning、error、
+            wake（唤醒状态）与 reason（no_reply 原因）的字典。
         """
         reply = "\n".join(
             chain.get_plain_text(with_other_comps_mark=True).strip()
@@ -191,6 +212,17 @@ class VirtualMessageEvent(AstrMessageEvent):
         )
         if status is None:
             status = "ok" if self.captured else "no_reply"
+        wake = {
+            "woken": bool(getattr(self, "is_wake", False)),
+            "at_or_wake": bool(getattr(self, "is_at_or_wake_command", False)),
+            "stopped": bool(self.is_stopped()),
+            "llm_requested": bool(
+                self.get_extra(TESTBENCH_LLM_REQUESTED_EXTRA_KEY, False)
+            ),
+        }
+        reason = None
+        if status == "no_reply":
+            reason = "not_woken" if not wake["woken"] else "woken_no_reply"
         return {
             "umo": self.unified_msg_origin,
             "session_id": self.session_id,
@@ -199,4 +231,6 @@ class VirtualMessageEvent(AstrMessageEvent):
             "reply": reply,
             "reasoning": self.reasoning_text,
             "error": error or self.get_extra(LLM_ERROR_MESSAGE_EXTRA_KEY),
+            "wake": wake,
+            "reason": reason,
         }

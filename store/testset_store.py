@@ -65,13 +65,21 @@ class TestsetStore:
 
     @staticmethod
     def _normalize_messages(messages: list[dict]) -> list[dict]:
-        """清洗消息列表：text 去首尾空白，空文本丢弃，rule 归一为 dict 或 None。"""
+        """清洗消息列表：text 去首尾空白，空文本丢弃，rule 归一为 dict 或 None。
+
+        可选的 sender_id / sender_name（消息级测试身份）为非空字符串时保留。
+        """
         out: list[dict] = []
         for item in messages:
             text = str(item.get("text") or "").strip()
             if not text:
                 continue
-            out.append({"text": text, "rule": _clean_rule(item.get("rule"))})
+            message: dict = {"text": text, "rule": _clean_rule(item.get("rule"))}
+            for key in ("sender_id", "sender_name"):
+                value = item.get(key)
+                if isinstance(value, str) and value:
+                    message[key] = value
+            out.append(message)
         return out
 
     @staticmethod

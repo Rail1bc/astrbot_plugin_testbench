@@ -113,6 +113,46 @@ export async function listTestsetRuns() {
   return bridge.apiGet("testsets/runs");
 }
 
+export async function listIdentities() {
+  return bridge.apiGet("identities");
+}
+
+export async function createIdentity(payload) {
+  return bridge.apiPost("identities", payload);
+}
+
+export async function updateIdentity(identityId, payload) {
+  return bridge.apiPost(`identities/${encodeURIComponent(identityId)}/update`, payload);
+}
+
+export async function deleteIdentities(ids) {
+  return bridge.apiPost("identities/delete", { ids });
+}
+
+export async function listChatGroups() {
+  return bridge.apiGet("chat-groups");
+}
+
+export async function createChatGroup(payload) {
+  return bridge.apiPost("chat-groups", payload);
+}
+
+export async function updateChatGroup(groupId, payload) {
+  return bridge.apiPost(`chat-groups/${encodeURIComponent(groupId)}/update`, payload);
+}
+
+export async function deleteChatGroups(ids) {
+  return bridge.apiPost("chat-groups/delete", { ids });
+}
+
+export async function getStream(id) {
+  return bridge.apiGet(`sessions/${encodeURIComponent(id)}/stream`);
+}
+
+export async function clearStream(ids) {
+  return bridge.apiPost("sessions/stream/clear", { ids });
+}
+
 // ---------- SSE 事件流 ----------
 
 // 单一全局订阅：重复调用返回同一订阅；断线时父窗口报告 onError，

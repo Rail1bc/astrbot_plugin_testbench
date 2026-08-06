@@ -6,6 +6,7 @@
 import { createTestset, updateTestset } from "./api.js";
 import { showModal } from "./modal.js";
 import { state } from "./state.js";
+import { escapeHtml } from "./utils.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -137,6 +138,34 @@ export function createTestsetEditor(env) {
     cb.checked = !!batchChecked;
     batch.append(cb, document.createTextNode("批量"));
 
+    // 身份（可选）：该条消息以哪个测试身份发送；值即身份 sender_id。
+    // 身份被删除后选项保留原 sender 值（sender_name 存 data-raw-name），
+    // 保存时不静默丢绑定。
+    const senderSel = document.createElement("select");
+    senderSel.className = "ts-msg-sender";
+    senderSel.title = "发送身份（可选）";
+    const rawSender = msg && msg.sender_id ? msg.sender_id : "";
+    const matchedIdentity = state.identities.find((i) => i.sender_id === rawSender);
+    senderSel.innerHTML =
+      `<option value="">默认身份</option>` +
+      state.identities
+        .map(
+          (i) =>
+            `<option value="${escapeHtml(i.sender_id)}">${escapeHtml(i.name)}</option>`,
+        )
+        .join("");
+    if (rawSender && matchedIdentity) {
+      senderSel.value = rawSender;
+    } else if (rawSender) {
+      const opt = document.createElement("option");
+      opt.value = rawSender;
+      opt.textContent = `${msg.sender_name || rawSender}（身份已删除）`;
+      senderSel.appendChild(opt);
+      senderSel.value = rawSender;
+      senderSel.dataset.rawName = msg.sender_name || "";
+    }
+    senderSel.addEventListener("change", markDirty);
+
     const del = document.createElement("button");
     del.className = "icon-btn danger";
     del.textContent = "✕";
@@ -163,8 +192,18 @@ export function createTestsetEditor(env) {
     });
     refreshValueVisible();
 
-    row.append(idxEl, inp, sel, val, batch, del);
+    row.append(idxEl, inp, sel, val, senderSel, batch, del);
     return row;
+  }
+
+  // 行内身份下拉 → sender 字段：未选返回空对象；身份仍存在取其
+  // sender_id/sender_name，身份已删除时回退原 sender_name（data-raw-name）
+  // 或 sender_id
+  function collectSender(sel) {
+    if (!sel || !sel.value) return {};
+    const ident = state.identities.find((i) => i.sender_id === sel.value);
+    if (ident) return { sender_id: ident.sender_id, sender_name: ident.sender_name };
+    return { sender_id: sel.value, sender_name: sel.dataset.rawName || sel.value };
   }
 
   function reindexRows() {
@@ -226,7 +265,8 @@ export function createTestsetEditor(env) {
     updateSegments();
   }
 
-  // 收集编辑器行：空文本行视为删除，批量段索引基于保留后的消息序列
+  // 收集编辑器行：空文本行视为删除，批量段索引基于保留后的消息序列；
+  // 每条消息可选身份（sender_id/sender_name，见 renderMsgRow 的身份下拉）
   function collectEditorRows() {
     const messages = [];
     const batchFlags = [];
@@ -237,7 +277,8 @@ export function createTestsetEditor(env) {
         row.querySelector(".ts-msg-rule-type").value,
         row.querySelector(".ts-msg-rule-value").value,
       );
-      messages.push({ text, rule });
+      const sender = collectSender(row.querySelector(".ts-msg-sender"));
+      messages.push({ text, rule, ...sender });
       batchFlags.push(row.querySelector(".ts-msg-batch input").checked);
     }
     return { messages, batchRanges: rangesFromFlags(batchFlags) };
@@ -410,7 +451,15 @@ export function createTestsetEditor(env) {
       const text = m && typeof m.text === "string" ? m.text.trim() : "";
       if (!text) continue;
       const rule = m && m.rule != null ? { ...m.rule } : null;
-      messages.push({ text, rule });
+      const message = { text, rule };
+      // 可选 sender（向后兼容：缺省无 sender 的旧信封照常导入）
+      if (m && typeof m.sender_id === "string" && m.sender_id) {
+        message.sender_id = m.sender_id;
+      }
+      if (m && typeof m.sender_name === "string" && m.sender_name) {
+        message.sender_name = m.sender_name;
+      }
+      messages.push(message);
     }
     let batchRanges = [];
     if (Array.isArray(data.batch_ranges)) {

@@ -15,6 +15,9 @@
         <button class="rail-btn" data-view="testsets" title="测试集" aria-label="测试集">
           ✎
         </button>
+        <button class="rail-btn" data-view="identities" title="身份与群聊" aria-label="身份与群聊">
+          👥
+        </button>
       </aside>
 
       <aside class="sidebar">
@@ -43,6 +46,21 @@
             <div class="recent-runs-title">最近运行</div>
             <div id="recent-runs"></div>
           </div>
+        </section>
+
+        <section class="card identities-card" hidden>
+          <div class="toolbar">
+            <span id="identity-count" class="count-label"></span>
+            <span class="toolbar-spacer"></span>
+            <button id="btn-refresh-identities" class="btn small">刷新</button>
+          </div>
+          <div id="identity-list" class="group-list"></div>
+          <div class="recent-runs-title">虚拟群聊（成员池）</div>
+          <div class="toolbar">
+            <span id="chat-group-count" class="count-label"></span>
+            <span class="toolbar-spacer"></span>
+          </div>
+          <div id="chat-group-list" class="group-list"></div>
         </section>
       </aside>
 
@@ -84,6 +102,9 @@
               <span class="run-caption">群发消息（发送给所有已打开的会话）</span>
               <div class="run-field-row">
                 <input id="run-text" type="text" placeholder="输入一条消息，发送给所有已打开的会话" />
+                <select id="run-sender">
+                  <option value="">各会话自身身份</option>
+                </select>
                 <button id="btn-run-all" class="btn primary">发送到全部</button>
               </div>
             </div>

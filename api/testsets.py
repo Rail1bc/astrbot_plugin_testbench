@@ -17,7 +17,8 @@ class TestsetsAPI:
         """校验并清洗测试集消息；无效返回 None（调用方转 400）。
 
         messages 必须为 list（可空——先建命名条目、再在窗口里加消息）；
-        每条已含消息必须含非空字符串 text，rule 必须为 dict 或 null。
+        每条已含消息必须含非空字符串 text，rule 必须为 dict 或 null，可选的
+        sender_id / sender_name（消息级测试身份）必须为字符串。
         """
         if not isinstance(messages, list):
             return None
@@ -31,7 +32,20 @@ class TestsetsAPI:
                 return None
             if rule is not None and not isinstance(rule, dict):
                 return None
-            out.append({"text": text, "rule": rule})
+            sender_id = item.get("sender_id")
+            sender_name = item.get("sender_name")
+            if sender_id is not None and not isinstance(sender_id, str):
+                return None
+            if sender_name is not None and not isinstance(sender_name, str):
+                return None
+            out.append(
+                {
+                    "text": text,
+                    "rule": rule,
+                    "sender_id": sender_id,
+                    "sender_name": sender_name,
+                }
+            )
         return out
 
     @staticmethod

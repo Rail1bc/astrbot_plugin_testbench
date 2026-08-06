@@ -7,6 +7,7 @@ import { createChatRenderer } from "./chat.js";
 import { createAlignController } from "./align.js";
 import { createEventController } from "./events.js";
 import { createGroupList } from "./group_list.js";
+import { createIdentityList } from "./identity_list.js";
 import { createTestsetList } from "./testset_list.js";
 import { createTestsetRunController } from "./testset_run.js";
 import {
@@ -14,6 +15,7 @@ import {
   deleteSessions,
   deriveSession as deriveSessionApi,
   getHistory,
+  getStream,
   listConfs,
   listPlatforms,
   ready,
@@ -67,6 +69,8 @@ function openPanel(id) {
   const groupBadge = s
     ? `<span class="badge group-badge" title="所属测试组">${escapeHtml(s.group_name || "")}</span>`
     : "";
+  // 面板上次停留的视图（LLM 历史 / 消息流）；重开后沿用，按钮标签同步
+  const view = state.panelView.get(id) === "stream" ? "stream" : "history";
 
   panel.innerHTML =
     `<div class="panel-head" title="拖拽排序">` +
@@ -76,6 +80,7 @@ function openPanel(id) {
     groupBadge + platformBadge + confBadge +
     `</span>` +
     `<span class="panel-actions">` +
+    `<button class="icon-btn" data-action="view-toggle" title="${view === "stream" ? "切换为 LLM 对话历史" : "切换为真实消息流"}">${view === "stream" ? "LLM 历史" : "消息流"}</button>` +
     `<div class="panel-menu">` +
     `<button class="icon-btn menu-toggle" data-action="menu" title="更多操作">⋯</button>` +
     `<div class="panel-menu-dropdown" hidden>` +
@@ -103,6 +108,9 @@ function openPanel(id) {
 
   panel.querySelector('[data-action="close"]').addEventListener("click", () => toggleOpen(id));
   panel.querySelector('[data-action="pin"]').addEventListener("click", () => pin(id));
+  panel.querySelector('[data-action="view-toggle"]').addEventListener("click", () => {
+    setPanelView(id, state.panelView.get(id) === "stream" ? "history" : "stream");
+  });
   setupPanelMenu(panel, id);
   const input = panel.querySelector(".msg-input");
   input.addEventListener("keydown", (e) => {
@@ -112,7 +120,7 @@ function openPanel(id) {
 
   state.panelEls.set(id, panel);
   renderPanels();
-  void loadHistory(id);
+  void (view === "stream" ? loadStream(id) : loadHistory(id));
 }
 
 // 打开组内全部会话（group_list.js 的「打开全部」按钮经 env 调用本函数）。
@@ -147,6 +155,12 @@ const historySeq = new Map();
 async function loadHistory(id) {
   const panel = state.panelEls.get(id);
   if (!panel) return;
+  // 面板处于消息流视图时，历史刷新改为刷新消息流（反馈跟随当前视图，
+  // 不把用户正在看的消息流视图切回 LLM 历史）
+  if (state.panelView.get(id) === "stream") {
+    void loadStream(id);
+    return;
+  }
   const chat = panel.querySelector(".chat");
   const seq = (historySeq.get(id) || 0) + 1;
   historySeq.set(id, seq);
@@ -167,7 +181,44 @@ async function loadHistory(id) {
 
 // 渲染逻辑拆在 chat.js（createChatRenderer），本包装函数在初始化处注入 align 控制器
 function renderChat(panel, conversations) {
+  // 消息流视图下面板内容由消息流渲染，对齐重排等历史渲染不覆盖它
+  if (state.panelView.get(panel.dataset.id) === "stream") return;
   return chat.renderChat(panel, conversations);
+}
+
+// 消息流视图：与 LLM 历史并行的纯记录（群成员发言/回复，不注入 LLM 上下文）。
+// 与 loadHistory 共用 historySeq 序号，乱序迟到响应同样丢弃。切换视图只换
+// 展示不重新投递消息，在途反馈经 loadHistory 的视图跟随逻辑刷新当前视图。
+async function loadStream(id) {
+  const panel = state.panelEls.get(id);
+  if (!panel) return;
+  const seq = (historySeq.get(id) || 0) + 1;
+  historySeq.set(id, seq);
+  try {
+    const data = await getStream(id);
+    if (historySeq.get(id) !== seq) return;
+    const messages = Array.isArray(data.messages) ? data.messages : [];
+    state.streamCache.set(id, messages);
+    chat.renderStream(panel, messages);
+  } catch (err) {
+    if (historySeq.get(id) !== seq) return;
+    const chatEl = panel.querySelector(".chat");
+    chatEl.innerHTML = `<div class="empty">加载消息流失败: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
+// 切换面板视图（LLM 历史 / 消息流），同步按钮标签并加载对应内容
+function setPanelView(id, view) {
+  state.panelView.set(id, view);
+  const panel = state.panelEls.get(id);
+  if (!panel) return;
+  const toggle = panel.querySelector('[data-action="view-toggle"]');
+  if (toggle) {
+    toggle.textContent = view === "stream" ? "LLM 历史" : "消息流";
+    toggle.title = view === "stream" ? "切换为 LLM 对话历史" : "切换为真实消息流";
+  }
+  if (view === "stream") void loadStream(id);
+  else void loadHistory(id);
 }
 
 // 面板头部「编辑」：以 JSON 编辑器整体查看 / 替换该会话的对话历史。
@@ -261,6 +312,17 @@ function clearPanelStatus(panel) {
 // ---------- 发送（事件驱动） ----------
 // 逐会话反馈（面板状态 + 历史刷新）与消费者注册收敛在 events.js（applySessionFeedback /
 // registerTestConsumer）；sendToOne / sendToAll 只负责启动投递并挂接消费者。
+// 群发栏「各会话自身身份」选择器可指定消息级身份（sender_id/sender_name 覆盖），
+// 单发与群发共用该选择器。
+
+// 群发栏身份选择器的当前选择 → 消息级 sender；未选（各会话自身身份）返回空对象
+function selectedBroadcastSender() {
+  const sel = $("run-sender");
+  if (!sel || !sel.value) return {};
+  const ident = state.identities.find((x) => x.id === sel.value);
+  if (!ident) return {};
+  return { sender_id: ident.sender_id, sender_name: ident.sender_name };
+}
 
 async function sendToOne(id, text) {
   text = (text || "").trim();
@@ -270,7 +332,7 @@ async function sendToOne(id, text) {
   input.value = "";
   panelStatus(panel, "warn", "发送中…");
   try {
-    const resp = await runTest({ sessions: [id], text });
+    const resp = await runTest({ sessions: [id], text, ...selectedBroadcastSender() });
     events.registerTestConsumer(resp.test_id, events.applySessionFeedback, () => {});
   } catch (err) {
     panelStatus(panel, "error", "发送失败: " + err.message);
@@ -293,7 +355,7 @@ async function sendToAll() {
   $("run-text").value = "";
   showRunStatus("warn", `正在并发发送给 ${ids.length} 个会话…`);
   try {
-    const resp = await runTest({ sessions: ids, text });
+    const resp = await runTest({ sessions: ids, text, ...selectedBroadcastSender() });
     events.registerTestConsumer(
       resp.test_id,
       events.applySessionFeedback,
@@ -714,6 +776,15 @@ const { refreshGroups, renderGroupList } = createGroupList({
   renderPanels,
   showRunStatus,
   updateRunOverview,
+  // 组编辑弹窗「管理身份与群聊 →」切到 rail 第三视图（showView 是函数声明，可提升）
+  switchToIdentities: () => showView("identities"),
+});
+
+// 身份与虚拟群聊：跨测试组共享资源，组弹窗/群发栏引用。refreshGroups 来自
+// group_list（增删改后回刷组弹窗选项），本控制器只负责 CRUD 与列表渲染
+const { refreshIdentities, refreshChatGroups } = createIdentityList({
+  refreshGroups,
+  showRunStatus,
 });
 
 const { refreshTestsets } = createTestsetList({
@@ -737,6 +808,10 @@ wireControllers();
 // 死区（ReferenceError），模块求值即中止初始化
 $("btn-refresh").addEventListener("click", refreshGroups);
 $("btn-refresh-testsets").addEventListener("click", refreshTestsets);
+$("btn-refresh-identities").addEventListener("click", () => {
+  void refreshIdentities();
+  void refreshChatGroups();
+});
 $("btn-run-all").addEventListener("click", sendToAll);
 $("btn-abort-run").addEventListener("click", () => testsetRun.abortTestsetRun(state.activeRunId));
 // 「查看报告」：测试集结果不自动弹窗，暂存后由用户按需查看（最近一次完成/取消的运行）
@@ -761,13 +836,20 @@ function showView(view) {
   document.body.classList.remove("sidebar-collapsed");
   document.querySelector(".groups-card").hidden = view !== "sessions";
   document.querySelector(".testsets-card").hidden = view !== "testsets";
-  // 左侧选择驱动右侧视图：会话列表 ↔ 测试集编辑窗口自动切换
-  document.querySelector(".sessions-view").hidden = view !== "sessions";
-  document.querySelector(".testsets-view").hidden = view !== "testsets";
+  document.querySelector(".identities-card").hidden = view !== "identities";
   document.querySelectorAll(".rail-btn").forEach((btn) => {
     btn.classList.toggle("active", btn.dataset.view === view);
   });
-  if (view === "testsets") void refreshTestsets();
+  // 左侧选择驱动右侧视图：会话列表 ↔ 测试集编辑窗口自动切换；
+  // 「身份与群聊」视图不改变右侧内容（保留当前会话/测试集状态）
+  if (view === "sessions") {
+    document.querySelector(".sessions-view").hidden = false;
+    document.querySelector(".testsets-view").hidden = true;
+  } else if (view === "testsets") {
+    document.querySelector(".sessions-view").hidden = true;
+    document.querySelector(".testsets-view").hidden = false;
+    void refreshTestsets();
+  }
 }
 
 document.querySelectorAll(".rail-btn").forEach((btn) => {
@@ -782,7 +864,13 @@ document.querySelectorAll(".rail-btn").forEach((btn) => {
 });
 
 await ready();
-// allSettled：三个初始化步骤相互独立，任一失败不阻塞其余步骤与事件流连接
-// （各步骤内部已自行降级，见 refreshGroups / refreshTestsets 的 catch）
-await Promise.allSettled([loadOptions(), refreshGroups(), refreshTestsets()]);
+// allSettled：各初始化步骤相互独立，任一失败不阻塞其余步骤与事件流连接
+// （各步骤内部已自行降级，见 refreshGroups / refreshTestsets / refreshIdentities 的 catch）
+await Promise.allSettled([
+  loadOptions(),
+  refreshGroups(),
+  refreshTestsets(),
+  refreshIdentities(),
+  refreshChatGroups(),
+]);
 void events.connectEvents();

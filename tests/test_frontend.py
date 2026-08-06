@@ -10,7 +10,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_DIR = REPO_ROOT  # 插件根目录即仓库根，页面文件在 pages/testbench/
 
 # 页面全部 ES module（入口 app.js + 视图/状态/工具模块；events.js 事件驱动反馈层、
-# testset_run.js 测试集运行编排、testset_editor.js 测试集编辑器为拆分后新增模块）
+# testset_run.js 测试集运行编排、testset_editor.js 测试集编辑器、identity_list.js
+# 「身份与群聊」视图为拆分后新增模块）
 _FRONTEND_MODULES = (
     "app",
     "api",
@@ -24,6 +25,7 @@ _FRONTEND_MODULES = (
     "testset_editor",
     "events",
     "testset_run",
+    "identity_list",
 )
 
 
@@ -498,4 +500,115 @@ def test_frontend_open_all_toggles_label_and_closes():
     )
     assert "state.pinnedIds = state.pinnedIds.filter((id) => !ids.has(id))" in app_js, (
         "关闭本组会话时未同步清除置顶"
+    )
+
+
+def test_frontend_group_dialog_new_fields():
+    """组配置弹窗须提交消息类型 / 自动@ / 绑定虚拟群聊三字段，且不嵌管理弹窗。
+
+    群聊虚拟会话新增三字段（message_type / auto_at / chat_group_id）。组编辑弹窗
+    提交时须带上（默认 FriendMessage、auto_at 恒 true、群聊模式下才传绑定群聊）；
+    「管理身份与群聊」须是跳转链接（hideModal + switchToIdentities），而不是在
+    组弹窗内嵌第二层管理弹窗。
+    """
+    gl_js = _read_module("group_list")
+    assert "message_type: selType.value || null" in gl_js, "组弹窗未提交消息类型"
+    assert "auto_at: isGroup ? inpAutoAt.checked : true" in gl_js, (
+        "组弹窗未按群聊模式提交自动@"
+    )
+    assert "chat_group_id: isGroup ? selChatGroup.value || null : null" in gl_js, (
+        "组弹窗未按群聊模式提交绑定虚拟群聊"
+    )
+    assert "message_type: selType.value || null" in gl_js, "会话弹窗未提交消息类型覆盖"
+    assert "chat_group_id: selChatGroup.value || null" in gl_js, (
+        "会话弹窗未提交绑定群聊覆盖"
+    )
+    # 不嵌管理弹窗：链接跳转视图而非再开弹窗
+    assert "管理身份与群聊 →" in gl_js, "组弹窗缺少「管理身份与群聊」跳转链接"
+    assert "hideModal()" in gl_js, "跳转链接未先关闭组弹窗"
+    assert "switchToIdentities()" in gl_js, "跳转链接未切到身份与群聊视图"
+
+
+def test_frontend_panel_view_toggle():
+    """会话面板须可在「LLM 历史 / 消息流」间切换。
+
+    群消息流与 LLM 历史并行记录：面板页头须有 view-toggle 按钮，app.js 须实现
+    setPanelView（切换并加载对应视图）与 loadStream（拉取消息流渲染）。
+    """
+    app_js = _read_module("app")
+    assert 'data-action="view-toggle"' in app_js, "面板页头缺少视图切换按钮"
+    assert "function setPanelView(" in app_js, "缺少 setPanelView 视图切换函数"
+    assert "async function loadStream(" in app_js, "缺少 loadStream 消息流加载函数"
+    assert "streamCache" in app_js, "app.js 未使用消息流缓存 streamCache"
+    assert 'state.panelView.get(id) === "stream"' in app_js, (
+        "未按 panelView 状态判断当前视图"
+    )
+
+
+def test_frontend_identities_view():
+    """rail 第三视图「身份与群聊」入口与列表容器齐全。
+
+    index.html 须含 data-view="identities" 的 rail 按钮与 #identity-list /
+    #chat-group-list 两个列表；identity_list.js 存在且导出 createIdentityList
+    （由 app.js 装配，作为 rail 第三视图的列表管理）。
+    """
+    html = _read_html()
+    assert 'data-view="identities"' in html, "index.html 缺少身份与群聊视图入口"
+    assert 'id="identity-list"' in html, "index.html 缺少身份列表容器"
+    assert 'id="chat-group-list"' in html, "index.html 缺少虚拟群聊列表容器"
+    src = _read_module("identity_list")
+    assert "export function createIdentityList(env)" in src, (
+        "identity_list.js 缺少 createIdentityList 工厂"
+    )
+    assert "listIdentities" in src, "身份列表未拉取身份接口"
+    assert "listChatGroups" in src, "群聊列表未拉取虚拟群聊接口"
+
+
+def test_frontend_show_view_three_state():
+    """showView 须覆盖会话 / 测试集 / 身份与群聊三态互斥。
+
+    新增 rail 第三视图后，左侧三张卡片（.groups-card / .testsets-card /
+    .identities-card）必须按 view 互斥显隐，rail 按钮 active 同步切换。
+    """
+    app_js = _read_module("app")
+    assert 'view !== "sessions"' in app_js, "showView 未按 sessions 控制卡片"
+    assert 'view !== "testsets"' in app_js, "showView 未按 testsets 控制卡片"
+    assert 'view !== "identities"' in app_js, "showView 未按 identities 控制卡片"
+    assert ".identities-card" in app_js, "showView 未引用 .identities-card"
+
+
+def test_frontend_testset_row_identity():
+    """测试集消息行须收集可选发送身份（sender_id / sender_name）。
+
+    测试集每条消息可指定身份（动态身份）：collectEditorRows 须从行内身份下拉
+    collectSender 并合并进消息 dict；导出信封解析须保留可选 sender 字段。
+    """
+    editor_js = _read_module("testset_editor")
+    assert "collectSender(" in editor_js, "缺少行内身份收集函数 collectSender"
+    assert "const sender = collectSender(" in editor_js, (
+        "collectEditorRows 未收集行内身份"
+    )
+    assert "messages.push({ text, rule, ...sender })" in editor_js, (
+        "收集的消息未合并 sender 字段"
+    )
+    assert "message.sender_id = m.sender_id" in editor_js, "导入信封未保留 sender_id"
+    assert "message.sender_name = m.sender_name" in editor_js, (
+        "导入信封未保留 sender_name"
+    )
+
+
+def test_frontend_broadcast_identity_selector():
+    """群发栏身份选择器须把选择身份带进发送 payload。
+
+    群发/单发消息都可选身份：app.js 须经 selectedBroadcastSender() 读取
+    #run-sender 下拉并把 sender 合入 runTest payload；index.html 须含该下拉。
+    """
+    html = _read_html()
+    app_js = _read_module("app")
+    assert 'id="run-sender"' in html, "index.html 缺少群发栏身份选择器"
+    assert "function selectedBroadcastSender()" in app_js, (
+        "缺少群发栏身份选择器读取函数"
+    )
+    assert "...selectedBroadcastSender()" in app_js, (
+        "群发/单发 payload 未合并选择身份"
     )
