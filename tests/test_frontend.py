@@ -609,6 +609,4 @@ def test_frontend_broadcast_identity_selector():
     assert "function selectedBroadcastSender()" in app_js, (
         "缺少群发栏身份选择器读取函数"
     )
-    assert "...selectedBroadcastSender()" in app_js, (
-        "群发/单发 payload 未合并选择身份"
-    )
+    assert "...selectedBroadcastSender()" in app_js, "群发/单发 payload 未合并选择身份"

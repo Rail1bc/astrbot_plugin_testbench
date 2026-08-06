@@ -114,9 +114,7 @@ class IdentityStore:
         if sender_id is not None:
             identity["sender_id"] = str(sender_id or "").strip() or identity["name"]
         if sender_name is not None:
-            identity["sender_name"] = (
-                str(sender_name or "").strip() or identity["name"]
-            )
+            identity["sender_name"] = str(sender_name or "").strip() or identity["name"]
         self._store._save()
         return identity
 
@@ -162,9 +160,7 @@ class ChatGroupStore:
                 out.append(mid)
         return out
 
-    def create_chat_group(
-        self, name: str, member_ids: list[str] | None = None
-    ) -> dict:
+    def create_chat_group(self, name: str, member_ids: list[str] | None = None) -> dict:
         chat_group = {
             "id": f"cg_{uuid.uuid4().hex[:8]}",
             "name": str(name or "").strip() or "群聊",

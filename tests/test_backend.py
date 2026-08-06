@@ -3170,7 +3170,9 @@ def test_umo_of_uses_message_type():
         == "webchat:GroupMessage:vs_1"
     )
     assert (
-        umo_of({"id": "vs_1", "platform_id": "aiocqhttp", "message_type": "GroupMessage"})
+        umo_of(
+            {"id": "vs_1", "platform_id": "aiocqhttp", "message_type": "GroupMessage"}
+        )
         == "aiocqhttp:GroupMessage:vs_1"
     )
 
@@ -3179,7 +3181,11 @@ def test_effective_resolves_new_fields(tmp_path):
     """message_type / auto_at / chat_group_id 的三态解析（会话 → 组 → 默认）。"""
     mgr = VirtualGroupManager(data_dir=tmp_path)
     group = mgr.create_group(
-        "群聊组", count=1, message_type="GroupMessage", auto_at=False, chat_group_id="cg_1"
+        "群聊组",
+        count=1,
+        message_type="GroupMessage",
+        auto_at=False,
+        chat_group_id="cg_1",
     )
     session = group["sessions"][0]
     eff = mgr.effective(group, session)
@@ -3199,7 +3205,9 @@ def test_effective_resolves_new_fields(tmp_path):
     eff3 = mgr.effective(group, session)
     assert eff3["message_type"] == "FriendMessage"
     assert eff3["auto_at"] is True
-    mgr.update_session(session["id"], message_type=None, auto_at=None, chat_group_id=None)
+    mgr.update_session(
+        session["id"], message_type=None, auto_at=None, chat_group_id=None
+    )
     eff4 = mgr.effective(group, session)
     assert eff4["message_type"] == "GroupMessage"
     assert eff4["auto_at"] is False
@@ -3342,7 +3350,13 @@ async def test_stream_store_append_read_clear(tmp_path):
     store = StreamStore(data_dir=tmp_path)
     mid = await store.append(
         "vs_1",
-        {"role": "user", "sender_id": "u1", "sender_name": "用户1", "text": "hi", "at_bot": True},
+        {
+            "role": "user",
+            "sender_id": "u1",
+            "sender_name": "用户1",
+            "text": "hi",
+            "at_bot": True,
+        },
     )
     msgs = await store.read_stream("vs_1")
     assert len(msgs) == 1
@@ -3432,7 +3446,10 @@ async def test_runner_writes_stream(tmp_path):
     task = asyncio.create_task(consume(queue, handler))
     try:
         test_id = await runner.start(
-            sessions=[session], text="群聊消息", sender_id="xiaoming", sender_name="小明"
+            sessions=[session],
+            text="群聊消息",
+            sender_id="xiaoming",
+            sender_name="小明",
         )
         # start 后（pipeline 完成前）user 消息已写入流
         msgs = await stream_store.read_stream("vs_1")
