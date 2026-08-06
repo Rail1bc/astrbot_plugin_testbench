@@ -116,6 +116,14 @@ export function createIdentityList(env) {
         `<span class="badge" title="sender_id">${escapeHtml(ident.sender_id)}</span>` +
         `<span class="badge" title="sender_name">${escapeHtml(ident.sender_name)}</span>` +
         `</div>`;
+      // 拖拽到右侧群聊编辑视图可快速加入该群（dataTransfer 只传身份 id）
+      item.draggable = true;
+      item.addEventListener("dragstart", (e) => {
+        e.dataTransfer.setData("text/plain", ident.id);
+        e.dataTransfer.effectAllowed = "copy";
+        item.classList.add("dragging");
+      });
+      item.addEventListener("dragend", () => item.classList.remove("dragging"));
       item
         .querySelector('[data-action="edit"]')
         .addEventListener("click", () => openIdentityForm(ident));
@@ -324,9 +332,11 @@ export function createIdentityList(env) {
       const row = document.createElement("div");
       row.className = "cg-member-row";
       if (ident) {
+        // 昵称列优先展示 sender_name（无昵称回退 sender_id），悬停显示完整信息
+        const nick = ident.sender_name || ident.sender_id || "—";
         row.innerHTML =
-          `<span class="cg-member-name" title="${escapeHtml(ident.name)}">${escapeHtml(ident.name)}</span>` +
-          `<span class="badge">${escapeHtml(ident.sender_id)}</span>` +
+          `<span class="cg-member-name" title="${escapeHtml(nick)}">${escapeHtml(ident.name)}</span>` +
+          `<span class="badge" title="昵称 ${escapeHtml(nick)}">${escapeHtml(nick)}</span>` +
           `<button class="icon-btn danger" data-action="remove" title="移出该群">✕</button>`;
       } else {
         // 身份已删除：成员 id 悬空引用，保留占位并允许移除
@@ -388,11 +398,12 @@ export function createIdentityList(env) {
       return;
     }
     for (const ident of matches) {
+      const nick = ident.sender_name || ident.sender_id || "—";
       const row = document.createElement("div");
       row.className = "cg-search-row";
       row.innerHTML =
-        `<span class="cg-member-name" title="${escapeHtml(ident.name)}">${escapeHtml(ident.name)}</span>` +
-        `<span class="badge">${escapeHtml(ident.sender_id)}</span>` +
+        `<span class="cg-member-name" title="${escapeHtml(nick)}">${escapeHtml(ident.name)}</span>` +
+        `<span class="badge" title="昵称 ${escapeHtml(nick)}">${escapeHtml(nick)}</span>` +
         `<button class="btn small primary" data-action="join">＋ 加入</button>`;
       row
         .querySelector('[data-action="join"]')
@@ -403,12 +414,18 @@ export function createIdentityList(env) {
     }
   }
 
-  // 加入成员：新 id 追加到末尾后整体替换
+  // 加入成员：新 id 追加到末尾后整体替换；无选中群聊 / 已在群中给出提示而非静默
   async function addMember(mid) {
     const cg = state.chatGroups.find((x) => x.id === state.selectedChatGroupId);
-    if (!cg) return;
+    if (!cg) {
+      showRunStatus("warn", "请先在左侧选择一个虚拟群聊");
+      return;
+    }
     const memberIds = Array.isArray(cg.member_ids) ? cg.member_ids.slice() : [];
-    if (memberIds.includes(mid)) return;
+    if (memberIds.includes(mid)) {
+      showRunStatus("warn", "该身份已在群中");
+      return;
+    }
     memberIds.push(mid);
     await updateChatGroup(cg.id, { member_ids: memberIds });
     $("cg-search").value = "";
@@ -449,6 +466,26 @@ export function createIdentityList(env) {
   $("cg-search").addEventListener("input", (e) =>
     renderSearchResults(e.target.value.trim()),
   );
+
+  // 拖拽投放区：把左侧「身份」条目拖到成员区即加入当前群聊
+  const cgMembers = $("cg-members");
+  cgMembers.addEventListener("dragover", (e) => {
+    if (!state.selectedChatGroupId) return;
+    if ((e.dataTransfer.types || []).includes("text/plain")) {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "copy";
+      cgMembers.classList.add("drag-over");
+    }
+  });
+  cgMembers.addEventListener("dragleave", (e) => {
+    if (!cgMembers.contains(e.relatedTarget)) cgMembers.classList.remove("drag-over");
+  });
+  cgMembers.addEventListener("drop", (e) => {
+    e.preventDefault();
+    cgMembers.classList.remove("drag-over");
+    const mid = e.dataTransfer.getData("text/plain");
+    if (mid) void addMember(mid);
+  });
 
   return {
     refreshIdentities,

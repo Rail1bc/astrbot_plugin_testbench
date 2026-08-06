@@ -641,6 +641,15 @@ code {
   background: color-mix(in srgb, var(--primary) 8%, transparent);
 }
 
+/* 身份条目可拖拽（拖到右侧群聊编辑视图加入成员） */
+.group-item[draggable="true"] {
+  cursor: grab;
+}
+
+.group-item.dragging {
+  opacity: 0.5;
+}
+
 /* 左侧测试集列表：纯命名条目（选中后右侧编辑窗口管理） */
 .testset-nav-item {
   border: 1px solid var(--border);
@@ -970,6 +979,20 @@ code {
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+
+/* 拖拽投放高亮：身份拖入成员区时的视觉反馈 */
+.cg-members.drag-over {
+  border: 1px dashed var(--primary);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--primary) 6%, transparent);
+}
+
+.cg-drag-hint {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--text-secondary);
+  opacity: 0.85;
 }
 
 .modal-radio-row {

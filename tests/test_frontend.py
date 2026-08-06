@@ -634,6 +634,39 @@ def test_frontend_chat_group_create_name_only():
     assert 'okText: "创建"' in src, "新建群聊弹窗缺少创建按钮"
 
 
+def test_frontend_chat_group_member_nickname():
+    """群聊编辑视图的成员与搜索结果须展示昵称（sender_name）。
+
+    群成员多时按昵称识别比按发送者 ID 直观：renderMemberList 与
+    renderSearchResults 的行内 badge 须优先展示 sender_name（无昵称回退
+    sender_id）。
+    """
+    src = _read_module("identity_list")
+    assert "ident.sender_name || ident.sender_id" in src, (
+        "成员行未优先展示昵称（sender_name 回退 sender_id）"
+    )
+    assert src.count("const nick = ") >= 2, "昵称回退逻辑未同时用于成员行与搜索结果行"
+
+
+def test_frontend_identity_drag_join():
+    """身份须可拖拽到群聊编辑视图加入群成员。
+
+    拖拽加入是搜索加入的快捷路径：renderIdentityList 的身份条目须 draggable
+    并在 dragstart 把身份 id 写入 dataTransfer；#cg-members 成员区须监听
+    dragover（preventDefault + dropEffect）与 drop（读 id 调 addMember）。
+    """
+    src = _read_module("identity_list")
+    assert "item.draggable = true" in src, "身份条目未设为可拖拽"
+    assert 'e.dataTransfer.setData("text/plain", ident.id)' in src, (
+        "dragstart 未把身份 id 写入 dataTransfer"
+    )
+    assert 'addEventListener("dragover"' in src, "成员区未监听 dragover"
+    assert 'addEventListener("drop"' in src, "成员区未监听 drop"
+    assert "void addMember(mid)" in src, "drop 未调用 addMember 加入成员"
+    html = _read_html()
+    assert "cg-drag-hint" in html, "index.html 缺少拖拽提示"
+
+
 def test_frontend_testset_row_identity():
     """测试集消息行须收集可选发送身份（sender_id / sender_name）。
 
