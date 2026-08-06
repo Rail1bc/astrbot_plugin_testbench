@@ -564,17 +564,74 @@ def test_frontend_identities_view():
     assert "listChatGroups" in src, "群聊列表未拉取虚拟群聊接口"
 
 
+def test_frontend_identities_tab_split():
+    """左侧身份与群聊须以 tab 分开为两个列表，一次只显示一个。
+
+    身份膨胀后群聊列表被长身份列表挤到下方不好找，故 identities-card 内以
+    tab 拆分：index.html 须含 data-tab 两个 tab 按钮与 data-pane 两个列表
+    容器；identity_list.js 须提供 switchIdentityTab 按 dataset.tab 分发、
+    pane 按 data-pane 互斥显隐。
+    """
+    html = _read_html()
+    assert 'data-tab="identity"' in html, "index.html 缺少身份 tab"
+    assert 'data-tab="chatgroup"' in html, "index.html 缺少群聊 tab"
+    src = _read_module("identity_list")
+    assert "switchIdentityTab(" in src, "identity_list.js 缺少 tab 切换函数"
+    assert "pane.dataset.pane !== tab" in src, "tab 切换未按 pane 互斥显隐"
+    assert ".identities-card .tab-btn" in src, "tab 按钮未绑定点击"
+
+
 def test_frontend_show_view_three_state():
     """showView 须覆盖会话 / 测试集 / 身份与群聊三态互斥。
 
     新增 rail 第三视图后，左侧三张卡片（.groups-card / .testsets-card /
-    .identities-card）必须按 view 互斥显隐，rail 按钮 active 同步切换。
+    .identities-card）必须按 view 互斥显隐，rail 按钮 active 同步切换；
+    右侧 .sessions-view / .testsets-view / .chat-group-view 三个工作区同样互斥，
+    切到 identities 时显示群聊编辑视图（renderChatGroupView 渲染）。
     """
     app_js = _read_module("app")
     assert 'view !== "sessions"' in app_js, "showView 未按 sessions 控制卡片"
     assert 'view !== "testsets"' in app_js, "showView 未按 testsets 控制卡片"
     assert 'view !== "identities"' in app_js, "showView 未按 identities 控制卡片"
     assert ".identities-card" in app_js, "showView 未引用 .identities-card"
+    assert '".chat-group-view"' in app_js, "showView 未控制右侧群聊编辑视图"
+
+
+def test_frontend_chat_group_editor_view():
+    """群聊编辑须是右侧独立视图（搜索成员加入），而非弹窗多选。
+
+    创建群聊不再让用户在多选弹窗里挑成员（成员多时窗口放不下）：index.html
+    须含 #chat-group-view 编辑视图容器（#cg-search 搜索框 / #cg-member-list
+    成员列表）；identity_list.js 须提供 openChatGroupView / renderChatGroupView /
+    renderSearchResults / addMember / removeMember；app.js 的 showView 切到
+    identities 时须渲染该视图。
+    """
+    html = _read_html()
+    assert 'id="chat-group-view"' in html, "index.html 缺少群聊编辑视图容器"
+    assert 'id="cg-search"' in html, "index.html 缺少成员搜索框"
+    assert 'id="cg-member-list"' in html, "index.html 缺少成员列表容器"
+    src = _read_module("identity_list")
+    assert "openChatGroupView(" in src, "缺少打开编辑视图入口"
+    assert "renderChatGroupView(" in src, "缺少编辑视图渲染函数"
+    assert "renderSearchResults(" in src, "缺少搜索过滤函数"
+    assert "addMember(" in src, "缺少加入成员函数"
+    assert "removeMember(" in src, "缺少移除成员函数"
+    app_js = _read_module("app")
+    assert "renderChatGroupView" in app_js, "showView 切到 identities 时未渲染编辑视图"
+
+
+def test_frontend_chat_group_create_name_only():
+    """创建群聊弹窗只填名称，不再内嵌成员多选。
+
+    成员多时多选 checkbox 在弹窗里放不下，故创建只写名称、创建后到右侧编辑
+    视图搜索加入。identity_list.js 须：createChatGroup 提交仅含 name 的 payload、
+    弹窗里不再渲染成员 checkbox（移除「成员（勾选加入）」）。
+    """
+    src = _read_module("identity_list")
+    assert "createChatGroup({ name })" in src, "创建群聊未只提交名称"
+    assert "成员（勾选加入）" not in src, "创建/编辑弹窗仍渲染成员多选"
+    assert "inpName.value.trim()" in src, "创建群聊名称校验缺失"
+    assert 'okText: "创建"' in src, "新建群聊弹窗缺少创建按钮"
 
 
 def test_frontend_testset_row_identity():

@@ -127,10 +127,11 @@ body.sidebar-collapsed .sidebar {
   margin-top: 0;
 }
 
-/* 右侧两个互斥视图（会话面板 / 测试集编辑窗口）；
-   初始 testsets-view 在 HTML 中 hidden，hidden 特例覆盖 display: flex */
+/* 右侧三个互斥视图（会话面板 / 测试集编辑窗口 / 群聊编辑视图）；
+   初始 testsets-view / chat-group-view 在 HTML 中 hidden，hidden 特例覆盖 display: flex */
 .sessions-view,
-.testsets-view {
+.testsets-view,
+.chat-group-view {
   flex: 1;
   min-height: 0;
   display: flex;
@@ -139,7 +140,8 @@ body.sidebar-collapsed .sidebar {
 }
 
 .sessions-view[hidden],
-.testsets-view[hidden] {
+.testsets-view[hidden],
+.chat-group-view[hidden] {
   display: none;
 }
 
@@ -583,6 +585,62 @@ code {
   display: none;
 }
 
+/* ---------- 身份与群聊列表 ---------- */
+
+/* 与 .groups-card / .testsets-card 互斥显示的第三个侧栏视图；卡片内以 tab
+   拆分「身份」「群聊」两个 pane，一次只渲染一个列表，身份膨胀不影响群聊查找 */
+.identities-card {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.identities-card[hidden] {
+  display: none;
+}
+
+.tab-bar {
+  display: flex;
+  gap: 4px;
+}
+
+.tab-btn {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-secondary);
+  border-radius: 6px;
+  padding: 3px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.tab-btn.active {
+  background: color-mix(in srgb, var(--primary) 15%, transparent);
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+.identities-card .tab-pane {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* tab-pane 的 [hidden] 会被 display:flex 覆盖，须显式隐藏 */
+.identities-card .tab-pane[hidden] {
+  display: none;
+}
+
+/* 左侧列表当前选中（群聊编辑视图）高亮 */
+.group-item.selected {
+  border-color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 8%, transparent);
+}
+
 /* 左侧测试集列表：纯命名条目（选中后右侧编辑窗口管理） */
 .testset-nav-item {
   border: 1px solid var(--border);
@@ -826,6 +884,92 @@ code {
 .ts-segments {
   font-size: 12px;
   color: var(--warn);
+}
+
+/* 群聊编辑视图（右侧「身份与群聊」视图的工作区）：头部 + 成员区 + 搜索添加区 */
+.chat-group-editor {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.cg-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.cg-name-wrap {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.cg-name-wrap input {
+  max-width: 280px;
+}
+
+.cg-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.cg-members {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cg-section-title {
+  flex-shrink: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.cg-member-list {
+  flex: 0 1 40%;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.cg-member-row,
+.cg-search-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 10px;
+}
+
+.cg-member-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cg-search-results {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 
 .modal-radio-row {

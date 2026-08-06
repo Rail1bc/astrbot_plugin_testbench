@@ -50,17 +50,25 @@
 
         <section class="card identities-card" hidden>
           <div class="toolbar">
-            <span id="identity-count" class="count-label"></span>
+            <div class="tab-bar">
+              <button class="tab-btn active" data-tab="identity">身份</button>
+              <button class="tab-btn" data-tab="chatgroup">群聊</button>
+            </div>
             <span class="toolbar-spacer"></span>
             <button id="btn-refresh-identities" class="btn small">刷新</button>
           </div>
-          <div id="identity-list" class="group-list"></div>
-          <div class="recent-runs-title">虚拟群聊（成员池）</div>
-          <div class="toolbar">
-            <span id="chat-group-count" class="count-label"></span>
-            <span class="toolbar-spacer"></span>
+          <div class="tab-pane" data-pane="identity">
+            <div class="toolbar">
+              <span id="identity-count" class="count-label"></span>
+            </div>
+            <div id="identity-list" class="group-list"></div>
           </div>
-          <div id="chat-group-list" class="group-list"></div>
+          <div class="tab-pane" data-pane="chatgroup" hidden>
+            <div class="toolbar">
+              <span id="chat-group-count" class="count-label"></span>
+            </div>
+            <div id="chat-group-list" class="group-list"></div>
+          </div>
         </section>
       </aside>
 
@@ -141,6 +149,31 @@
             <div class="ts-foot">
               <button id="btn-ts-add-msg" class="add-block">＋ 添加消息</button>
               <span id="ts-segments" class="ts-segments"></span>
+            </div>
+          </section>
+        </div>
+
+        <div id="chat-group-view" class="chat-group-view" hidden>
+          <section class="card chat-group-editor">
+            <div class="cg-head">
+              <div class="cg-name-wrap">
+                <input id="cg-name" type="text" placeholder="虚拟群聊名称" />
+                <span id="cg-meta" class="count-label"></span>
+              </div>
+              <div class="cg-actions">
+                <button id="btn-cg-save" class="btn small">保存名称</button>
+                <button id="btn-cg-delete" class="btn small danger">✕ 删除</button>
+              </div>
+            </div>
+            <div id="cg-empty" class="empty">
+              在左侧「群聊」标签页选择或新建一个虚拟群聊，在此搜索成员并加入。
+            </div>
+            <div id="cg-members" class="cg-members" hidden>
+              <div class="cg-section-title">群成员（<span id="cg-member-count">0</span>）</div>
+              <div id="cg-member-list" class="cg-member-list"></div>
+              <div class="cg-section-title">添加成员</div>
+              <input id="cg-search" type="text" placeholder="搜索成员：名称 / 发送者ID / 昵称…" />
+              <div id="cg-search-results" class="cg-search-results"></div>
             </div>
           </section>
         </div>

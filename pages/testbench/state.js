@@ -32,6 +32,8 @@ export const state = {
   // 测试身份与虚拟群聊（rail 第三视图「身份与群聊」：跨测试组共享的持久化资源）
   identities: [],
   chatGroups: [],
+  // 右侧「群聊编辑」视图当前选中的虚拟群聊 id（null = 未选中，显示空态）
+  selectedChatGroupId: null,
   // 会话消息流缓存（session_id -> 消息数组），面板「LLM 历史 ↔ 消息流」切换查看
   streamCache: new Map(),
   // 面板当前视图（session_id -> "history" | "stream"；默认 "history"）

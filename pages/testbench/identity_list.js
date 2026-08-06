@@ -2,6 +2,10 @@
 // 与 group_list.js 同模式：由 app.js 通过 createIdentityList(env) 创建。
 // env 注入本模块依赖的视图动作（refreshGroups 回刷组弹窗选项 / showRunStatus），
 // 本模块不 import app.js，模块间依赖保持单向。
+// 左侧「身份与群聊」卡片内以 tab 拆分「身份」与「群聊」两个列表（身份膨胀后
+// 群聊列表不被挤走）；创建群聊只填名称（成员多选移出弹窗——成员多时窗口放
+// 不下），成员管理在右侧「群聊编辑」视图完成——搜索身份池（名称/发送者ID/
+// 昵称）实时过滤后加入、成员行可移除、名称可改。
 // 身份与虚拟群聊是跨测试组共享的持久化资源：组配置弹窗、群发栏身份选择器、
 // 测试集消息身份下拉都从 state.identities / state.chatGroups 读取，本模块
 // 负责这些资源的列表管理（CRUD），并在增删改后刷新引用方。
@@ -36,6 +40,8 @@ export function createIdentityList(env) {
     }
     renderIdentityList();
     syncBroadcastSenders();
+    // 编辑视图的搜索池随身份变化重渲染（身份可能晚于群聊加载完成）
+    renderChatGroupView();
   }
 
   async function refreshChatGroups() {
@@ -47,6 +53,7 @@ export function createIdentityList(env) {
       showRunStatus("error", "加载虚拟群聊失败: " + err.message);
     }
     renderChatGroupList();
+    renderChatGroupView();
   }
 
   // 群发栏身份选择器：选项来自身份列表（「各会话自身身份」为默认）。
@@ -64,6 +71,18 @@ export function createIdentityList(env) {
         )
         .join("");
     if (current && state.identities.some((i) => i.id === current)) sel.value = current;
+  }
+
+  // ---------- 左侧卡片：身份 / 群聊 tab 切换 ----------
+
+  // 身份与群聊分开两个 tab，一次只渲染一个列表：身份膨胀后找群聊不被长列表挤走
+  function switchIdentityTab(tab) {
+    document.querySelectorAll(".identities-card .tab-btn").forEach((btn) => {
+      btn.classList.toggle("active", btn.dataset.tab === tab);
+    });
+    document.querySelectorAll(".identities-card .tab-pane").forEach((pane) => {
+      pane.hidden = pane.dataset.pane !== tab;
+    });
   }
 
   // ---------- 身份列表 ----------
@@ -187,7 +206,8 @@ export function createIdentityList(env) {
     for (const cg of state.chatGroups) {
       const count = Array.isArray(cg.member_ids) ? cg.member_ids.length : 0;
       const item = document.createElement("div");
-      item.className = "group-item";
+      item.className =
+        "group-item" + (cg.id === state.selectedChatGroupId ? " selected" : "");
       item.innerHTML =
         `<div class="group-head">` +
         `<span class="group-name" title="${escapeHtml(cg.name)}">${escapeHtml(cg.name)}</span>` +
@@ -197,75 +217,54 @@ export function createIdentityList(env) {
         `<button class="icon-btn danger" data-action="delete" title="删除群聊">✕</button>` +
         `</span>` +
         `</div>`;
+      // 条目整体点击 → 右侧打开该群聊的编辑视图
+      item.addEventListener("click", () => openChatGroupView(cg));
       item
         .querySelector('[data-action="edit"]')
-        .addEventListener("click", () => openChatGroupForm(cg));
+        .addEventListener("click", (e) => {
+          e.stopPropagation();
+          openChatGroupView(cg);
+        });
       item
         .querySelector('[data-action="delete"]')
-        .addEventListener("click", () => deleteChatGroup(cg));
+        .addEventListener("click", (e) => {
+          e.stopPropagation();
+          deleteChatGroup(cg);
+        });
       list.appendChild(item);
     }
 
     const add = document.createElement("button");
     add.className = "add-block";
     add.textContent = "＋ 新建群聊";
-    add.addEventListener("click", () => openChatGroupForm(null));
+    add.addEventListener("click", () => openCreateChatGroup());
     list.appendChild(add);
   }
 
-  // 虚拟群聊表单：名称 + 成员多选（checkbox 来自身份池）。
-  // 成员引用身份 id；删除身份后成员 id 保留（悬空引用，绑定群聊时按现存身份过滤）。
-  function openChatGroupForm(chatGroup) {
+  // 创建群聊：只填名称（成员多选移出弹窗——成员多时窗口放不下）。创建成功后
+  // 自动选中新群聊并打开右侧「群聊编辑」视图，在那里搜索成员加入。
+  function openCreateChatGroup() {
     const inpName = document.createElement("input");
     inpName.type = "text";
-    inpName.value = chatGroup ? chatGroup.name : "";
-
-    const memberWrap = document.createElement("div");
-    memberWrap.className = "form-col";
-    memberWrap.style.gap = "4px";
-    if (!state.identities.length) {
-      const hint = document.createElement("p");
-      hint.className = "hint";
-      hint.textContent = "暂无身份，请先在上方「身份」区创建";
-      memberWrap.appendChild(hint);
-    }
-    const selected = new Set(chatGroup ? chatGroup.member_ids || [] : []);
-    for (const ident of state.identities) {
-      const l = document.createElement("label");
-      l.className = "settings-field";
-      l.style.flexDirection = "row";
-      l.style.alignItems = "center";
-      l.style.gap = "6px";
-      const cb = document.createElement("input");
-      cb.type = "checkbox";
-      cb.value = ident.id;
-      cb.checked = selected.has(ident.id);
-      const span = document.createElement("span");
-      span.textContent = `${ident.name}（${ident.sender_id}）`;
-      l.append(cb, span);
-      memberWrap.appendChild(l);
-    }
+    inpName.value = "";
 
     const form = document.createElement("div");
     form.className = "form-col";
-    form.append(field("群聊名称", inpName), field("成员（勾选加入）", memberWrap));
+    form.append(field("群聊名称", inpName));
 
     openModal({
-      title: chatGroup ? `编辑群聊 · ${chatGroup.name}` : "新建群聊",
+      title: "新建群聊",
       content: form,
-      okText: chatGroup ? "保存" : "创建",
+      okText: "创建",
       onOk: async () => {
         const name = inpName.value.trim();
         if (!name) throw new Error("群聊名称不能为空");
-        const memberIds = [];
-        memberWrap.querySelectorAll("input[type=checkbox]:checked").forEach((cb) => {
-          memberIds.push(cb.value);
-        });
-        if (chatGroup) await updateChatGroup(chatGroup.id, { name, member_ids: memberIds });
-        else await createChatGroup({ name, member_ids: memberIds });
+        const cg = await createChatGroup({ name });
         await refreshChatGroups();
         await refreshGroups();
-        showRunStatus("ok", chatGroup ? "虚拟群聊已更新" : `群聊「${name}」已创建`);
+        state.selectedChatGroupId = cg.id;
+        renderChatGroupView();
+        showRunStatus("ok", `群聊「${name}」已创建，可在右侧添加成员`);
       },
     });
   }
@@ -275,12 +274,186 @@ export function createIdentityList(env) {
       danger: true,
       onOk: async () => {
         await deleteChatGroups([cg.id]);
+        if (state.selectedChatGroupId === cg.id) state.selectedChatGroupId = null;
         await refreshChatGroups();
         await refreshGroups();
+        renderChatGroupView();
         showRunStatus("ok", "虚拟群聊已删除");
       },
     });
   }
 
-  return { refreshIdentities, refreshChatGroups, syncBroadcastSenders };
+  // ---------- 右侧「群聊编辑」视图 ----------
+
+  function openChatGroupView(cg) {
+    state.selectedChatGroupId = cg.id;
+    renderChatGroupList();
+    renderChatGroupView();
+  }
+
+  // 按当前选中群聊渲染右侧编辑视图（名称 / 成员 / 搜索）；未选中 → 空态提示
+  function renderChatGroupView() {
+    const cg = state.chatGroups.find((x) => x.id === state.selectedChatGroupId);
+    $("cg-empty").hidden = !!cg;
+    $("cg-members").hidden = !cg;
+    if (!cg) {
+      $("cg-name").value = "";
+      $("cg-meta").textContent = "";
+      return;
+    }
+    $("cg-name").value = cg.name || "";
+    const memberIds = Array.isArray(cg.member_ids) ? cg.member_ids : [];
+    $("cg-meta").textContent = `${memberIds.length} 个成员`;
+    renderMemberList(memberIds);
+    renderSearchResults($("cg-search").value.trim());
+  }
+
+  function renderMemberList(memberIds) {
+    const list = $("cg-member-list");
+    $("cg-member-count").textContent = memberIds.length;
+    list.innerHTML = "";
+    if (!memberIds.length) {
+      const empty = document.createElement("div");
+      empty.className = "empty";
+      empty.textContent = "暂无成员，在下方搜索并加入";
+      list.appendChild(empty);
+      return;
+    }
+    for (const mid of memberIds) {
+      const ident = state.identities.find((i) => i.id === mid);
+      const row = document.createElement("div");
+      row.className = "cg-member-row";
+      if (ident) {
+        row.innerHTML =
+          `<span class="cg-member-name" title="${escapeHtml(ident.name)}">${escapeHtml(ident.name)}</span>` +
+          `<span class="badge">${escapeHtml(ident.sender_id)}</span>` +
+          `<button class="icon-btn danger" data-action="remove" title="移出该群">✕</button>`;
+      } else {
+        // 身份已删除：成员 id 悬空引用，保留占位并允许移除
+        row.innerHTML =
+          `<span class="cg-member-name">${escapeHtml(mid)}（身份已删除）</span>` +
+          `<button class="icon-btn danger" data-action="remove" title="移除该引用">✕</button>`;
+      }
+      row
+        .querySelector('[data-action="remove"]')
+        .addEventListener("click", () => {
+          void removeMember(mid);
+        });
+      list.appendChild(row);
+    }
+  }
+
+  // 移除成员：member_ids 整体替换（去重保序由后端 _clean_member_ids 保证）
+  async function removeMember(mid) {
+    const cg = state.chatGroups.find((x) => x.id === state.selectedChatGroupId);
+    if (!cg) return;
+    const memberIds = (Array.isArray(cg.member_ids) ? cg.member_ids : []).filter(
+      (x) => x !== mid,
+    );
+    await updateChatGroup(cg.id, { member_ids: memberIds });
+    await refreshChatGroups();
+    showRunStatus("ok", "成员已移出该群");
+  }
+
+  // 搜索身份池：按 名称/发送者ID/昵称 子串过滤（不区分大小写），已在群内的
+  // 成员排除；空关键字显示全部可加入成员
+  function renderSearchResults(q) {
+    const list = $("cg-search-results");
+    list.innerHTML = "";
+    const cg = state.chatGroups.find((x) => x.id === state.selectedChatGroupId);
+    if (!cg) return;
+    const memberIds = new Set(Array.isArray(cg.member_ids) ? cg.member_ids : []);
+    if (!state.identities.length) {
+      const hint = document.createElement("div");
+      hint.className = "empty";
+      hint.textContent = "暂无身份，请先在左侧「身份」标签页创建";
+      list.appendChild(hint);
+      return;
+    }
+    const query = q.toLowerCase();
+    const matches = state.identities.filter((i) => {
+      if (memberIds.has(i.id)) return false;
+      if (!query) return true;
+      return (
+        (i.name || "").toLowerCase().includes(query) ||
+        (i.sender_id || "").toLowerCase().includes(query) ||
+        (i.sender_name || "").toLowerCase().includes(query)
+      );
+    });
+    if (!matches.length) {
+      const hint = document.createElement("div");
+      hint.className = "empty";
+      hint.textContent = query ? "无匹配成员" : "全部成员已在群内";
+      list.appendChild(hint);
+      return;
+    }
+    for (const ident of matches) {
+      const row = document.createElement("div");
+      row.className = "cg-search-row";
+      row.innerHTML =
+        `<span class="cg-member-name" title="${escapeHtml(ident.name)}">${escapeHtml(ident.name)}</span>` +
+        `<span class="badge">${escapeHtml(ident.sender_id)}</span>` +
+        `<button class="btn small primary" data-action="join">＋ 加入</button>`;
+      row
+        .querySelector('[data-action="join"]')
+        .addEventListener("click", () => {
+          void addMember(ident.id);
+        });
+      list.appendChild(row);
+    }
+  }
+
+  // 加入成员：新 id 追加到末尾后整体替换
+  async function addMember(mid) {
+    const cg = state.chatGroups.find((x) => x.id === state.selectedChatGroupId);
+    if (!cg) return;
+    const memberIds = Array.isArray(cg.member_ids) ? cg.member_ids.slice() : [];
+    if (memberIds.includes(mid)) return;
+    memberIds.push(mid);
+    await updateChatGroup(cg.id, { member_ids: memberIds });
+    $("cg-search").value = "";
+    await refreshChatGroups();
+    showRunStatus("ok", "成员已加入该群");
+  }
+
+  // 编辑视图头部「保存名称」：只更新名称字段
+  async function saveChatGroupName() {
+    const cg = state.chatGroups.find((x) => x.id === state.selectedChatGroupId);
+    if (!cg) return;
+    const name = $("cg-name").value.trim();
+    if (!name) {
+      showRunStatus("warn", "群聊名称不能为空");
+      return;
+    }
+    await updateChatGroup(cg.id, { name });
+    await refreshChatGroups();
+    showRunStatus("ok", "群聊名称已保存");
+  }
+
+  // 编辑视图头部「✕ 删除」：删除并清空选中（与左侧列表删除同一语义）
+  function deleteChatGroupView() {
+    const cg = state.chatGroups.find((x) => x.id === state.selectedChatGroupId);
+    if (!cg) return;
+    deleteChatGroup(cg);
+  }
+
+  // ---------- 静态控件绑定（左侧 tab + 右侧编辑视图） ----------
+
+  document.querySelectorAll(".identities-card .tab-btn").forEach((btn) => {
+    btn.addEventListener("click", () => switchIdentityTab(btn.dataset.tab));
+  });
+  $("btn-cg-save").addEventListener("click", () => {
+    void saveChatGroupName();
+  });
+  $("btn-cg-delete").addEventListener("click", deleteChatGroupView);
+  $("cg-search").addEventListener("input", (e) =>
+    renderSearchResults(e.target.value.trim()),
+  );
+
+  return {
+    refreshIdentities,
+    refreshChatGroups,
+    syncBroadcastSenders,
+    renderChatGroupView,
+  };
 }

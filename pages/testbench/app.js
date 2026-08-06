@@ -781,8 +781,9 @@ const { refreshGroups, renderGroupList } = createGroupList({
 });
 
 // 身份与虚拟群聊：跨测试组共享资源，组弹窗/群发栏引用。refreshGroups 来自
-// group_list（增删改后回刷组弹窗选项），本控制器只负责 CRUD 与列表渲染
-const { refreshIdentities, refreshChatGroups } = createIdentityList({
+// group_list（增删改后回刷组弹窗选项），本控制器负责 CRUD、左侧 tab 切换与
+// 右侧「群聊编辑」视图（renderChatGroupView 供 showView 切到 identities 时调用）
+const { refreshIdentities, refreshChatGroups, renderChatGroupView } = createIdentityList({
   refreshGroups,
   showRunStatus,
 });
@@ -827,8 +828,8 @@ $("run-text").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.isComposing) sendToAll();
 });
 
-// UI 窄条：视图切换（会话列表 / 测试集）。点击当前视图按钮折叠/展开侧栏，
-// 点击其他视图按钮切换视图（展开侧栏并刷新对应视图数据）
+// UI 窄条：视图切换（会话列表 / 测试集 / 身份与群聊）。点击当前视图按钮折叠/
+// 展开侧栏，点击其他视图按钮切换视图（展开侧栏并刷新对应视图数据）
 let activeView = "sessions";
 
 function showView(view) {
@@ -840,15 +841,23 @@ function showView(view) {
   document.querySelectorAll(".rail-btn").forEach((btn) => {
     btn.classList.toggle("active", btn.dataset.view === view);
   });
-  // 左侧选择驱动右侧视图：会话列表 ↔ 测试集编辑窗口自动切换；
-  // 「身份与群聊」视图不改变右侧内容（保留当前会话/测试集状态）
+  // 左侧选择驱动右侧视图：会话列表 ↔ 测试集编辑窗口 ↔ 群聊编辑视图互斥。
+  // 切到「身份与群聊」时右侧显示群聊编辑视图（renderChatGroupView 按当前
+  // 选中的虚拟群聊渲染编辑内容或空态），身份管理在左侧列表完成。
   if (view === "sessions") {
     document.querySelector(".sessions-view").hidden = false;
     document.querySelector(".testsets-view").hidden = true;
+    document.querySelector(".chat-group-view").hidden = true;
   } else if (view === "testsets") {
     document.querySelector(".sessions-view").hidden = true;
     document.querySelector(".testsets-view").hidden = false;
+    document.querySelector(".chat-group-view").hidden = true;
     void refreshTestsets();
+  } else if (view === "identities") {
+    document.querySelector(".sessions-view").hidden = true;
+    document.querySelector(".testsets-view").hidden = true;
+    document.querySelector(".chat-group-view").hidden = false;
+    renderChatGroupView();
   }
 }
 
