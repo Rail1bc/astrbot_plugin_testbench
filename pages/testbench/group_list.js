@@ -90,6 +90,10 @@ export function createGroupList(env) {
       item.dataset.id = g.id;
       const expanded = state.expandedGroups.has(g.id);
       const sessions = g.sessions || [];
+      // 组内会话全部打开时按钮切换为「关闭全部」，否则为「打开全部」
+      // （会话被单独关闭后自动回到「打开全部」，点击只补开未打开的）
+      const allOpen =
+        sessions.length > 0 && sessions.every((s) => state.openIds.includes(s.id));
       const platformBadge = g.platform_id
         ? `<span class="badge">${escapeHtml(platformName(g.platform_id))}</span>`
         : `<span class="badge">${escapeHtml(platformName("webchat"))}</span>`;
@@ -102,7 +106,7 @@ export function createGroupList(env) {
         `<span class="group-name">${escapeHtml(g.name)}</span>` +
         `<span class="badge">${sessions.length} 会话</span>` +
         `<span class="group-actions">` +
-        `<button class="btn small" data-action="open-all">打开全部</button>` +
+        `<button class="btn small" data-action="open-all">${allOpen ? "关闭全部" : "打开全部"}</button>` +
         `<button class="icon-btn" data-action="add" title="新增会话">＋</button>` +
         `<button class="icon-btn" data-action="edit" title="编辑测试组">✎</button>` +
         `<button class="icon-btn danger" data-action="delete-group" title="删除组">✕</button>` +

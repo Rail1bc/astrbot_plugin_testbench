@@ -457,3 +457,45 @@ def test_frontend_report_on_demand():
     assert "showTestsetResults" not in run_js[start:end], (
         "handleTestsetEvent 直接弹结果表格（应改为暂存 + 按需查看）"
     )
+
+
+def test_frontend_render_panels_run_overview_bound():
+    """renderPanels 调用的 updateRunOverview 必须有 app.js 模块级绑定。
+
+    曾把 updateRunOverview 实现移到 testset_run.js 后只经 env 对象传给
+    group_list.js，app.js 自身未再绑定——renderPanels 每次调用都抛
+    ReferenceError，且抛错点在面板已 append 之后：表现是「打开全部」每次
+    只开组内第 1 个会话（openAll 循环中断）、会话按钮标签不更新（收尾的
+    renderGroupList 未执行）、但面板却已可见。
+    """
+    app_js = _read_module("app")
+    assert "const updateRunOverview = testsetRun.updateRunOverview" in app_js, (
+        "renderPanels 调用的 updateRunOverview 缺少 app.js 模块级绑定"
+    )
+
+
+def test_frontend_open_all_toggles_label_and_closes():
+    """组「打开全部」按钮须按组内会话打开状态切换「打开全部 / 关闭全部」。
+
+    组内会话全部打开时按钮显示「关闭全部」、点击关闭本组全部会话（其他组
+    会话不受影响）；任一会话被单独关闭后按钮回到「打开全部」、点击只补开
+    尚未打开的会话。group_list.js 按 allOpen 生成按钮标签，app.js 的
+    openAll 按同一判定走关闭 / 补开分支。
+    """
+    app_js = _read_module("app")
+    gl_js = _read_module("group_list")
+    assert '${allOpen ? "关闭全部" : "打开全部"}' in gl_js, (
+        "组按钮未按 allOpen 切换打开全部/关闭全部标签"
+    )
+    assert "sessions.every((s) => state.openIds.includes(s.id))" in gl_js, (
+        "组按钮标签缺少「全部已打开」判定"
+    )
+    assert "sessions.every((s) => state.openIds.includes(s.id))" in app_js, (
+        "openAll 未计算组内会话是否全部打开"
+    )
+    assert "state.openIds = state.openIds.filter((id) => !ids.has(id))" in app_js, (
+        "全部打开时 openAll 未关闭本组会话"
+    )
+    assert "state.pinnedIds = state.pinnedIds.filter((id) => !ids.has(id))" in app_js, (
+        "关闭本组会话时未同步清除置顶"
+    )

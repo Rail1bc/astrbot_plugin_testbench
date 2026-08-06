@@ -115,14 +115,25 @@ function openPanel(id) {
   void loadHistory(id);
 }
 
-// 打开组内全部会话（group_list.js 的「打开全部」按钮经 env 调用本函数）
+// 打开组内全部会话（group_list.js 的「打开全部」按钮经 env 调用本函数）。
+// 组内会话全部打开时切换为关闭本组全部会话（只关属于本组的，其他组的
+// 会话不受影响）；否则只补开尚未打开的会话。按钮标签按同样判定切换。
 function openAll(gid) {
   const g = state.groups.find((x) => x.id === gid);
   if (!g) return;
-  for (const s of g.sessions || []) {
-    if (!state.openIds.includes(s.id)) {
-      state.openIds.push(s.id);
-      openPanel(s.id);
+  const sessions = g.sessions || [];
+  const allOpen =
+    sessions.length > 0 && sessions.every((s) => state.openIds.includes(s.id));
+  if (allOpen) {
+    const ids = new Set(sessions.map((s) => s.id));
+    state.openIds = state.openIds.filter((id) => !ids.has(id));
+    state.pinnedIds = state.pinnedIds.filter((id) => !ids.has(id));
+  } else {
+    for (const s of sessions) {
+      if (!state.openIds.includes(s.id)) {
+        state.openIds.push(s.id);
+        openPanel(s.id);
+      }
     }
   }
   renderPanels();
@@ -685,6 +696,11 @@ const testsetRun = createTestsetRunController({
   showRunStatus,
   loadHistory,
 });
+// 群发概览（当前会话数与组分布）实现在 testset_run 模块；renderPanels 也要调用，
+// 故在此取模块级绑定（曾只经 env 传给 group_list，renderPanels 每次抛
+// ReferenceError——面板已 append 才抛错，表现为「打开全部」每次只开一个会话、
+// 会话按钮标签不更新）
+const updateRunOverview = testsetRun.updateRunOverview;
 const events = createEventController({
   loadHistory,
   panelStatus,
@@ -697,7 +713,7 @@ const { refreshGroups, renderGroupList } = createGroupList({
   deleteSession,
   renderPanels,
   showRunStatus,
-  updateRunOverview: testsetRun.updateRunOverview,
+  updateRunOverview,
 });
 
 const { refreshTestsets } = createTestsetList({
