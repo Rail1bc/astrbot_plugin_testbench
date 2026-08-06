@@ -90,6 +90,7 @@ class TestsetRunner:
                     "rule": m.get("rule"),
                     "sender_id": m.get("sender_id"),
                     "sender_name": m.get("sender_name"),
+                    "auto_at": m.get("auto_at", True),
                     "status": "pending",
                     "test_id": None,
                     "results": [],
@@ -172,6 +173,7 @@ class TestsetRunner:
                 assertion=step["rule"],
                 sender_id=step.get("sender_id"),
                 sender_name=step.get("sender_name"),
+                auto_at=step.get("auto_at", True),
             )
             step["test_id"] = test_id
             rec = await self.runner.wait_done(
@@ -208,6 +210,7 @@ class TestsetRunner:
                     assertion=step["rule"],
                     sender_id=step.get("sender_id"),
                     sender_name=step.get("sender_name"),
+                    auto_at=step.get("auto_at", True),
                 )
                 step["test_id"] = test_id
             except Exception as e:

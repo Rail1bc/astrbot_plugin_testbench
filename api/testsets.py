@@ -18,7 +18,8 @@ class TestsetsAPI:
 
         messages 必须为 list（可空——先建命名条目、再在窗口里加消息）；
         每条已含消息必须含非空字符串 text，rule 必须为 dict 或 null，可选的
-        sender_id / sender_name（消息级测试身份）必须为字符串。
+        sender_id / sender_name（消息级测试身份）必须为字符串，可选的
+        auto_at（消息级是否模拟「@机器人」发言）必须为布尔值。
         """
         if not isinstance(messages, list):
             return None
@@ -38,12 +39,16 @@ class TestsetsAPI:
                 return None
             if sender_name is not None and not isinstance(sender_name, str):
                 return None
+            auto_at = item.get("auto_at")
+            if auto_at is not None and not isinstance(auto_at, bool):
+                return None
             out.append(
                 {
                     "text": text,
                     "rule": rule,
                     "sender_id": sender_id,
                     "sender_name": sender_name,
+                    "auto_at": auto_at,
                 }
             )
         return out

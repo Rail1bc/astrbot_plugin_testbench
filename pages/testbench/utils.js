@@ -74,7 +74,6 @@ export function effectiveView(id) {
     sender_id: session.sender_id || group.sender_id || "testbench",
     sender_name: session.sender_name || group.sender_name || "测试台",
     message_type: session.message_type || group.message_type || "FriendMessage",
-    auto_at: session.auto_at ?? group.auto_at ?? true,
     chat_group_id: session.chat_group_id ?? group.chat_group_id ?? null,
     group_name: group.name,
   };

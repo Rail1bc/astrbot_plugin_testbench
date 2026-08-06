@@ -39,7 +39,6 @@ class GroupsAPI(ConfRouteMixin):
             sender_name=payload.get("sender_name"),
             name_prefix=payload.get("name_prefix"),
             message_type=payload.get("message_type"),
-            auto_at=payload.get("auto_at", True),
             chat_group_id=payload.get("chat_group_id"),
         )
         if conf_id:
@@ -115,8 +114,6 @@ class GroupsAPI(ConfRouteMixin):
                 continue
             value = payload[key]
             updates[key] = value if isinstance(value, str) and value else None
-        if "auto_at" in payload:
-            updates["auto_at"] = bool(payload["auto_at"])
 
         old_sessions = [self.group_mgr.effective(group, s) for s in group["sessions"]]
         self.group_mgr.update_group(group_id, **updates)

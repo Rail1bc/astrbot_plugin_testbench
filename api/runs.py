@@ -36,6 +36,9 @@ class RunsAPI:
             return error_response("sender_id 必须是字符串", status_code=400)
         if sender_name is not None and not isinstance(sender_name, str):
             return error_response("sender_name 必须是字符串", status_code=400)
+        auto_at = payload.get("auto_at", True)
+        if not isinstance(auto_at, bool):
+            return error_response("auto_at 必须是布尔值", status_code=400)
         try:
             test_id = await self.runner.start(
                 sessions=session_objs,
@@ -46,6 +49,7 @@ class RunsAPI:
                 assertion=assertion,
                 sender_id=sender_id,
                 sender_name=sender_name,
+                auto_at=auto_at,
             )
         except ValueError as e:
             return error_response(str(e), status_code=400)

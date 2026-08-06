@@ -67,7 +67,9 @@ class TestsetStore:
     def _normalize_messages(messages: list[dict]) -> list[dict]:
         """清洗消息列表：text 去首尾空白，空文本丢弃，rule 归一为 dict 或 None。
 
-        可选的 sender_id / sender_name（消息级测试身份）为非空字符串时保留。
+        可选的 sender_id / sender_name（消息级测试身份）为非空字符串时保留；
+        可选的 auto_at（消息级是否模拟「@机器人」发言）为 bool 时保留，缺省
+        为 True（发送时再决定）。
         """
         out: list[dict] = []
         for item in messages:
@@ -79,6 +81,9 @@ class TestsetStore:
                 value = item.get(key)
                 if isinstance(value, str) and value:
                     message[key] = value
+            auto_at = item.get("auto_at")
+            if isinstance(auto_at, bool):
+                message["auto_at"] = auto_at
             out.append(message)
         return out
 

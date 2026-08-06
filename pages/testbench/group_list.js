@@ -164,7 +164,6 @@ export function createGroupList(env) {
     if (s.sender_id) list.push("发送者ID");
     if (s.sender_name) list.push("发送者昵称");
     if (s.message_type != null && s.message_type !== "") list.push("消息类型");
-    if (s.auto_at != null) list.push("自动@");
     if (s.chat_group_id != null && s.chat_group_id !== "") list.push("绑定群聊");
     return list;
   }
@@ -177,7 +176,6 @@ export function createGroupList(env) {
       ["发送者ID", Boolean(s.sender_id), v.sender_id, v.sender_id || "—"],
       ["发送者昵称", Boolean(s.sender_name), v.sender_name, v.sender_name || "—"],
       ["消息类型", s.message_type != null && s.message_type !== "", v.message_type, v.message_type === "GroupMessage" ? "群聊" : "私聊"],
-      ["自动@", s.auto_at != null, v.auto_at, v.auto_at ? "开启" : "关闭"],
       ["绑定群聊", s.chat_group_id != null && s.chat_group_id !== "", v.chat_group_id, v.chat_group_id ? chatGroupName(v.chat_group_id) : "—"],
     ];
     return (
@@ -362,8 +360,9 @@ export function createGroupList(env) {
   }
 
   // 测试组编辑弹窗：组名 / 会话数量 / 平台来源 / 配置档案 / 发送者 id 与昵称 /
-  // 消息类型（私聊/群聊）/ 自动@ / 绑定虚拟群聊。
+  // 消息类型（私聊/群聊）/ 绑定虚拟群聊。
   // 身份与虚拟群聊的管理不在本弹窗内嵌套：提供次要链接切到「身份与群聊」视图。
+  // auto@ 是发送时选项（群发栏 / 测试集消息级），不属于组配置。
   function openGroupSettings(gid) {
     const g = state.groups.find((x) => x.id === gid);
     if (!g) return;
@@ -392,18 +391,13 @@ export function createGroupList(env) {
     inpName2.placeholder = "留空使用默认 测试台";
     inpName2.value = g.sender_name || "";
 
-    // 消息类型：私聊（FriendMessage）/ 群聊（GroupMessage）；仅群聊时自动@与
-    // 虚拟群聊绑定有意义，其余模式折叠隐藏
+    // 消息类型：私聊（FriendMessage）/ 群聊（GroupMessage）；仅群聊时绑定
+    // 虚拟群聊有意义，私聊模式折叠隐藏
     const selType = document.createElement("select");
     selType.innerHTML =
       `<option value="FriendMessage">私聊（FriendMessage）</option>` +
       `<option value="GroupMessage">群聊（GroupMessage）</option>`;
     selType.value = g.message_type || "FriendMessage";
-
-    const inpAutoAt = document.createElement("input");
-    inpAutoAt.type = "checkbox";
-    inpAutoAt.checked = g.auto_at !== false;
-    const fAutoAt = field("自动@（群聊时模拟「@机器人」发言唤醒）", inpAutoAt);
 
     const selChatGroup = document.createElement("select");
     selChatGroup.innerHTML =
@@ -421,9 +415,7 @@ export function createGroupList(env) {
     });
 
     const refreshGroupMode = () => {
-      const isGroup = selType.value === "GroupMessage";
-      fAutoAt.hidden = !isGroup;
-      fChatGroup.hidden = !isGroup;
+      fChatGroup.hidden = selType.value !== "GroupMessage";
     };
     selType.addEventListener("change", refreshGroupMode);
     refreshGroupMode();
@@ -438,7 +430,6 @@ export function createGroupList(env) {
       field("发送者ID", inpId),
       field("发送者昵称", inpName2),
       field("消息类型", selType),
-      fAutoAt,
       fChatGroup,
       manageLink,
     );
@@ -461,8 +452,6 @@ export function createGroupList(env) {
           sender_id: inpId.value.trim() || null,
           sender_name: inpName2.value.trim() || null,
           message_type: selType.value || null,
-          // 私聊模式下自动@无意义，恒 true 不产生副作用（runner 仅群聊时应用）
-          auto_at: isGroup ? inpAutoAt.checked : true,
           chat_group_id: isGroup ? selChatGroup.value || null : null,
         });
         const cur = (state.groups.find((x) => x.id === gid) || {}).sessions || [];
@@ -517,19 +506,6 @@ export function createGroupList(env) {
       `<option value="GroupMessage">群聊（GroupMessage）</option>`;
     selType.value = session.message_type || "";
 
-    // 自动@覆盖：三态（继承组 / 开启 / 关闭），空值表示继承组
-    const selAutoAt = document.createElement("select");
-    selAutoAt.innerHTML =
-      `<option value="">继承组</option>` +
-      `<option value="true">开启（模拟@机器人）</option>` +
-      `<option value="false">关闭（仅过滤器可唤醒）</option>`;
-    selAutoAt.value =
-      session.auto_at === null || session.auto_at === undefined
-        ? ""
-        : session.auto_at
-          ? "true"
-          : "false";
-
     // 绑定虚拟群聊覆盖（空 = 继承组）：仅群聊消息有意义，取群内首个成员作默认发送者
     const selChatGroup = document.createElement("select");
     const groupChatName = group.chat_group_id ? chatGroupName(group.chat_group_id) : "";
@@ -546,7 +522,6 @@ export function createGroupList(env) {
       field("发送者ID", inpId),
       field("发送者昵称", inpName),
       field("消息类型（覆盖）", selType),
-      field("自动@（覆盖）", selAutoAt),
       field("绑定虚拟群聊（覆盖）", selChatGroup),
     );
 
@@ -562,12 +537,6 @@ export function createGroupList(env) {
           sender_id: inpId.value.trim() || null,
           sender_name: inpName.value.trim() || null,
           message_type: selType.value || null,
-          auto_at:
-            selAutoAt.value === "true"
-              ? true
-              : selAutoAt.value === "false"
-                ? false
-                : null,
           chat_group_id: selChatGroup.value || null,
         });
         await refreshGroups();

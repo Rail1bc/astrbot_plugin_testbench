@@ -51,9 +51,6 @@ class SessionsAPI(ConfRouteMixin):
                 overrides[key] = value
             else:
                 overrides[key] = None
-        if "auto_at" in payload:
-            value = payload["auto_at"]
-            overrides["auto_at"] = value if isinstance(value, bool) else None
 
         self.group_mgr.update_session(session_id, **overrides)
         new_session = self.group_mgr.effective(group, session)

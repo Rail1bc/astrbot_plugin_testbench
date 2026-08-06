@@ -2276,6 +2276,25 @@ def test_testset_store_normalize_and_default_name(tmp_path):
     assert ts["messages"][0] == {"text": "去空白", "rule": None}
 
 
+def test_testset_store_message_auto_at(tmp_path):
+    """消息级 auto@ 归一：bool 保留、非 bool 丢弃、缺省不落字段（发送时按 True）。"""
+    store = TestsetStore(data_dir=tmp_path)
+    ts = store.create_testset(
+        "A",
+        [
+            {"text": "a", "auto_at": False},
+            {"text": "b", "auto_at": True},
+            {"text": "c", "auto_at": "yes"},
+            {"text": "d"},
+        ],
+    )
+    msgs = ts["messages"]
+    assert msgs[0]["auto_at"] is False
+    assert msgs[1]["auto_at"] is True
+    assert "auto_at" not in msgs[2]  # 非 bool 丢弃
+    assert "auto_at" not in msgs[3]  # 缺省不落字段（发送时按 True）
+
+
 def test_testset_store_delete_unknown(tmp_path):
     store = TestsetStore(data_dir=tmp_path)
     store.create_testset("A", [{"text": "m"}])
@@ -2432,6 +2451,40 @@ async def test_testset_runner_sequential():
     assert processed == ["第一问", "第一问", "第二问", "第二问"]
     assert [s["status"] for s in rec["steps"]] == ["done", "done"]
     assert rec["steps"][0]["results"][0]["assertion"]["pass"] is True
+
+
+@pytest.mark.asyncio
+async def test_testset_runner_message_auto_at():
+    """测试集消息级 auto@ 透传：显式关闭的消息不带，缺省的消息按开启发送。"""
+    queue = asyncio.Queue()
+    context = FakeContext(queue)
+    tsr = TestsetRunner(context, VirtualTestRunner(context))
+    auto_ats: list[bool] = []
+
+    async def handler(event):
+        auto_ats.append(event.auto_at)
+        event.cleanup_temporary_local_files()
+
+    task = asyncio.create_task(consume(queue, handler))
+    try:
+        session = make_session(1)
+        session["message_type"] = "GroupMessage"  # 群聊消息 auto@ 才生效
+        testset = {
+            "id": "ts_auto",
+            "name": "自动@",
+            "created_at": 0,
+            "messages": [
+                {"text": "m1", "rule": None, "auto_at": False},
+                {"text": "m2", "rule": None},
+            ],
+            "batch_ranges": [],
+        }
+        run_id = tsr.start_run(testset, [session])
+        rec = await wait_testset_done(tsr, run_id)
+    finally:
+        task.cancel()
+    assert rec["status"] == "done"
+    assert auto_ats == [False, True]  # 显式关闭 vs 缺省开启
 
 
 @pytest.mark.asyncio
@@ -2709,7 +2762,11 @@ async def test_plugin_testset_crud(tmp_path):
         {
             "name": "回归测试",
             "messages": [
-                {"text": "第一问", "rule": {"type": "contains", "value": "你好"}},
+                {
+                    "text": "第一问",
+                    "rule": {"type": "contains", "value": "你好"},
+                    "auto_at": False,
+                },
                 {"text": "第二问"},
             ],
         },
@@ -2718,7 +2775,9 @@ async def test_plugin_testset_crud(tmp_path):
     ts = json.loads(resp.body)
     assert ts["id"].startswith("ts_")
     assert len(ts["messages"]) == 2
+    assert ts["messages"][0]["auto_at"] is False  # 消息级 auto@ 保留
     assert ts["messages"][1]["rule"] is None  # 缺 rule → None
+    assert "auto_at" not in ts["messages"][1]  # 缺省不落字段（发送时按 True）
 
     resp = await plugin.list_testsets()
     assert len(json.loads(resp.body)["testsets"]) == 1
@@ -2765,6 +2824,10 @@ async def test_plugin_testset_crud_validation(tmp_path):
         {"name": "x", "messages": "不是数组"},
         {"name": "x", "messages": [{"text": "  "}]},
         {"name": "x", "messages": [{"text": "ok", "rule": "regex"}]},
+        {
+            "name": "x",
+            "messages": [{"text": "ok", "auto_at": "yes"}],
+        },  # auto@ 须为 bool
         {
             "name": "x",
             "messages": [
@@ -3177,40 +3240,38 @@ def test_umo_of_uses_message_type():
     )
 
 
-def test_effective_resolves_new_fields(tmp_path):
-    """message_type / auto_at / chat_group_id 的三态解析（会话 → 组 → 默认）。"""
+def test_effective_resolves_message_type_and_chat_group(tmp_path):
+    """message_type / chat_group_id 的三态解析（会话 → 组 → 默认）。
+
+    auto@ 已改为发送时选项（群发栏 / 测试集消息级），不再属于有效配置。
+    """
     mgr = VirtualGroupManager(data_dir=tmp_path)
     group = mgr.create_group(
         "群聊组",
         count=1,
         message_type="GroupMessage",
-        auto_at=False,
         chat_group_id="cg_1",
     )
     session = group["sessions"][0]
     eff = mgr.effective(group, session)
     assert eff["message_type"] == "GroupMessage"
-    assert eff["auto_at"] is False
     assert eff["chat_group_id"] == "cg_1"
+    assert "auto_at" not in eff
 
-    # 默认：私聊 + auto_at 开启 + 无绑定
+    # 默认：私聊 + 无绑定
     group2 = mgr.create_group("默认组", count=1)
     eff2 = mgr.effective(group2, group2["sessions"][0])
     assert eff2["message_type"] == "FriendMessage"
-    assert eff2["auto_at"] is True
     assert eff2["chat_group_id"] is None
+    assert "auto_at" not in eff2
 
     # 会话覆盖组配置；None 恢复继承组
-    mgr.update_session(session["id"], message_type="FriendMessage", auto_at=True)
+    mgr.update_session(session["id"], message_type="FriendMessage")
     eff3 = mgr.effective(group, session)
     assert eff3["message_type"] == "FriendMessage"
-    assert eff3["auto_at"] is True
-    mgr.update_session(
-        session["id"], message_type=None, auto_at=None, chat_group_id=None
-    )
+    mgr.update_session(session["id"], message_type=None, chat_group_id=None)
     eff4 = mgr.effective(group, session)
     assert eff4["message_type"] == "GroupMessage"
-    assert eff4["auto_at"] is False
     assert eff4["chat_group_id"] == "cg_1"
 
 
@@ -3437,7 +3498,6 @@ async def test_runner_writes_stream(tmp_path):
     runner = VirtualTestRunner(FakeContext(queue), stream_store=stream_store)
     session = make_session(1)
     session["message_type"] = "GroupMessage"
-    session["auto_at"] = True
 
     async def handler(event):
         await event.send(MessageChain().message("回复"))
@@ -3450,6 +3510,7 @@ async def test_runner_writes_stream(tmp_path):
             text="群聊消息",
             sender_id="xiaoming",
             sender_name="小明",
+            auto_at=True,
         )
         # start 后（pipeline 完成前）user 消息已写入流
         msgs = await stream_store.read_stream("vs_1")
@@ -3469,3 +3530,32 @@ async def test_runner_writes_stream(tmp_path):
     assert msgs[1]["role"] == "bot"
     assert msgs[1]["sender_id"] == "virtual_bot"
     assert msgs[1]["text"] == "回复"
+
+
+@pytest.mark.asyncio
+async def test_runner_auto_at_request_level():
+    """auto@ 是请求级选项：默认开启，仅群聊消息生效，私聊恒不生效。"""
+    queue = asyncio.Queue()
+    runner = VirtualTestRunner(FakeContext(queue))
+    captured = []
+
+    async def handler(event):
+        captured.append(event.auto_at)
+        event.cleanup_temporary_local_files()
+
+    task = asyncio.create_task(consume(queue, handler))
+    try:
+        # 默认开启：群聊消息带 auto_at，私聊消息不带
+        group = make_session(1)
+        group["message_type"] = "GroupMessage"
+        tid = await runner.start(sessions=[group, make_session(2)], text="hi")
+        await wait_run_done(runner, tid)
+        assert captured == [True, False]
+
+        # 显式关闭：群聊消息也不带
+        captured.clear()
+        tid2 = await runner.start(sessions=[group], text="hi", auto_at=False)
+        await wait_run_done(runner, tid2)
+        assert captured == [False]
+    finally:
+        task.cancel()

@@ -107,6 +107,7 @@ class VirtualTestRunner:
         assertion: dict | None = None,
         sender_id: str | None = None,
         sender_name: str | None = None,
+        auto_at: bool = True,
     ) -> str:
         """投递消息并立即返回 test_id（不等待回复）。
 
@@ -119,6 +120,8 @@ class VirtualTestRunner:
             assertion: 可选，回复断言规则（见 assertions.py），随结果评估返回。
             sender_id: 可选，消息级发送者 id 覆盖（优先级高于会话绑定的群聊默认成员）。
             sender_name: 可选，消息级发送者昵称覆盖。
+            auto_at: 发送时选项，是否模拟「@机器人」发言（默认开启）；仅群聊
+                消息有意义，私聊恒不生效。来自群发栏 / 测试集消息行的配置。
 
         Returns:
             test_id，用于查询 status()（实时结果经事件流推送）。
@@ -132,10 +135,9 @@ class VirtualTestRunner:
         for s in sessions:
             sid, sname = self._resolve_sender(s, sender_id, sender_name)
             message_type = s.get("message_type") or MessageType.FRIEND_MESSAGE.value
-            # 仅群聊消息的 auto_at 有意义：模拟「@机器人」发言直接唤醒
-            auto_at = (
-                bool(s.get("auto_at"))
-                and message_type == MessageType.GROUP_MESSAGE.value
+            # 仅群聊消息的 auto_at 有意义：模拟「@机器人」发言直接唤醒（请求级）
+            effective_auto_at = (
+                auto_at and message_type == MessageType.GROUP_MESSAGE.value
             )
             events.append(
                 VirtualMessageEvent.create(
@@ -148,7 +150,7 @@ class VirtualTestRunner:
                     provider_id=provider_id,
                     model=model,
                     message_type=message_type,
-                    auto_at=auto_at,
+                    auto_at=effective_auto_at,
                 )
             )
 

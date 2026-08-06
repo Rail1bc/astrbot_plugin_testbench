@@ -504,18 +504,15 @@ def test_frontend_open_all_toggles_label_and_closes():
 
 
 def test_frontend_group_dialog_new_fields():
-    """组配置弹窗须提交消息类型 / 自动@ / 绑定虚拟群聊三字段，且不嵌管理弹窗。
+    """组配置弹窗须提交消息类型 / 绑定虚拟群聊字段，且不嵌管理弹窗。
 
-    群聊虚拟会话新增三字段（message_type / auto_at / chat_group_id）。组编辑弹窗
-    提交时须带上（默认 FriendMessage、auto_at 恒 true、群聊模式下才传绑定群聊）；
-    「管理身份与群聊」须是跳转链接（hideModal + switchToIdentities），而不是在
-    组弹窗内嵌第二层管理弹窗。
+    群聊虚拟会话新增 message_type / chat_group_id 两字段；auto@ 是发送时选项
+    （群发栏 / 测试集消息级配置），不属于组/会话配置——弹窗不得再提交。组编辑
+    弹窗提交时须带上绑定群聊（群聊模式下才传）；「管理身份与群聊」须是跳转链接
+    （hideModal + switchToIdentities），而不是在组弹窗内嵌第二层管理弹窗。
     """
     gl_js = _read_module("group_list")
     assert "message_type: selType.value || null" in gl_js, "组弹窗未提交消息类型"
-    assert "auto_at: isGroup ? inpAutoAt.checked : true" in gl_js, (
-        "组弹窗未按群聊模式提交自动@"
-    )
     assert "chat_group_id: isGroup ? selChatGroup.value || null : null" in gl_js, (
         "组弹窗未按群聊模式提交绑定虚拟群聊"
     )
@@ -523,6 +520,8 @@ def test_frontend_group_dialog_new_fields():
     assert "chat_group_id: selChatGroup.value || null" in gl_js, (
         "会话弹窗未提交绑定群聊覆盖"
     )
+    # auto@ 不再是组/会话配置：弹窗不得再提交该字段（防回归）
+    assert "auto_at:" not in gl_js, "组/会话弹窗仍提交 auto_at（应为发送时选项）"
     # 不嵌管理弹窗：链接跳转视图而非再开弹窗
     assert "管理身份与群聊 →" in gl_js, "组弹窗缺少「管理身份与群聊」跳转链接"
     assert "hideModal()" in gl_js, "跳转链接未先关闭组弹窗"
@@ -668,35 +667,53 @@ def test_frontend_identity_drag_join():
 
 
 def test_frontend_testset_row_identity():
-    """测试集消息行须收集可选发送身份（sender_id / sender_name）。
+    """测试集消息行须收集可选发送身份（sender_id / sender_name）与自动@。
 
-    测试集每条消息可指定身份（动态身份）：collectEditorRows 须从行内身份下拉
-    collectSender 并合并进消息 dict；导出信封解析须保留可选 sender 字段。
+    测试集每条消息可指定身份（动态身份）与是否自动@：collectEditorRows 须从
+    行内身份下拉 collectSender、读取行内 @ 勾选并合并进消息 dict；导出信封解析
+    须保留可选 sender 与 auto_at 字段。
     """
     editor_js = _read_module("testset_editor")
     assert "collectSender(" in editor_js, "缺少行内身份收集函数 collectSender"
     assert "const sender = collectSender(" in editor_js, (
         "collectEditorRows 未收集行内身份"
     )
-    assert "messages.push({ text, rule, ...sender })" in editor_js, (
-        "收集的消息未合并 sender 字段"
-    )
+    assert (
+        "messages.push({ text, rule, ...sender, auto_at: atCb.checked })" in editor_js
+    ), "收集的消息未合并 sender / auto_at 字段"
     assert "message.sender_id = m.sender_id" in editor_js, "导入信封未保留 sender_id"
     assert "message.sender_name = m.sender_name" in editor_js, (
         "导入信封未保留 sender_name"
+    )
+    assert "message.auto_at = m.auto_at" in editor_js, "导入信封未保留 auto_at"
+    assert "atCb.checked = !msg || msg.auto_at !== false" in editor_js, (
+        "消息行 @ 勾选未按 auto_at 缺省开启渲染"
     )
 
 
 def test_frontend_broadcast_identity_selector():
     """群发栏身份选择器须把选择身份带进发送 payload。
 
-    群发/单发消息都可选身份：app.js 须经 selectedBroadcastSender() 读取
+    群发/单发消息都可选身份：app.js 须经 selectedBroadcastOptions() 读取
     #run-sender 下拉并把 sender 合入 runTest payload；index.html 须含该下拉。
     """
     html = _read_html()
     app_js = _read_module("app")
     assert 'id="run-sender"' in html, "index.html 缺少群发栏身份选择器"
-    assert "function selectedBroadcastSender()" in app_js, (
-        "缺少群发栏身份选择器读取函数"
+    assert "function selectedBroadcastOptions()" in app_js, "缺少群发栏选项读取函数"
+    assert "...selectedBroadcastOptions()" in app_js, "群发/单发 payload 未合并选项"
+
+
+def test_frontend_broadcast_auto_at():
+    """群发栏「自动@」选项须带进发送 payload 且默认开启。
+
+    auto@ 改为发送时选项：index.html 的群发栏须含 #run-auto-at 勾选框（默认
+    checked），app.js 的 runTest payload 须带 auto_at 读取该勾选框。
+    """
+    html = _read_html()
+    app_js = _read_module("app")
+    assert 'id="run-auto-at"' in html, "index.html 缺少群发栏自动@勾选框"
+    assert 'id="run-auto-at" type="checkbox" checked' in html, "自动@勾选默认未开启"
+    assert 'auto_at: $("run-auto-at") ? $("run-auto-at").checked : true' in app_js, (
+        "群发/单发 payload 未带自动@选项"
     )
-    assert "...selectedBroadcastSender()" in app_js, "群发/单发 payload 未合并选择身份"

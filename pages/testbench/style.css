@@ -884,6 +884,26 @@ code {
   cursor: pointer;
 }
 
+/* 消息级「自动@」：紧凑开关，与批量勾选同风格 */
+.ts-msg-auto-at {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}
+
+.ts-msg-auto-at input {
+  width: auto;
+  margin: 0;
+  accent-color: var(--primary);
+  cursor: pointer;
+}
+
 .ts-foot {
   display: flex;
   align-items: center;
@@ -1098,6 +1118,22 @@ code {
 .run-field-row select {
   flex: 1;
   min-width: 0;
+}
+
+/* 群发栏「自动@」选项：不参与 flex 拉伸，紧凑展示 */
+.run-auto-at-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.run-auto-at-label input {
+  flex: none;
+  margin: 0;
 }
 
 .run-status {

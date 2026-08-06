@@ -315,13 +315,15 @@ function clearPanelStatus(panel) {
 // 群发栏「各会话自身身份」选择器可指定消息级身份（sender_id/sender_name 覆盖），
 // 单发与群发共用该选择器。
 
-// 群发栏身份选择器的当前选择 → 消息级 sender；未选（各会话自身身份）返回空对象
-function selectedBroadcastSender() {
+// 群发栏选项 → 消息级参数：自动@（模拟「@机器人」发言，默认开启）+ 身份
+// （sender_id/sender_name 覆盖）；未选身份（各会话自身身份）只带 auto_at
+function selectedBroadcastOptions() {
+  const options = { auto_at: $("run-auto-at") ? $("run-auto-at").checked : true };
   const sel = $("run-sender");
-  if (!sel || !sel.value) return {};
+  if (!sel || !sel.value) return options;
   const ident = state.identities.find((x) => x.id === sel.value);
-  if (!ident) return {};
-  return { sender_id: ident.sender_id, sender_name: ident.sender_name };
+  if (!ident) return options;
+  return { ...options, sender_id: ident.sender_id, sender_name: ident.sender_name };
 }
 
 async function sendToOne(id, text) {
@@ -332,7 +334,7 @@ async function sendToOne(id, text) {
   input.value = "";
   panelStatus(panel, "warn", "发送中…");
   try {
-    const resp = await runTest({ sessions: [id], text, ...selectedBroadcastSender() });
+    const resp = await runTest({ sessions: [id], text, ...selectedBroadcastOptions() });
     events.registerTestConsumer(resp.test_id, events.applySessionFeedback, () => {});
   } catch (err) {
     panelStatus(panel, "error", "发送失败: " + err.message);
@@ -355,7 +357,7 @@ async function sendToAll() {
   $("run-text").value = "";
   showRunStatus("warn", `正在并发发送给 ${ids.length} 个会话…`);
   try {
-    const resp = await runTest({ sessions: ids, text, ...selectedBroadcastSender() });
+    const resp = await runTest({ sessions: ids, text, ...selectedBroadcastOptions() });
     events.registerTestConsumer(
       resp.test_id,
       events.applySessionFeedback,

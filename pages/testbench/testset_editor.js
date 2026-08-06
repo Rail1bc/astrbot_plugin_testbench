@@ -96,8 +96,9 @@ export function createTestsetEditor(env) {
     updateSegments();
   }
 
-  // 单行构建：序号 / 文本 / 规则类型 / 规则值（值类规则才显示）/ 批量勾选 / 删除。
-  // 未来新增测试行为在此处加控件，并在 collectEditorRows() 同步收集。
+  // 单行构建：序号 / 文本 / 规则类型 / 规则值（值类规则才显示）/ 发送身份 /
+  // 自动@ / 批量勾选 / 删除。未来新增测试行为在此处加控件，并在
+  // collectEditorRows() 同步收集。
   function renderMsgRow(msg, idx, batchChecked) {
     const row = document.createElement("div");
     row.className = "ts-msg-row";
@@ -166,6 +167,17 @@ export function createTestsetEditor(env) {
     }
     senderSel.addEventListener("change", markDirty);
 
+    // 自动@（可选）：该条消息是否模拟「@机器人」发言唤醒（群聊消息有意义）。
+    // 缺省开启；旧导入数据没有 auto_at 字段时按开启处理。
+    const autoAt = document.createElement("label");
+    autoAt.className = "ts-msg-auto-at";
+    const atCb = document.createElement("input");
+    atCb.type = "checkbox";
+    atCb.checked = !msg || msg.auto_at !== false;
+    atCb.title = "自动@（模拟「@机器人」发言唤醒）";
+    autoAt.append(atCb, document.createTextNode("@"));
+    atCb.addEventListener("change", markDirty);
+
     const del = document.createElement("button");
     del.className = "icon-btn danger";
     del.textContent = "✕";
@@ -192,7 +204,7 @@ export function createTestsetEditor(env) {
     });
     refreshValueVisible();
 
-    row.append(idxEl, inp, sel, val, senderSel, batch, del);
+    row.append(idxEl, inp, sel, val, senderSel, autoAt, batch, del);
     return row;
   }
 
@@ -278,7 +290,8 @@ export function createTestsetEditor(env) {
         row.querySelector(".ts-msg-rule-value").value,
       );
       const sender = collectSender(row.querySelector(".ts-msg-sender"));
-      messages.push({ text, rule, ...sender });
+      const atCb = row.querySelector(".ts-msg-auto-at input");
+      messages.push({ text, rule, ...sender, auto_at: atCb.checked });
       batchFlags.push(row.querySelector(".ts-msg-batch input").checked);
     }
     return { messages, batchRanges: rangesFromFlags(batchFlags) };
@@ -452,12 +465,16 @@ export function createTestsetEditor(env) {
       if (!text) continue;
       const rule = m && m.rule != null ? { ...m.rule } : null;
       const message = { text, rule };
-      // 可选 sender（向后兼容：缺省无 sender 的旧信封照常导入）
+      // 可选 sender / auto_at（向后兼容：缺省字段的旧信封照常导入，auto_at
+      // 缺省视为开启——渲染时按 `!== false` 勾选）
       if (m && typeof m.sender_id === "string" && m.sender_id) {
         message.sender_id = m.sender_id;
       }
       if (m && typeof m.sender_name === "string" && m.sender_name) {
         message.sender_name = m.sender_name;
+      }
+      if (m && typeof m.auto_at === "boolean") {
+        message.auto_at = m.auto_at;
       }
       messages.push(message);
     }
