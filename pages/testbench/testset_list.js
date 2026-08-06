@@ -62,18 +62,11 @@ export function createTestsetList(env) {
       ? `${state.testsets.length} 个测试集`
       : "";
 
-    const add = document.createElement("button");
-    add.className = "add-block";
-    add.textContent = "＋ 新建测试集";
-    add.addEventListener("click", () => openNewTestset());
-    list.appendChild(add);
-
     if (!state.testsets.length) {
       const empty = document.createElement("div");
       empty.className = "empty";
-      empty.textContent = "暂无测试集，点上方「＋」创建";
+      empty.textContent = "暂无测试集，点下方「＋」创建";
       list.appendChild(empty);
-      return;
     }
     for (const ts of state.testsets) {
       const item = document.createElement("div");
@@ -87,6 +80,13 @@ export function createTestsetList(env) {
       item.addEventListener("click", () => selectTestset(ts.id));
       list.appendChild(item);
     }
+
+    // 列表内「＋」块：点击创建测试集（置于已有测试集下方）
+    const add = document.createElement("button");
+    add.className = "add-block";
+    add.textContent = "＋ 新建测试集";
+    add.addEventListener("click", () => openNewTestset());
+    list.appendChild(add);
   }
 
   function selectTestset(id) {

@@ -70,19 +70,11 @@ export function createGroupList(env) {
       ? `${state.groups.length} 个测试组`
       : "";
 
-    // 列表内「＋」块：点击创建默认配置的测试组
-    const add = document.createElement("button");
-    add.className = "add-block";
-    add.textContent = "＋ 新建测试组";
-    add.addEventListener("click", handleAddGroup);
-    list.appendChild(add);
-
     if (!state.groups.length) {
       const empty = document.createElement("div");
       empty.className = "empty";
-      empty.textContent = "暂无测试组，点上方「＋」创建";
+      empty.textContent = "暂无测试组，点下方「＋」创建";
       list.appendChild(empty);
-      return;
     }
     for (const g of state.groups) {
       const item = document.createElement("div");
@@ -154,6 +146,13 @@ export function createGroupList(env) {
       });
       list.appendChild(item);
     }
+
+    // 列表内「＋」块：点击创建默认配置的测试组（置于已有测试组下方）
+    const add = document.createElement("button");
+    add.className = "add-block";
+    add.textContent = "＋ 新建测试组";
+    add.addEventListener("click", handleAddGroup);
+    list.appendChild(add);
   }
 
   // 统计会话中「已单独修改」的配置项（不再继承组配置）
