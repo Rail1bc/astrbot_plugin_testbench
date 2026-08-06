@@ -1136,6 +1136,8 @@ code {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  /* 子项不被交叉轴拉伸：select/按钮用 width:100% 占满，自动@ 标签保持内容宽度 */
+  align-items: flex-start;
 }
 
 .run-broadcast-side select,
@@ -1167,7 +1169,10 @@ code {
 }
 
 .run-auto-at-label input {
+  /* 全局 input{width:100%} 会把勾选框拉成长方形，这里固定为正方形 */
   flex: none;
+  width: 13px;
+  height: 13px;
   margin: 0;
 }
 
