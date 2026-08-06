@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .group_store import umo_of
+from ..store.group_store import umo_of
 
 
 async def delete_route_if_exists(ucr: Any, umop: str) -> None:

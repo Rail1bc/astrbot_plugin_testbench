@@ -21,16 +21,16 @@ sys.path.insert(0, str(REPO_ROOT.parent))
 
 pytest.importorskip("astrbot")
 
-import astrbot_plugin_testbench.assertions as asrt_mod  # noqa: E402
-import astrbot_plugin_testbench.event_bus as eb_mod  # noqa: E402
-import astrbot_plugin_testbench.group_store as gs_mod  # noqa: E402
+import astrbot_plugin_testbench.core.event_bus as eb_mod  # noqa: E402
+import astrbot_plugin_testbench.core.runner as runner_mod  # noqa: E402
+import astrbot_plugin_testbench.core.testset_runner as tsr_mod  # noqa: E402
+import astrbot_plugin_testbench.core.virtual_event as ve_mod  # noqa: E402
+import astrbot_plugin_testbench.eval.mechanical as asrt_mod  # noqa: E402
 import astrbot_plugin_testbench.history_ops as hops_mod  # noqa: E402
 import astrbot_plugin_testbench.main as main_mod  # noqa: E402
-import astrbot_plugin_testbench.runner as runner_mod  # noqa: E402
 import astrbot_plugin_testbench.stats as stats_mod  # noqa: E402
-import astrbot_plugin_testbench.testset_runner as tsr_mod  # noqa: E402
-import astrbot_plugin_testbench.testset_store as tss_mod  # noqa: E402
-import astrbot_plugin_testbench.virtual_event as ve_mod  # noqa: E402
+import astrbot_plugin_testbench.store.group_store as gs_mod  # noqa: E402
+import astrbot_plugin_testbench.store.testset_store as tss_mod  # noqa: E402
 from astrbot.api.event import MessageChain  # noqa: E402
 from astrbot.api.web import PluginRequest, bind_request_context  # noqa: E402
 from starlette.requests import Request  # noqa: E402

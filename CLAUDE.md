@@ -28,17 +28,29 @@
 ```
 astrbot_plugin_testbench/
 ├─ metadata.yaml        # 插件元数据（name/display_name/version/astrbot_version）
-├─ main.py              # Star 类：Web API 路由装配 + 业务 handler（对话历史操作委托 history_ops）
-├─ group_store.py       # 测试组数据模型与持久化（VirtualGroupManager、umo_of）
+├─ main.py              # Star 入口：装配依赖 + 注册路由 + 两个 LLM 阶段 hook（薄）
+├─ api/                 # Web API 路由 handler 层（按资源聚合的 mixin，由 main.py 的 Star 继承）
+│  ├─ routes.py         #   _ROUTES 路由表（一处看全，新增端点只加一行）
+│  ├─ common.py         #   MAX_SESSIONS_PER_GROUP + ConfRouteMixin（UCR 路由薄包装）
+│  ├─ meta.py           #   MetaAPI：Provider / 配置档案 / 平台列表
+│  ├─ groups.py         #   GroupsAPI：测试组 CRUD 与组配置更新
+│  ├─ sessions.py       #   SessionsAPI：会话 CRUD / 历史 / 克隆 / 衍生
+│  ├─ runs.py           #   RunsAPI：单条群发 / 状态 / 在途查询
+│  ├─ testsets.py       #   TestsetsAPI：测试集 CRUD / 批量段校验 / 运行入口
+│  └─ events.py         #   EventsAPI：/events SSE 事件流
+├─ core/                # 运行编排层：事件 / 虚拟事件 / UCR 路由 / 运行器
+│  ├─ event_bus.py      #   进程内事件广播（asyncio.Queue 有界队列，满则丢最旧；SSE 事件源）
+│  ├─ virtual_event.py  #   VirtualMessageEvent：捕获 send/流式结果，携带完成信号
+│  ├─ conf_routes.py    #   UCR 配置档案路由操作收敛（持久路由与临时路由共用一套）
+│  ├─ runner.py         #   并发测试运行器（VirtualTestRunner，临时路由经 conf_routes）
+│  └─ testset_runner.py #   测试集运行编排器（TestsetRunner：后端按段驱动，单步段逐条、批量段重叠）
+├─ store/               # 持久化与数据模型层
+│  ├─ group_store.py    #   测试组数据模型与持久化（VirtualGroupManager、umo_of）
+│  └─ testset_store.py  #   测试集数据模型与持久化（TestsetStore）
+├─ eval/                # 断言评估层
+│  └─ mechanical.py     #   回复断言规则评估纯函数（evaluate_rule：正则/包含/格式）
 ├─ history_ops.py       # 会话对话历史操作（HistoryOps：save/regenerate/复制/级联删除）
-├─ conf_routes.py       # UCR 配置档案路由操作收敛（持久路由与临时路由共用一套）
-├─ event_bus.py         # 进程内事件广播（asyncio.Queue 有界队列，满则丢最旧；SSE 事件源）
-├─ runner.py            # 并发测试运行器（VirtualTestRunner，临时路由经 conf_routes）
 ├─ stats.py             # 耗时统计纯函数（duration_stats：min/max/avg/p50/p95）
-├─ assertions.py        # 回复断言规则评估纯函数（evaluate_rule：正则/包含/格式）
-├─ testset_store.py     # 测试集数据模型与持久化（TestsetStore）
-├─ testset_runner.py    # 测试集运行编排器（TestsetRunner：后端按段驱动，单步段逐条、批量段重叠）
-├─ virtual_event.py     # VirtualMessageEvent：捕获 send/流式结果，携带完成信号
 ├─ pyproject.toml       # 插件仓库自包含的 ruff / pytest 配置（不依赖主仓库）
 ├─ pages/testbench/
 │  ├─ index.html        # 页面骨架（表单/面板的静态 HTML，select 初始为空或仅默认项）
@@ -69,9 +81,9 @@ astrbot_plugin_testbench/
 
 ### umo（unified_msg_origin）
 
-`umo_of(session)`（group_store.py:27）：`f"{platform_id}:FriendMessage:{session_id}"`。平台 id 默认 `webchat`（与 AstrBot WebUI 一致），发送者默认 `testbench` / `测试台`，会话 id 形如 `vs_<uuid8>`，测试组 id 形如 `g_<uuid8>`。umo 是 AstrBot 会话/配置/历史隔离的键：配置档案路由（UCR）、对话历史（conversation_manager）都按它定位。
+`umo_of(session)`（store/group_store.py:27）：`f"{platform_id}:FriendMessage:{session_id}"`。平台 id 默认 `webchat`（与 AstrBot WebUI 一致），发送者默认 `testbench` / `测试台`，会话 id 形如 `vs_<uuid8>`，测试组 id 形如 `g_<uuid8>`。umo 是 AstrBot 会话/配置/历史隔离的键：配置档案路由（UCR）、对话历史（conversation_manager）都按它定位。
 
-### 测试组模型（group_store.py）
+### 测试组模型（store/group_store.py）
 
 - 组共享一套配置：`platform_id / conf_id / sender_id / sender_name`；组内每个会话默认四个字段均为 `None`（表示继承组配置）。
 - `effective(group, session)` 解析最终配置（会话覆盖优先）；`conf_id` 为 `""` 表示显式使用默认档案（不绑定路由），`None` 表示继承组。
@@ -81,12 +93,12 @@ astrbot_plugin_testbench/
 
 ### UCR 配置档案路由
 
-- 路由操作集中在 `conf_routes.py`：持久路由（创建/删除组与会话、会话配置变更时应用与清理）与 runner 临时路由（测试运行时指定 conf_id）共用同一套 umo → conf_id 操作，避免两处实现对 UCR API 的双份维护。
+- 路由操作集中在 `core/conf_routes.py`：持久路由（创建/删除组与会话、会话配置变更时应用与清理）与 runner 临时路由（测试运行时指定 conf_id）共用同一套 umo → conf_id 操作，避免两处实现对 UCR API 的双份维护。
 - 绑定用**会话级精确路由** `umo → conf_id`（`ucr.update_route(umop, conf_id)`），不用平台级 `platform_id::`，避免影响同平台其他会话。
 - 创建组/添加会话时若带 `conf_id`，调用 `_apply_conf_routes`；删除组/会话/重置时用 `_clear_conf_routes`（仅删已存在的路由）+ `_delete_session_conversations`（级联删原生对话历史，按 umo 调 `conversation_manager.delete_conversations_by_user_id`）。
 - runner 的临时路由（测试运行时指定 conf_id）带 `asyncio.Lock` 串行：`save_and_apply_routes` 保存原路由 → 应用 → 全部完成后 `restore_routes` 恢复并释放锁，避免临时路由互相污染。
 
-### VirtualMessageEvent（virtual_event.py）
+### VirtualMessageEvent（core/virtual_event.py）
 
 继承 `AstrMessageEvent`，消息类型 `FRIEND_MESSAGE`（私聊默认直接唤醒，无需唤醒前缀）：
 
@@ -97,7 +109,7 @@ astrbot_plugin_testbench/
 - `send()` 捕获 `MessageChain` 到 `self.captured`；`send_streaming()` 按 aiocqhttp/discord 的累积模式合并 chunk → `squash_plain()` → 交给 `send()`，reasoning 单独累积。
 - `result_summary()` 返回 `{umo, session_id, status(ok|no_reply), duration, reply, reasoning, error}`；错误文案从 `_llm_error_message` extra 读取。
 
-### 运行器（runner.py）
+### 运行器（core/runner.py）
 
 - `start(sessions, text, provider_id, model, conf_id, assertion)` **立即返回 test_id**（不等待回复）；事件 `put_nowait` 入队，逐事件 `asyncio.create_task(_await_event)` 等待 `pipeline_done_event`。
 - `status(test_id)` 返回 `{total, done, results[], stats}`（供断线对账一次性取回；逐会话实时反馈走 SSE 事件流）。
@@ -106,11 +118,11 @@ astrbot_plugin_testbench/
 - 运行记录保存在内存 `self._runs`，完成超过 10 分钟自动清理。
 - **在途条目（重叠测试）**：每条消息登记一个条目（`self._pending`，经 `event.entry_id` 关联），状态 submitted → waiting_llm → llm → done；中间两个状态由 LLM 阶段 hook（`on_waiting_llm_request` / `on_llm_request`）推进，`pending_entries()` 供断线对账一次性取回；每次状态变更向事件总线广播在途全量快照（`{"type":"pending","entries":[...]}`），前端经 SSE 实时展示；已完成的条目保留 `DONE_KEEP_SECONDS`（30s）后随 `_prune_runs` 清理。
 
-### 回复断言（assertions.py）
+### 回复断言（eval/mechanical.py）
 
 `evaluate_rule(rule, reply) -> dict | None` 纯函数：`rule is None` 返回 `None`，否则 `{pass, detail}`。类型：`contains` / `not_contains`（str 或 list value）、`regex`（`re.search`，无效 pattern → pass False）、`json` / `non_empty`（无 value）、`min_len` / `max_len`（int）、`prefix` / `suffix`（str）。**`json` 为宽松判定**（`_parse_json_reply`）：换行缩进合法；先剥 markdown 代码块围栏直接 `json.loads`，失败再取首个开括号到末个闭括号的子串解析（对象 / 数组）——LLM 回复常在 JSON 前后夹带思维链 / 说明文本（AstrBot 开启思维链显示时，回复链头会被装饰阶段注入「🤔 思考: …」前缀），严格解析会误判。缺 value、未知 type → pass False（数据损坏可见，不静默通过）。Python 正则与 JS 不一致，故评估放在后端。
 
-### 测试集（testset_store.py / testset_runner.py）
+### 测试集（store/testset_store.py / core/testset_runner.py）
 
 - `TestsetStore`：持久化到 `data/virtual_session/testsets.json`（与 groups.json 同目录），模型 `{testsets: [{id: "ts_<uuid8>", name, created_at, messages: [{text, rule}], batch_ranges: [[start, end], ...]}]}`；`_normalize_messages` 清洗（text 去首尾空白、空文本丢弃、rule 归一 dict|None）；`_normalize_batch_ranges` 清洗批量段（每项须为非 bool 的两个 int 且 0 ≤ s ≤ e < message_count，不满足的整段丢弃；先按 start 升序再贪心保留不重叠段，结果与输入顺序无关；非 list → `[]`）；`MAX_MESSAGES_PER_TESTSET = 100`；允许空消息创建（先建命名条目、再在窗口里加消息），`_load` 对旧数据 `setdefault("batch_ranges", [])`。两个类名以 Test 开头，须带 `__test__ = False` 防 pytest 误收集。
 - `TestsetRunner`：测试集运行是**耗时操作**且用户可能离开页面，因此**由后端后台任务驱动**（`asyncio.create_task(_drive_segments)`），运行记录保存在内存、可轮询 / 找回 / 取消；每处状态变更（启动 / 步骤置 running/done/error / 终态 / abort）广播 `{"type":"testset","run_id",run}` 运行全量快照，前端经 SSE 实时推进；`start_run(testset, sessions)`（**无 mode**，发送节奏由 `testset["batch_ranges"]` 决定）：
@@ -123,7 +135,7 @@ astrbot_plugin_testbench/
   - `status(run_id)` / `list_runs(limit=10)`（倒序摘要，页面重开找回；摘要无 mode 字段）/ `abort(run_id)`。
   - **单运行守卫**：`has_active_run()` 供 `run_testset` 入口拒绝并发启动（400「已有测试集运行中」）——前端进度是单槽状态（activeRunId / 取消按钮 / 步骤去重集合只支持一个运行），两个运行的事件流会互相污染。
 
-### 事件驱动（event_bus.py + /events SSE）
+### 事件驱动（core/event_bus.py + /events SSE）
 
 - `EventBus`：进程内事件广播（纯 asyncio，无第三方依赖）。订阅者各持独立有界队列（maxlen=1000），满则丢最旧、不阻塞发布者；事件均为 JSON 可序列化的**全量快照**（幂等，丢旧无碍）。
 - 事件类型：`{"type":"pending","entries":[...]}`（在途全量快照）、`{"type":"session_done","test_id","session_id","summary"}`、`{"type":"test_done","test_id","record":status(test_id)}`、`{"type":"testset","run_id","run":status(run_id)}`。

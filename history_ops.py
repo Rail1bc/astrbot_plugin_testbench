@@ -15,7 +15,7 @@ from typing import Any
 
 from astrbot.api.web import error_response, json_response, request
 
-from .group_store import umo_of
+from .store.group_store import umo_of
 
 
 class HistoryOps:

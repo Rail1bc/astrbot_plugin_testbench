@@ -13,15 +13,15 @@ import logging
 import time
 from typing import TYPE_CHECKING
 
-from .assertions import evaluate_rule
-from .conf_routes import restore_routes, save_and_apply_routes
-from .event_bus import EventBus
-from .group_store import (
+from ..eval.mechanical import evaluate_rule
+from ..stats import duration_stats
+from ..store.group_store import (
     DEFAULT_PLATFORM_ID,
     DEFAULT_SENDER_ID,
     DEFAULT_SENDER_NAME,
 )
-from .stats import duration_stats
+from .conf_routes import restore_routes, save_and_apply_routes
+from .event_bus import EventBus
 from .virtual_event import VirtualMessageEvent
 
 if TYPE_CHECKING:

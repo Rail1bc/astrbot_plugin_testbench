@@ -39,12 +39,13 @@
 
 ```text
 data/plugins/astrbot_plugin_testbench/
-├─ main.py               # 插件主入口文件（Star 类 + Web API 后端）
-├─ group_store.py        # 测试组数据模型与持久化（纯数据层）
-├─ conf_routes.py        # UCR 配置档案路由操作（持久与临时路由共用一套实现）
-├─ runner.py             # 并发测试运行器（流式汇总结果）
+├─ main.py               # 插件主入口（Star：依赖装配 + 路由注册 + LLM 阶段 hook）
+├─ api/                  # Web API 路由层（按资源聚合：meta/groups/sessions/runs/testsets/events）
+├─ core/                 # 运行编排层（runner/testset_runner/event_bus/virtual_event/conf_routes）
+├─ store/                # 持久化与数据模型（group_store/testset_store）
+├─ eval/                 # 断言评估层（mechanical：正则/包含/格式等机械规则）
+├─ history_ops.py        # 会话对话历史操作（保存/重新生成/复制/级联删除）
 ├─ stats.py              # 耗时统计工具（纯函数）
-├─ virtual_event.py      # 虚拟消息事件（捕获回复，不真实外发）
 ├─ metadata.yaml         # 插件元数据信息
 ├─ CHANGELOG.md          # 更新日志
 ├─ README.md             # 插件说明文档
