@@ -118,7 +118,7 @@ astrbot_plugin_testbench/
 ### UCR 配置档案路由
 
 - 路由操作集中在 `core/conf_routes.py`：持久路由（创建/删除组与会话、会话配置变更时应用与清理）与 runner 临时路由（测试运行时指定 conf_id）共用同一套 umo → conf_id 操作，避免两处实现对 UCR API 的双份维护。
-- 绑定用**会话级精确路由** `umo → conf_id`（`ucr.update_route(umop, conf_id)`），不用平台级 `platform_id::`，避免影响同平台其他会话。
+- 绑定用**会话级精确路由** `umo → conf_id`，不用平台级 `platform_id::`，避免影响同平台其他会话；写入一律经 `put_route_front` 置于路由表**表头**——AstrBot UCR 按 dict 插入顺序首个匹配即返回，而 `update_route` 对新键追加到末尾，若用户已配「全部会话」类兜底（如 `webchat::`），后追加的精确路由会被兜底遮蔽、绑定静默失效（曾因此踩坑）。`put_route_front` 先 pop 再重建 dict 把该 umo 放最前、随后 `update_route` 落盘（键已存在只改值、不重排，值已就位仅触发持久化）；重排只移动本插件的 umo，不破坏用户既有规则的相对顺序，未绑定会话仍正常落到兜底。`restore_routes` 恢复原路由时保持普通 `update_route`（不重排）。
 - 创建组/添加会话时若带 `conf_id`，调用 `_apply_conf_routes`；删除组/会话/重置时用 `_clear_conf_routes`（仅删已存在的路由）+ `_delete_session_conversations`（级联删原生对话历史，按 umo 调 `conversation_manager.delete_conversations_by_user_id`）。
 - runner 的临时路由（测试运行时指定 conf_id）带 `asyncio.Lock` 串行：`save_and_apply_routes` 保存原路由 → 应用 → 全部完成后 `restore_routes` 恢复并释放锁，避免临时路由互相污染。
 

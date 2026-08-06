@@ -21,6 +21,7 @@ sys.path.insert(0, str(REPO_ROOT.parent))
 
 pytest.importorskip("astrbot")
 
+import astrbot_plugin_testbench.core.conf_routes as cr_mod  # noqa: E402
 import astrbot_plugin_testbench.core.event_bus as eb_mod  # noqa: E402
 import astrbot_plugin_testbench.core.runner as runner_mod  # noqa: E402
 import astrbot_plugin_testbench.core.testset_runner as tsr_mod  # noqa: E402
@@ -817,6 +818,74 @@ async def test_plugin_sync_conf_route(tmp_path):
     session["conf_id"] = None
     await plugin._sync_conf_route(session)
     assert "webchat:FriendMessage:vs_1" not in ucr.umop_to_conf_id
+
+
+@pytest.mark.asyncio
+async def test_conf_route_precedence_over_broad_fallback():
+    """插件精确路由须优先于用户已配的「全部会话」兜底（真实 UCR 端到端）。
+
+    AstrBot UCR 按 dict 插入顺序**首个匹配即返回**（get_conf_id_for_umop 顺序
+    遍历），update_route 对新键追加到末尾——兜底路由先插入时，后追加的会话级
+    精确路由会被遮蔽。put_route_front 表头插入后：绑定会话解析到精确档案，
+    未绑定会话/其他类型仍落回兜底与平台级规则。
+    """
+
+    class FakeSP:
+        def __init__(self) -> None:
+            self._store: dict = {}
+
+        async def global_put(self, key: str, value: object) -> None:
+            self._store[key] = dict(value)
+
+        async def get_async(self, key: str, default: object = None, **kwargs) -> object:
+            return self._store.get(key, dict(default))
+
+    from astrbot.core.umop_config_router import UmopConfigRouter
+
+    ucr = UmopConfigRouter(FakeSP())
+    await ucr.initialize()
+    # 用户先配置平台级群聊规则，再配置「全部会话」兜底（规则相对顺序自此固定）
+    await ucr.update_route("webchat:GroupMessage:*", "conf_group")
+    await ucr.update_route("::", "conf_fallback")
+    plugin = main_mod.VirtualSessionPlugin(FakeContext(ucr=ucr))
+    session = {"id": "vs_abc", "platform_id": "webchat", "conf_id": "conf_specific"}
+    await plugin._sync_conf_route(session)
+    umop = umo_of(session)
+    # 精确路由位于表头（先于兜底命中）
+    assert list(ucr.umop_to_conf_id)[0] == umop
+    assert ucr.get_conf_id_for_umop(umop) == "conf_specific"
+    assert ucr.get_conf_id_for_umop("webchat:FriendMessage:vs_abc") == "conf_specific"
+    # put_route_front 重排 dict 不破坏既有规则的相对顺序：未绑定私聊落回兜底、
+    # 群聊仍走平台级规则（此处兜底在后，故不遮蔽群聊规则）
+    assert ucr.get_conf_id_for_umop("webchat:FriendMessage:vs_other") == "conf_fallback"
+    assert ucr.get_conf_id_for_umop("webchat:GroupMessage:vs_any") == "conf_group"
+    # 无绑定档案时清理路由，兜底恢复生效
+    session["conf_id"] = None
+    await plugin._sync_conf_route(session)
+    assert ucr.get_conf_id_for_umop(umop) == "conf_fallback"
+
+
+@pytest.mark.asyncio
+async def test_conf_route_temporary_front_and_restore():
+    """runner 临时路由同样表头优先于兜底；结束后恢复原路由/删除临时路由。"""
+    ucr = FakeUCR()
+    # 用户已有「全部会话」兜底，会话本身无绑定
+    await ucr.update_route("webchat::", "conf_fallback")
+    session = make_session(1)
+    umop = umo_of(session)
+    saved = await cr_mod.save_and_apply_routes(ucr, [session], "conf_tmp")
+    assert list(ucr.umop_to_conf_id)[0] == umop
+    assert ucr.umop_to_conf_id[umop] == "conf_tmp"
+    assert saved == [(umop, None)]
+    await cr_mod.restore_routes(ucr, saved)
+    assert umop not in ucr.umop_to_conf_id
+    assert ucr.umop_to_conf_id["webchat::"] == "conf_fallback"
+    # 原本有持久绑定的会话：恢复原值（键在表头、值还原）
+    await ucr.update_route(umop, "conf_persist")
+    saved = await cr_mod.save_and_apply_routes(ucr, [session], "conf_tmp")
+    assert saved == [(umop, "conf_persist")]
+    await cr_mod.restore_routes(ucr, saved)
+    assert ucr.umop_to_conf_id[umop] == "conf_persist"
 
 
 # ---------- 插件 Web 接口（测试组） ----------
