@@ -1083,10 +1083,12 @@ code {
   white-space: nowrap;
 }
 
-/* 全局视图切换（LLM 历史 / 消息流）：位于轮次对齐开关下方，统一控制全部已打开的会话 */
+/* 全局视图切换（LLM 历史 / 消息流）：位于轮次对齐开关下方右对齐，与上方
+   「轮次对齐」开关同侧对齐，避免按钮插在会话统计信息中间 */
 .run-overview-viewbar {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 8px;
 }
 
