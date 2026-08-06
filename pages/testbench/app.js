@@ -826,8 +826,9 @@ $("btn-run-testset").addEventListener("click", () => testsetRun.runTestsetFromBa
 $("run-testset").addEventListener("change", () => {
   $("btn-run-testset").disabled = !$("run-testset").value;
 });
+// 群发输入是大 textarea：Enter 换行，Ctrl+Enter（或 Command+Enter）发送
 $("run-text").addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && !e.isComposing) sendToAll();
+  if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && !e.isComposing) sendToAll();
 });
 
 // UI 窄条：视图切换（会话列表 / 测试集 / 身份与群聊）。点击当前视图按钮折叠/
