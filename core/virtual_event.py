@@ -80,6 +80,7 @@ class VirtualMessageEvent(AstrMessageEvent):
         done_event: asyncio.Event | None = None,
         message_type: MessageType | str = MessageType.FRIEND_MESSAGE,
         auto_at: bool = False,
+        is_admin: bool = False,
     ) -> VirtualMessageEvent:
         """构造一条虚拟消息事件。
 
@@ -96,6 +97,9 @@ class VirtualMessageEvent(AstrMessageEvent):
             message_type: 消息类型（私聊 / 群聊），决定 umo 与唤醒检查分支。
             auto_at: 群聊消息是否模拟「@机器人」发言——开启时消息链以
                 At(self_id) 开头，唤醒检查直接命中；关闭时以未唤醒状态进管道。
+            is_admin: 发送者是否为管理员；决定 event.role（"admin"/"member"）。
+                计算机工具（computer_use_runtime 非 none 且 require_admin 开启）仅
+                管理员可调用，虚拟会话据此模拟不同权限身份。
         """
         if isinstance(message_type, str):
             message_type = MessageType(message_type)
@@ -128,6 +132,9 @@ class VirtualMessageEvent(AstrMessageEvent):
             done_event=done_event,
         )
         event.auto_at = auto_at
+        # 基类默认 role = "member"；按发送者是否管理员覆写，供权限判断
+        # （如 computer_use_require_admin 门控）与 filter 读取。
+        event.role = "admin" if is_admin else "member"
         if provider_id:
             event.set_extra("selected_provider", provider_id)
         if model:

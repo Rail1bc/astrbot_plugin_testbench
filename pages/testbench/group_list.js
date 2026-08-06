@@ -31,6 +31,25 @@ const MAX_SESSIONS = 500;
 // 与后端约定：保存时映射为 conf_id=""，"" 表示不绑定档案而非继承组配置。
 const CONF_DEFAULT = "__default__";
 
+// 配置档案是否启用了任何可调用工具（安全警告判定）；confId 为空 → 默认配置。
+// 数据来自 listConfs 响应的 has_callable_tools（存于 state.confs）。
+function confHasTools(confId) {
+  const target = confId ? confId : "default";
+  const c = state.confs.find((x) => x.id === target);
+  return !!(c && c.has_callable_tools);
+}
+
+// 内联安全警告条：组/会话配置弹窗中选中启用了工具的配置时显示（不阻塞提交）。
+function buildToolWarningBar() {
+  const bar = document.createElement("div");
+  bar.className = "dialog-warn";
+  bar.hidden = true;
+  bar.textContent =
+    "⚠ 所选配置启用了可调用的工具（本地/沙箱执行、联网搜索、定时任务等），" +
+    "虚拟会话的 agent 可能执行危险操作，请确认仅用于可信测试。";
+  return bar;
+}
+
 export function createGroupList(env) {
   const {
     toggleOpen,
@@ -93,6 +112,10 @@ export function createGroupList(env) {
       const confBadge = g.conf_id
         ? `<span class="badge conf">${escapeHtml(confName(g.conf_id))}</span>`
         : "";
+      // 安全标记：组或任一会话的有效配置启用了可调用工具（后端每次列表实时重算）
+      const warnBadge = g.security_warning
+        ? `<span class="badge warn" title="该组配置启用了可调用的工具（可能执行危险操作）">⚠ 工具</span>`
+        : "";
       item.innerHTML =
         `<div class="group-head">` +
         `<span class="group-toggle">${expanded ? "▾" : "▸"}</span>` +
@@ -105,7 +128,7 @@ export function createGroupList(env) {
         `<button class="icon-btn danger" data-action="delete-group" title="删除组">✕</button>` +
         `</span>` +
         `</div>` +
-        `<div class="group-meta">${platformBadge}${confBadge}</div>` +
+        `<div class="group-meta">${platformBadge}${confBadge}${warnBadge}</div>` +
         (expanded
           ? `<div class="group-sessions">${renderGroupSessions(g)}</div>`
           : "");
@@ -380,6 +403,13 @@ export function createGroupList(env) {
 
     const selP = buildPlatformSelect(g.platform_id);
     const selC = buildConfSelect(g.conf_id);
+    // 安全警告条：所选配置启用了可调用工具时即时显示（空值 = 默认配置）
+    const warnBar = buildToolWarningBar();
+    const refreshWarn = () => {
+      warnBar.hidden = !confHasTools(selC.value);
+    };
+    selC.addEventListener("change", refreshWarn);
+    refreshWarn();
 
     const inpId = document.createElement("input");
     inpId.type = "text";
@@ -427,6 +457,7 @@ export function createGroupList(env) {
       field("会话数量（保存时若少于该值将自动新增）", inpCount),
       field("平台来源", selP),
       field("配置档案", selC),
+      warnBar,
       field("发送者ID", inpId),
       field("发送者昵称", inpName2),
       field("消息类型", selType),
@@ -485,6 +516,19 @@ export function createGroupList(env) {
     if (session.conf_id === "") selC.value = CONF_DEFAULT;
     else if (session.conf_id) selC.value = session.conf_id;
     else selC.value = "";
+    // 安全警告条：按该会话的「有效」配置判定——显式默认 / 显式档案 / 继承组
+    // （会话 conf_id → 组 conf_id → 默认配置）三态，切换下拉即时刷新
+    const warnBar = buildToolWarningBar();
+    const effectiveConfId = () => {
+      if (selC.value === CONF_DEFAULT) return "default";
+      if (selC.value) return selC.value;
+      return session.conf_id || group.conf_id || "default";
+    };
+    const refreshWarn = () => {
+      warnBar.hidden = !confHasTools(effectiveConfId());
+    };
+    selC.addEventListener("change", refreshWarn);
+    refreshWarn();
 
     const inpId = document.createElement("input");
     inpId.type = "text";
@@ -519,6 +563,7 @@ export function createGroupList(env) {
     form.append(
       field("平台来源（覆盖）", selP),
       field("配置档案（覆盖）", selC),
+      warnBar,
       field("发送者ID", inpId),
       field("发送者昵称", inpName),
       field("消息类型（覆盖）", selType),

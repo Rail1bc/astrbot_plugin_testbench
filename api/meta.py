@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from astrbot.api.web import json_response
 
+from ..core.conf_tools import conf_has_callable_tools
+
 
 class MetaAPI:
     """Provider / 配置档案 / 平台列表（前端下拉框的数据源）。"""
@@ -45,16 +47,24 @@ class MetaAPI:
     async def list_confs(self):
         """列出配置档案（用于测试提示词/系统设定）。
 
-        与 list_platforms 一致采用防御式读取：单个档案对象缺字段时回退默认值，
-        不因个别档案结构异常而拖垮整个列表接口。
+        每个档案附 ``has_callable_tools``（是否启用了任何可调用的工具），供前端
+        组/会话配置弹窗即时提示安全警告。与 list_platforms 一致采用防御式读取：
+        单个档案对象缺字段时回退默认值，配置管理器/档案内容缺失时不因个别异常
+        拖垮整个列表接口（显示用途下未加载的档案宽松判定为无工具）。
         """
+        confs_mgr = getattr(self.context, "astrbot_config_mgr", None)
+        confs_map = getattr(confs_mgr, "confs", {}) if confs_mgr else {}
         confs = []
-        for conf in self.context.astrbot_config_mgr.get_conf_list():
+        for conf in confs_mgr.get_conf_list() if confs_mgr else []:
+            conf_id = conf.get("id") or conf.get("name") or ""
             confs.append(
                 {
-                    "id": conf.get("id") or conf.get("name") or "",
+                    "id": conf_id,
                     "name": conf.get("name") or conf.get("id") or "",
                     "path": conf.get("path"),
+                    "has_callable_tools": conf_has_callable_tools(
+                        confs_map.get(conf_id)
+                    ),
                 }
             )
         return json_response(confs)

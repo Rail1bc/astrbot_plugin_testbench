@@ -41,6 +41,7 @@ class IdentitiesAPI:
             name=name,
             sender_id=payload.get("sender_id"),
             sender_name=payload.get("sender_name"),
+            is_admin=payload.get("is_admin"),
         )
         return json_response(identity)
 
@@ -52,6 +53,7 @@ class IdentitiesAPI:
             name=payload.get("name"),
             sender_id=payload.get("sender_id"),
             sender_name=payload.get("sender_name"),
+            is_admin=payload.get("is_admin"),
         )
         if updated is None:
             return error_response("未找到该身份", status_code=404)

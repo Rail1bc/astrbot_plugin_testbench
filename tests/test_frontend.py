@@ -720,3 +720,57 @@ def test_frontend_broadcast_auto_at():
     assert 'auto_at: $("run-auto-at") ? $("run-auto-at").checked : true' in app_js, (
         "群发/单发 payload 未带自动@选项"
     )
+
+
+def test_frontend_identity_admin_field():
+    """身份表单须提交 is_admin，身份列表须按管理员身份显示徽标。
+
+    身份实体新增「是否管理员」配置：identity_list.js 的 openIdentityForm 表单
+    须含管理员 checkbox 并把 is_admin 合入创建/更新 payload；renderIdentityList
+    须在身份 meta 区按 is_admin 渲染管理员徽标。管理员身份可调用危险工具，
+    列表徽标旁须有警告提示，表单勾选管理员时须显示内联警告条。
+    """
+    src = _read_module("identity_list")
+    assert "is_admin: inpAdmin.checked" in src, "身份表单未提交 is_admin"
+    assert 'field("管理员' in src, "身份表单缺少管理员字段"
+    assert 'inpAdmin.type = "checkbox"' in src, "管理员字段不是 checkbox"
+    assert "ident.is_admin" in src, "身份列表未按 is_admin 渲染管理员徽标"
+    # 管理员身份旁的警告提示（列表徽标 + 表单内联警告条）
+    assert "⚠ 危险" in src, "身份列表缺少管理员危险警告徽标"
+    assert 'class="badge warn"' in src, "危险警告未用 .badge.warn 样式"
+    assert "adminWarn.hidden = !inpAdmin.checked" in src, "表单未按勾选状态切换警告条"
+    assert "adminWarn" in src, "表单缺少管理员内联警告条"
+
+
+def test_frontend_group_security_warning_bar():
+    """组/会话配置弹窗须内联安全警告条（选中启用工具的配置即时显示）。
+
+    创建/编辑组与会话级 conf 覆盖都检查：group_list.js 须实现 confHasTools
+    （按 state.confs 的 has_callable_tools 判定，空值按默认配置）与
+    buildToolWarningBar（.dialog-warn 警告条，默认 hidden）；组弹窗与会话弹窗
+    都须在配置档案下拉 change 时刷新警告条显隐；会话弹窗按「有效配置」判定
+    （显式默认 / 显式档案 / 继承组链）。
+    """
+    gl_js = _read_module("group_list")
+    assert "has_callable_tools" in gl_js, "未引用 listConfs 的工具标志"
+    assert "function confHasTools(" in gl_js, "缺少 confHasTools 判定函数"
+    assert "function buildToolWarningBar()" in gl_js, "缺少警告条构建函数"
+    assert 'className = "dialog-warn"' in gl_js, "警告条未用 .dialog-warn 样式"
+    assert 'selC.addEventListener("change", refreshWarn)' in gl_js, (
+        "组弹窗配置下拉未绑定警告刷新"
+    )
+    assert "warnBar," in gl_js, "会话弹窗未把警告条加入表单"
+    assert 'session.conf_id || group.conf_id || "default"' in gl_js, (
+        "会话弹窗未按继承组链解析有效配置"
+    )
+
+
+def test_frontend_group_security_badge():
+    """组列表须按后端 security_warning 实时标记危险组。
+
+    renderGroupList 渲染组条目时须引用 g.security_warning 显示警告徽标
+    （后端每次列表实时重算，标记派生不持久化）。
+    """
+    gl_js = _read_module("group_list")
+    assert "g.security_warning" in gl_js, "组列表未按 security_warning 渲染警告标记"
+    assert "⚠ 工具" in gl_js, "组列表缺少工具警告徽标文案"

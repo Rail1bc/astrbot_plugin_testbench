@@ -108,14 +108,16 @@ class IdentityStore:
         name: str,
         sender_id: str | None = None,
         sender_name: str | None = None,
+        is_admin: Any = None,
     ) -> dict:
-        """创建身份；sender_id / sender_name 缺失时回退名称。"""
+        """创建身份；sender_id / sender_name 缺失时回退名称，is_admin 缺省 False。"""
         resolved_name = str(name or "").strip() or "身份"
         identity = {
             "id": f"id_{uuid.uuid4().hex[:8]}",
             "name": resolved_name,
             "sender_id": str(sender_id or "").strip() or resolved_name,
             "sender_name": str(sender_name or "").strip() or resolved_name,
+            "is_admin": bool(is_admin),
             "created_at": int(time.time()),
         }
         self._store.add(identity)
@@ -128,8 +130,9 @@ class IdentityStore:
         name: Any = None,
         sender_id: Any = None,
         sender_name: Any = None,
+        is_admin: Any = None,
     ) -> dict | None:
-        """更新身份；未传字段（None）保持不变，空串重置为名称回退。"""
+        """更新身份；未传字段（None）保持不变，空串重置为名称回退，is_admin 显式 false 生效。"""
         current = self._store.get(identity_id)
         if current is None:
             return None
@@ -144,6 +147,8 @@ class IdentityStore:
             fields["sender_name"] = (
                 str(sender_name or "").strip() or fields.get("name") or current["name"]
             )
+        if is_admin is not None:
+            fields["is_admin"] = bool(is_admin)
         return self._store.replace(identity_id, fields)
 
     def delete_identities(self, ids: list[str]) -> int:

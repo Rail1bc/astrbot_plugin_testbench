@@ -22,6 +22,7 @@ sys.path.insert(0, str(REPO_ROOT.parent))
 pytest.importorskip("astrbot")
 
 import astrbot_plugin_testbench.core.conf_routes as cr_mod  # noqa: E402
+import astrbot_plugin_testbench.core.conf_tools as ct_mod  # noqa: E402
 import astrbot_plugin_testbench.core.event_bus as eb_mod  # noqa: E402
 import astrbot_plugin_testbench.core.runner as runner_mod  # noqa: E402
 import astrbot_plugin_testbench.core.testset_runner as tsr_mod  # noqa: E402
@@ -41,6 +42,8 @@ from astrbot.api.web import PluginRequest, bind_request_context  # noqa: E402
 from starlette.requests import Request  # noqa: E402
 
 EventBus = eb_mod.EventBus
+conf_tool_info = ct_mod.conf_tool_info
+conf_has_callable_tools = ct_mod.conf_has_callable_tools
 VirtualMessageEvent = ve_mod.VirtualMessageEvent
 VirtualGroupManager = gs_mod.VirtualGroupManager
 VirtualTestRunner = runner_mod.VirtualTestRunner
@@ -1431,10 +1434,26 @@ async def test_plugin_list_confs_ok_and_defensive(tmp_path):
     resp = await plugin.list_confs()
     assert resp.status_code == 200
     body = json.loads(resp.body)
-    assert body[0] == {"id": "conf_a", "name": "档案A", "path": "/a"}
+    # FakeContext 无 confs 内容 → 宽松判定无工具
+    assert body[0] == {
+        "id": "conf_a",
+        "name": "档案A",
+        "path": "/a",
+        "has_callable_tools": False,
+    }
     # 缺 id 回落 name，缺 name 回落 id，缺 path 为 None
-    assert body[1] == {"id": "只有名字", "name": "只有名字", "path": None}
-    assert body[2] == {"id": "conf_c", "name": "conf_c", "path": None}
+    assert body[1] == {
+        "id": "只有名字",
+        "name": "只有名字",
+        "path": None,
+        "has_callable_tools": False,
+    }
+    assert body[2] == {
+        "id": "conf_c",
+        "name": "conf_c",
+        "path": None,
+        "has_callable_tools": False,
+    }
 
 
 @pytest.mark.asyncio
@@ -3628,3 +3647,249 @@ async def test_runner_auto_at_request_level():
         assert captured == [False]
     finally:
         task.cancel()
+
+
+# ---------- 工具安全警告与身份管理员 ----------
+
+
+def test_conf_tool_info():
+    """配置档案工具能力判定：与 AstrBot 运行时挂载逻辑一致。"""
+    # 非 dict / None → 全 False（宽松）
+    assert conf_tool_info(None)["has_callable_tools"] is False
+    assert conf_tool_info([])["has_callable_tools"] is False
+    # 空 dict：cron 工具默认开启（add_cron_tools 缺省 True）→ 命中告警
+    assert conf_tool_info({})["has_callable_tools"] is True
+    assert conf_tool_info({})["cron_tools"] is True
+    # 全部显式关闭 → 无工具
+    off = {
+        "provider_settings": {
+            "computer_use_runtime": "none",
+            "web_search": False,
+            "proactive_capability": {"add_cron_tools": False},
+        },
+        "kb_agentic_mode": False,
+    }
+    assert conf_has_callable_tools(off) is False
+    # 各开关单独命中
+    for runtime in ("local", "sandbox"):
+        info = conf_tool_info({"provider_settings": {"computer_use_runtime": runtime}})
+        assert info["has_callable_tools"] is True
+        assert info["computer_use_runtime"] == runtime
+    assert conf_has_callable_tools(
+        {"provider_settings": {"computer_use_runtime": "none", "web_search": True}}
+    )
+    assert conf_has_callable_tools({"kb_agentic_mode": True})
+    assert conf_has_callable_tools(
+        {
+            "provider_settings": {
+                "web_search": True,
+                "proactive_capability": {"add_cron_tools": False},
+            }
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_list_confs_has_callable_tools(tmp_path):
+    """list_confs 暴露每档案的 has_callable_tools（按 confs 内容实时判定）。"""
+    context = FakeContext(
+        conf_list=[
+            {"id": "default", "name": "默认", "path": "/d"},
+            {"id": "conf_x", "name": "危险", "path": "/x"},
+        ]
+    )
+    context.astrbot_config_mgr.confs = {
+        "default": {},
+        "conf_x": {"provider_settings": {"computer_use_runtime": "local"}},
+    }
+    plugin = main_mod.VirtualSessionPlugin(context)
+    plugin.group_mgr = VirtualGroupManager(data_dir=tmp_path)
+
+    resp = await plugin.list_confs()
+    body = json.loads(resp.body)
+    by_id = {c["id"]: c for c in body}
+    assert by_id["default"]["has_callable_tools"] is True  # cron 默认开启
+    assert by_id["conf_x"]["has_callable_tools"] is True
+
+    # 档案对象在 conf_list 中但 confs 字典无内容 → 宽松 False（显示用途不误报）
+    ghost = FakeContext(conf_list=[{"id": "ghost", "name": "无内容"}])
+    plugin2 = main_mod.VirtualSessionPlugin(ghost)
+    plugin2.group_mgr = VirtualGroupManager(data_dir=tmp_path)
+    resp2 = await plugin2.list_confs()
+    assert json.loads(resp2.body)[0]["has_callable_tools"] is False
+
+
+def test_identity_is_admin_crud(tmp_path):
+    """身份 is_admin：创建默认 False，可显式 True；更新显式 false 生效、未传不变。"""
+    store = IdentityStore(data_dir=tmp_path)
+    ident = store.create_identity("小明", "xiaoming", "小明同学")
+    assert ident["is_admin"] is False
+    admin = store.create_identity("管理员", "root", is_admin=True)
+    assert admin["is_admin"] is True
+
+    # 更新：显式 false 生效（前端取消勾选必须落盘）
+    store.update_identity(admin["id"], is_admin=False)
+    assert store.get_identity(admin["id"])["is_admin"] is False
+    # 未传字段保持不变
+    store.update_identity(ident["id"], name="小刚")
+    assert store.get_identity(ident["id"])["is_admin"] is False
+
+    # 重新加载确认持久化
+    store2 = IdentityStore(data_dir=tmp_path)
+    assert store2.get_identity(admin["id"])["is_admin"] is False
+    assert store2.get_identity(ident["id"])["is_admin"] is False
+
+    # 旧数据缺 is_admin 键 → 加载不崩溃，读取由调用方 .get 兜底
+    import json as _json
+
+    (tmp_path / "virtual_session" / "identities.json").write_text(
+        _json.dumps(
+            {
+                "items": [
+                    {
+                        "id": "id_old",
+                        "name": "旧身份",
+                        "sender_id": "old",
+                        "sender_name": "旧",
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    store3 = IdentityStore(data_dir=tmp_path)
+    old = store3.get_identity("id_old")
+    assert old.get("is_admin", False) is False
+
+
+@pytest.mark.asyncio
+async def test_identity_api_is_admin(tmp_path):
+    """API 级身份创建/更新透传 is_admin。"""
+    plugin = main_mod.VirtualSessionPlugin(FakeContext())
+    plugin.identity_store = IdentityStore(data_dir=tmp_path)
+
+    resp = await call_handler(plugin.create_identity, {"name": "小明"})
+    assert resp.status_code == 200
+    ident = json.loads(resp.body)
+    assert ident["is_admin"] is False
+
+    resp2 = await call_handler(
+        plugin.create_identity, {"name": "管理员", "is_admin": True}
+    )
+    admin = json.loads(resp2.body)
+    assert admin["is_admin"] is True
+
+    resp3 = await call_handler(
+        plugin.update_identity, {"name": "小刚", "is_admin": False}, admin["id"]
+    )
+    assert json.loads(resp3.body)["is_admin"] is False
+
+
+def test_virtual_event_role_admin():
+    """虚拟事件按 is_admin 设置 event.role（基类默认 member）。"""
+    ev = VirtualMessageEvent.create(
+        session_id="vs_1", sender_id="u1", sender_name="用户1", text="hi"
+    )
+    assert ev.role == "member"
+    assert ev.is_admin() is False
+    admin = VirtualMessageEvent.create(
+        session_id="vs_1",
+        sender_id="root",
+        sender_name="管理员",
+        text="hi",
+        is_admin=True,
+    )
+    assert admin.role == "admin"
+    assert admin.is_admin() is True
+
+
+def test_runner_resolve_role(tmp_path):
+    """发送者角色解析：命中管理员身份 → admin，否则 member；无身份库恒 member。"""
+    identity_store = IdentityStore(data_dir=tmp_path)
+    identity_store.create_identity("管理员", "admin_1", is_admin=True)
+    identity_store.create_identity("普通成员", "member_1")
+    runner = VirtualTestRunner(FakeContext(), identity_store=identity_store)
+    assert runner._resolve_role("admin_1") == "admin"
+    assert runner._resolve_role("member_1") == "member"
+    assert runner._resolve_role("unknown") == "member"
+    # 无身份库 → 恒 member
+    runner3 = VirtualTestRunner(FakeContext())
+    assert runner3._resolve_role("admin_1") == "member"
+
+
+@pytest.mark.asyncio
+async def test_runner_start_sets_event_role(tmp_path):
+    """start() 构造的事件按发送身份自动设置 role（队列捕获验证）。"""
+    identity_store = IdentityStore(data_dir=tmp_path)
+    identity_store.create_identity("管理员", "admin_1", is_admin=True)
+    queue = asyncio.Queue()
+    runner = VirtualTestRunner(FakeContext(queue), identity_store=identity_store)
+    captured = []
+
+    async def handler(event):
+        captured.append(event.role)
+        event.cleanup_temporary_local_files()
+
+    task = asyncio.create_task(consume(queue, handler))
+    try:
+        s1 = make_session(1)
+        s1["sender_id"] = "admin_1"  # 命中管理员身份
+        s2 = make_session(2)  # 默认 testbench → 普通成员
+        tid = await runner.start(sessions=[s1, s2], text="hi")
+        await wait_run_done(runner, tid)
+        assert captured == ["admin", "member"]
+    finally:
+        task.cancel()
+
+
+@pytest.mark.asyncio
+async def test_list_groups_security_warning(tmp_path):
+    """组安全标记按有效配置实时计算，派生键不写回 store。"""
+    context = FakeContext()
+    context.astrbot_config_mgr.confs = {
+        "default": {
+            "provider_settings": {
+                "computer_use_runtime": "none",
+                "web_search": False,
+                "proactive_capability": {"add_cron_tools": False},
+            }
+        },
+        "conf_safe": {
+            "provider_settings": {
+                "computer_use_runtime": "none",
+                "web_search": False,
+                "proactive_capability": {"add_cron_tools": False},
+            }
+        },
+        "conf_risky": {"provider_settings": {"computer_use_runtime": "local"}},
+    }
+    plugin = main_mod.VirtualSessionPlugin(context)
+    plugin.group_mgr = VirtualGroupManager(data_dir=tmp_path)
+
+    g_risky = plugin.group_mgr.create_group("危险组", count=1, conf_id="conf_risky")
+    g_safe = plugin.group_mgr.create_group("安全组", count=1, conf_id="conf_safe")
+    g_default = plugin.group_mgr.create_group("默认组", count=1)
+
+    resp = await plugin.list_groups()
+    body = json.loads(resp.body)
+    by_id = {g["id"]: g for g in body["groups"]}
+    assert by_id[g_risky["id"]]["security_warning"] is True
+    assert by_id[g_safe["id"]]["security_warning"] is False
+    assert by_id[g_default["id"]]["security_warning"] is False
+
+    # 会话级 conf 覆盖为危险 → 组标记（会话优先于组配置）
+    plugin.group_mgr.update_session(g_safe["sessions"][0]["id"], conf_id="conf_risky")
+    resp2 = await plugin.list_groups()
+    by_id2 = {g["id"]: g for g in json.loads(resp2.body)["groups"]}
+    assert by_id2[g_safe["id"]]["security_warning"] is True
+
+    # 绑定已删除的档案 → 回退默认配置判定（镜像 get_conf 运行时语义）
+    g_ghost = plugin.group_mgr.create_group("幽灵组", count=1, conf_id="已删除档案")
+    resp3 = await plugin.list_groups()
+    by_id3 = {g["id"]: g for g in json.loads(resp3.body)["groups"]}
+    assert by_id3[g_ghost["id"]]["security_warning"] is False  # 默认配置安全
+
+    # 派生键不写回 store：list_groups 返回的组 dict 无 security_warning 键
+    raw = plugin.group_mgr.list_groups()
+    assert all("security_warning" not in g for g in raw)

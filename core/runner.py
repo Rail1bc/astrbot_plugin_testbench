@@ -139,6 +139,9 @@ class VirtualTestRunner:
             effective_auto_at = (
                 auto_at and message_type == MessageType.GROUP_MESSAGE.value
             )
+            # 发送者是否管理员：按解析后的 sender_id 在身份库中查 is_admin，
+            # 决定 event.role，供权限类工具（如 require_admin 的计算机工具）判断
+            is_admin = self._resolve_role(sid) == "admin"
             events.append(
                 VirtualMessageEvent.create(
                     session_id=s["id"],
@@ -151,6 +154,7 @@ class VirtualTestRunner:
                     model=model,
                     message_type=message_type,
                     auto_at=effective_auto_at,
+                    is_admin=is_admin,
                 )
             )
 
@@ -266,6 +270,21 @@ class VirtualTestRunner:
         if chat_group is None or not chat_group.get("member_ids"):
             return None
         return self.identity_store.get_identity(chat_group["member_ids"][0])
+
+    def _resolve_role(self, sender_id: str) -> str:
+        """按发送者 id 查身份库，返回其角色（"admin" / "member"）。
+
+        身份库中 is_admin 为真的身份对应管理员；未匹配到管理员身份（含未在
+        库中的发送者、旧数据缺 is_admin 键）一律视为普通成员。覆盖全部发送
+        路径：请求级 sender、绑定群聊默认成员、会话/组手动 sender 与默认
+        sender——凡其 sender_id 命中管理员身份即按管理员处理。
+        """
+        if self.identity_store is None:
+            return "member"
+        for ident in self.identity_store.list_identities():
+            if ident.get("sender_id") == sender_id and ident.get("is_admin"):
+                return "admin"
+        return "member"
 
     def mark_waiting_llm(self, entry_id: str) -> None:
         """标记消息已到达 LLM 阶段、正在等待会话锁（OnWaitingLLMRequestEvent）。"""

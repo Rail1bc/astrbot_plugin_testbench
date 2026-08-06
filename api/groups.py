@@ -7,6 +7,7 @@ from typing import Any
 from astrbot.api.web import error_response, json_response, request
 
 from ..core.conf_routes import delete_route_if_exists
+from ..core.conf_tools import conf_has_callable_tools
 from ..store.group_store import umo_of
 from .common import MAX_SESSIONS_PER_GROUP, ConfRouteMixin
 
@@ -15,8 +16,41 @@ class GroupsAPI(ConfRouteMixin):
     """测试组 handler 集合（挂在 Star 上，共享 self.group_mgr / self.history_ops）。"""
 
     async def list_groups(self):
-        """列出全部测试组（含组内会话，会话字段为原始覆盖值）。"""
-        return json_response({"groups": self.group_mgr.list_groups()})
+        """列出全部测试组（含组内会话，会话字段为原始覆盖值）。
+
+        每个组附派生键 ``security_warning``：组或任一会话的有效配置档案启用了
+        任何可调用工具即为真。标记按当前配置实时计算（配置档案事后可能被修改，
+        故不持久化，每次列表重新判定）；逐组浅拷贝，不改写 store 内共享 dict。
+        """
+        groups = [
+            {**g, "security_warning": self._group_has_callable_tools(g)}
+            for g in self.group_mgr.list_groups()
+        ]
+        return json_response({"groups": groups})
+
+    def _group_has_callable_tools(self, group: dict) -> bool:
+        """组是否启用了可调用工具：组级 conf 或任一会话级 conf 覆盖命中即真。
+
+        conf_id 为 None/""（未绑定）时按默认配置判定，conf_id 已删除时回退默认
+        配置——镜像 ``astrbot_config_mgr.get_conf`` 的运行时回退语义（绑定失效后
+        实际生效的正是默认配置）。
+        """
+        confs = getattr(
+            getattr(self.context, "astrbot_config_mgr", None), "confs", None
+        )
+        if not isinstance(confs, dict):
+            return False
+
+        def risky(conf_id: str | None) -> bool:
+            conf = confs.get(conf_id) if conf_id else confs.get("default")
+            return conf_has_callable_tools(conf)
+
+        if risky(group.get("conf_id")):
+            return True
+        for session in group.get("sessions") or []:
+            if risky(session.get("conf_id") or group.get("conf_id")):
+                return True
+        return False
 
     async def create_group(self):
         """创建测试组并生成组内虚拟会话，可选绑定配置档案（UCR 会话级路由）。"""

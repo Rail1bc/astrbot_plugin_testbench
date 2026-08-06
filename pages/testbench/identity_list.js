@@ -115,6 +115,10 @@ export function createIdentityList(env) {
         `<div class="group-meta">` +
         `<span class="badge" title="sender_id">${escapeHtml(ident.sender_id)}</span>` +
         `<span class="badge" title="sender_name">${escapeHtml(ident.sender_name)}</span>` +
+        `${ident.is_admin ? '<span class="badge admin" title="管理员身份，发送时自动设置 event.role=admin">管理员</span>' : ""}` +
+        // 管理员身份可调用需管理员权限的工具（如本地/沙箱执行、联网搜索、定时任务），
+        // 可能执行危险操作——列表旁挂警告徽标提示
+        `${ident.is_admin ? '<span class="badge warn" title="管理员身份发送时 event.role=admin，可调用需管理员权限的工具（本地/沙箱执行、联网搜索、定时任务等），可能执行危险操作">⚠ 危险</span>' : ""}` +
         `</div>`;
       // 拖拽到右侧群聊编辑视图可快速加入该群（dataTransfer 只传身份 id）
       item.draggable = true;
@@ -154,6 +158,19 @@ export function createIdentityList(env) {
     inpName2.type = "text";
     inpName2.placeholder = "留空使用名称";
     inpName2.value = identity ? identity.sender_name : "";
+    const inpAdmin = document.createElement("input");
+    inpAdmin.type = "checkbox";
+    inpAdmin.checked = identity ? !!identity.is_admin : false;
+    // 勾选管理员即时显示内联警告（与组/会话弹窗的工具安全警告条同一风格）
+    const adminWarn = document.createElement("div");
+    adminWarn.className = "dialog-warn";
+    adminWarn.hidden = !inpAdmin.checked;
+    adminWarn.textContent =
+      "⚠ 管理员身份发送的消息带 event.role=admin，可调用需管理员权限的工具" +
+      "（本地/沙箱执行、联网搜索、定时任务等），可能执行危险操作，请仅用于可信测试。";
+    inpAdmin.addEventListener("change", () => {
+      adminWarn.hidden = !inpAdmin.checked;
+    });
 
     const form = document.createElement("div");
     form.className = "form-col";
@@ -161,6 +178,8 @@ export function createIdentityList(env) {
       field("名称", inpName),
       field("发送者ID（留空使用名称）", inpId),
       field("发送者昵称（留空使用名称）", inpName2),
+      field("管理员（发送时自动按管理员身份设置角色）", inpAdmin),
+      adminWarn,
     );
 
     openModal({
@@ -174,6 +193,7 @@ export function createIdentityList(env) {
           name,
           sender_id: inpId.value.trim(),
           sender_name: inpName2.value.trim(),
+          is_admin: inpAdmin.checked,
         };
         if (identity) await updateIdentity(identity.id, payload);
         else await createIdentity(payload);

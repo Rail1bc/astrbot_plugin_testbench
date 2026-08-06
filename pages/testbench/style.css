@@ -340,6 +340,23 @@ textarea:focus {
   color: var(--warn);
 }
 
+.badge.admin {
+  background: color-mix(in srgb, var(--primary) 15%, transparent);
+  color: var(--primary);
+}
+
+/* 组/会话配置弹窗内的工具安全警告条（选中启用工具的配置时显示） */
+.dialog-warn {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--warn) 35%, transparent);
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+  color: var(--warn);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .hint {
   margin: 0;
   font-size: 12px;
