@@ -387,7 +387,7 @@ function showRunStatus(status, text) {
   el.textContent = text;
 }
 
-// ---------- 会话操作 ----------// ---------- 会话操作 ----------
+// ---------- 会话操作 ----------
 
 function resetHistory(id) {
   showModal(`确定重置会话 ${id} 的对话历史吗？`, {

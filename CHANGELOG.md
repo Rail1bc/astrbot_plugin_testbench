@@ -90,7 +90,7 @@
 
 ### 🔄 Changed (行为变更)
 
-- **面板视图切换（LLM 历史 / 消息流）改为全局统一控制**：切换按钮从单个会话页眉移除，移到轮次对齐开关下方（`#view-toggle`），点击统一切换**全部已打开的会话**（新打开的面板沿用当前全局视图）——避免部分会话历史视图、部分消息流视图时轮次对齐含义不一致；**消息流视图也参与轮次对齐**（对齐模式下按 user 发言把消息流分组渲染 `.turn-wrap`，与 LLM 历史的轮次语义一致，reflowAlign 统一各面板每轮高度）。
+- **面板视图切换（LLM 历史 / 消息流）改为全局统一控制**：切换按钮从单个会话页眉移除，移到与「轮次对齐」开关**同一行右侧**（`#view-toggle`，`.run-overview-controls` 成组右对齐），点击统一切换**全部已打开的会话**（新打开的面板沿用当前全局视图）——避免部分会话历史视图、部分消息流视图时轮次对齐含义不一致；**消息流视图也参与轮次对齐**（对齐模式下按 user 发言把消息流分组渲染 `.turn-wrap`，与 LLM 历史的轮次语义一致，reflowAlign 统一各面板每轮高度）。
 - 前端由 1s 轮询改为**全事件驱动**：移除 `pollRun` / `pollTestsetRun` / `pollPending` 三个轮询器与 `startPolling` 辅助，改订阅 `/events` SSE 事件流（`connectEvents` → `handleEvent` 分发 pending / session_done / test_done / testset）；断线后延迟 3s 重连，并以 `reconcileEvents()` 用轮询接口一次性快照对账（`getPending` + 在途各 test_id 逐个 `runStatus` + 有活动运行则 `runTestsetStatus`），丢失的事件由其兜底——无轮询 fallback。
 - 测试集运行与手动群发统一逐会话反馈路径：共用 `applySessionFeedback`（面板状态 + 回复耗时 + 逐会话历史刷新），测试集运行中**新完成的步骤逐结果实时刷新面板**，不再等终态一次性刷新。
 - 测试集运行结果**不自动弹窗**：终态暂存 `state.runReports`，顶部常显状态条出现「查看报告」按钮按需查看结果表格；会话窗口仍实时显示各会话回复耗时。
@@ -113,6 +113,7 @@
 - 前端 `testset_list.js` 拆出 `testset_editor.js`（右侧测试集编辑窗口 `createTestsetEditor(env)`：消息行 `renderMsgRow` / 反向收集 `collectEditorRows` / 断言规则 `RULE_TYPES` / 批量段 / 脏标记 / 保存 / 导出 / 导入）；编辑器与列表互相引用、直接 import 会成环，列表侧函数（`formatTime` / `openTestsetRun` / `deleteTestset` / `doSelect` / `refreshTestsets`）经 `setDeps` 延迟注入。
 - 后端 `main.py` 拆出 `history_ops.py`（会话对话历史操作 `HistoryOps`：`save_history` / `regenerate_history` / `copy_history` / `delete_session_conversations`），main.py 保留路由装配与薄委托（`_ROUTES` 的 getattr 要求 handler 名字仍在 Star 上）；`group_mgr` 以 getter 延迟获取——测试重新绑定 `plugin.group_mgr` 后仍指向新管理器。
 - 后端按**目录内聚**重排为 api / core / store / eval 四包（纯结构，行为零变更）：`main.py` 瘦身为 Star 入口（依赖装配 + 路由注册 + 两个 LLM 阶段 hook）；Web API handler 按资源聚合为 `api/` 下的 mixin 类（`MetaAPI` / `GroupsAPI` / `SessionsAPI` / `RunsAPI` / `TestsetsAPI` / `EventsAPI`，共享的 UCR 路由薄包装 `ConfRouteMixin` 与 `MAX_SESSIONS_PER_GROUP` 在 `api/common.py`，`_ROUTES` 路由表在 `api/routes.py`），由 `VirtualSessionPlugin` 继承装配——`plugin.<handler>` 仍为 bound method，`_ROUTES` 的 getattr 解析与测试调用方式均不变；运行编排迁至 `core/`（`event_bus` / `virtual_event` / `conf_routes` / `runner` / `testset_runner`）、持久化迁至 `store/`（`group_store` / `testset_store`）、断言评估迁至 `eval/mechanical.py`（原 `assertions.py`）；`history_ops.py` / `stats.py` 保持扁平。150 个测试全部通过，无行为变更。
+- 后端 `_ListStore` 补公开写方法（`add` / `remove` / `replace`），`IdentityStore` / `ChatGroupStore` 的增删改改走这些方法，不再直接访问 `self._store._items` 私有属性（行为不变，公开方法签名不变）；删除 `app.js` 一处重复分区注释；README 目录结构与开发流程同步（补齐 `identity_store.py` / `stream_store.py` / `identity_list.js` 与「push 到 dev 由 CI 把关」工作流）。
 
 ---
 

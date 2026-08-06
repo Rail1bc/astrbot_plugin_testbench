@@ -100,13 +100,13 @@
             <div class="run-overview-block">
               <div class="run-overview-head">
                 <span id="run-overview-count" class="overview-total"></span>
-                <label class="align-toggle" title="启用后所有面板按对话轮次对齐，滑动条可同步滚动全部窗口">
-                  <input id="align-toggle" type="checkbox" />
-                  轮次对齐
-                </label>
-              </div>
-              <div class="run-overview-viewbar">
-                <button id="view-toggle" class="btn small" title="统一切换全部已打开会话的显示视图（LLM 对话历史 / 真实消息流）">消息流</button>
+                <div class="run-overview-controls">
+                  <label class="align-toggle" title="启用后所有面板按对话轮次对齐，滑动条可同步滚动全部窗口">
+                    <input id="align-toggle" type="checkbox" />
+                    轮次对齐
+                  </label>
+                  <button id="view-toggle" class="btn small" title="统一切换全部已打开会话的显示视图（LLM 对话历史 / 真实消息流）">消息流</button>
+                </div>
               </div>
               <div id="run-overview" class="run-overview" hidden></div>
             </div>

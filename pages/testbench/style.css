@@ -1083,13 +1083,15 @@ code {
   white-space: nowrap;
 }
 
-/* 全局视图切换（LLM 历史 / 消息流）：位于轮次对齐开关下方右对齐，与上方
-   「轮次对齐」开关同侧对齐，避免按钮插在会话统计信息中间 */
-.run-overview-viewbar {
+/* 轮次对齐开关与全局视图切换（LLM 历史 / 消息流）同一行右对齐：会话统计
+   计数靠左，两个按钮成组靠右，不插在会话统计信息中间 */
+.run-overview-controls {
   display: flex;
   align-items: center;
   justify-content: flex-end;
   gap: 8px;
+  flex: none;
+  min-width: 0;
 }
 
 .overview-item {

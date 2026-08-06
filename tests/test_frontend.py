@@ -531,10 +531,10 @@ def test_frontend_group_dialog_new_fields():
 def test_frontend_panel_view_toggle():
     """视图切换（LLM 历史 / 消息流）须全局统一控制。
 
-    切换按钮从单会话页眉移到轮次对齐开关下方（#view-toggle），统一控制全部已
-    打开的会话：index.html 须含该按钮；app.js 须实现 setGlobalView（统一切换并
-    加载对应视图）与 loadStream（拉取消息流渲染），视图判断用 state.globalView；
-    面板页头不再有 per-panel view-toggle 按钮。
+    切换按钮从单会话页眉移到与「轮次对齐」开关同一行右侧（#view-toggle），统一
+    控制全部已打开的会话：index.html 须含该按钮；app.js 须实现 setGlobalView
+    （统一切换并加载对应视图）与 loadStream（拉取消息流渲染），视图判断用
+    state.globalView；面板页头不再有 per-panel view-toggle 按钮。
     """
     html = _read_html()
     app_js = _read_module("app")

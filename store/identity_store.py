@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import time
 import uuid
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -57,6 +58,30 @@ class _ListStore:
                 return item
         return None
 
+    def add(self, item: dict) -> None:
+        """追加一项并落盘。"""
+        self._items.append(item)
+        self._save()
+
+    def remove(self, ids: Iterable[str]) -> int:
+        """按 id 批量删除；有删除才落盘，返回删除数量。"""
+        id_set = set(ids)
+        kept = [item for item in self._items if item["id"] not in id_set]
+        removed = len(self._items) - len(kept)
+        if removed:
+            self._items = kept
+            self._save()
+        return removed
+
+    def replace(self, item_id: str, fields: dict) -> dict | None:
+        """原地更新一项（字段合并）并落盘；不存在返回 None。"""
+        item = self.get(item_id)
+        if item is None:
+            return None
+        item.update(fields)
+        self._save()
+        return item
+
 
 class IdentityStore:
     """测试身份的创建、持久化与查询。
@@ -93,8 +118,7 @@ class IdentityStore:
             "sender_name": str(sender_name or "").strip() or resolved_name,
             "created_at": int(time.time()),
         }
-        self._store._items.append(identity)
-        self._store._save()
+        self._store.add(identity)
         return identity
 
     def update_identity(
@@ -106,26 +130,24 @@ class IdentityStore:
         sender_name: Any = None,
     ) -> dict | None:
         """更新身份；未传字段（None）保持不变，空串重置为名称回退。"""
-        identity = self._store.get(identity_id)
-        if identity is None:
+        current = self._store.get(identity_id)
+        if current is None:
             return None
+        fields: dict[str, Any] = {}
         if name is not None:
-            identity["name"] = str(name or "").strip() or "身份"
+            fields["name"] = str(name or "").strip() or "身份"
         if sender_id is not None:
-            identity["sender_id"] = str(sender_id or "").strip() or identity["name"]
+            fields["sender_id"] = (
+                str(sender_id or "").strip() or fields.get("name") or current["name"]
+            )
         if sender_name is not None:
-            identity["sender_name"] = str(sender_name or "").strip() or identity["name"]
-        self._store._save()
-        return identity
+            fields["sender_name"] = (
+                str(sender_name or "").strip() or fields.get("name") or current["name"]
+            )
+        return self._store.replace(identity_id, fields)
 
     def delete_identities(self, ids: list[str]) -> int:
-        id_set = set(ids)
-        kept = [item for item in self._store._items if item["id"] not in id_set]
-        removed = len(self._store._items) - len(kept)
-        if removed:
-            self._store._items = kept
-            self._store._save()
-        return removed
+        return self._store.remove(ids)
 
 
 class ChatGroupStore:
@@ -167,8 +189,7 @@ class ChatGroupStore:
             "member_ids": self._clean_member_ids(member_ids),
             "created_at": int(time.time()),
         }
-        self._store._items.append(chat_group)
-        self._store._save()
+        self._store.add(chat_group)
         return chat_group
 
     def update_chat_group(
@@ -178,21 +199,12 @@ class ChatGroupStore:
         name: Any = None,
         member_ids: Any = None,
     ) -> dict | None:
-        chat_group = self._store.get(group_id)
-        if chat_group is None:
-            return None
+        fields: dict[str, Any] = {}
         if name is not None:
-            chat_group["name"] = str(name or "").strip() or "群聊"
+            fields["name"] = str(name or "").strip() or "群聊"
         if member_ids is not None:
-            chat_group["member_ids"] = self._clean_member_ids(member_ids)
-        self._store._save()
-        return chat_group
+            fields["member_ids"] = self._clean_member_ids(member_ids)
+        return self._store.replace(group_id, fields)
 
     def delete_chat_groups(self, ids: list[str]) -> int:
-        id_set = set(ids)
-        kept = [item for item in self._store._items if item["id"] not in id_set]
-        removed = len(self._store._items) - len(kept)
-        if removed:
-            self._store._items = kept
-            self._store._save()
-        return removed
+        return self._store.remove(ids)
