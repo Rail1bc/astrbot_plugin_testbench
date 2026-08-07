@@ -75,6 +75,24 @@ def _snapshot_llm_input(req) -> dict:
     }
 
 
+def _format_persona_snapshot(persona) -> str:
+    """把解析出的人格转成评审材料用文本（提示词 + 开场对话）。
+
+    begin_dialogs 型人格的身份文本在 `_begin_dialogs_processed`
+    （role/content 列表），与 `prompt`（DB system_prompt 字段）一起组成
+    被测 agent 的人格设定；两者都可能是空的。
+    """
+    blocks: list[str] = []
+    prompt = persona.get("prompt")
+    if prompt:
+        blocks.append(f"# Persona Instructions\n\n{prompt}\n")
+    dialogs = persona.get("_begin_dialogs_processed") or []
+    if dialogs:
+        lines = [f"{d.get('role', 'user')}: {d.get('content', '')}" for d in dialogs]
+        blocks.append("# 开场对话（begin_dialogs）\n\n" + "\n".join(lines))
+    return "\n".join(blocks)
+
+
 class VirtualSessionPlugin(
     Star,
     MetaAPI,
@@ -135,4 +153,44 @@ class VirtualSessionPlugin(
         if isinstance(event, VirtualMessageEvent) and event.entry_id:
             self.runner.mark_llm(event.entry_id)
             event.set_extra(TESTBENCH_LLM_REQUESTED_EXTRA_KEY, True)
-            event.set_extra(TESTBENCH_LLM_INPUT_EXTRA_KEY, _snapshot_llm_input(req))
+            snapshot = _snapshot_llm_input(req)
+            if not snapshot["system_prompt"]:
+                # begin_dialogs 型人格的身份不写进 req.system_prompt，从配置档案回退解析
+                snapshot["system_prompt"] = await self._resolve_persona_system_prompt(
+                    event, req
+                )
+            event.set_extra(TESTBENCH_LLM_INPUT_EXTRA_KEY, snapshot)
+
+    async def _resolve_persona_system_prompt(self, event, req) -> str:
+        """req.system_prompt 为空时回退解析被测 agent 的人格设定。
+
+        astrbot 的人格装饰（`_ensure_persona_and_skills`）：人格的 `prompt`
+        字段写进 req.system_prompt，而**开场对话（begin_dialogs）型人格**把
+        身份文本注入 req.contexts 对话历史、不碰 system_prompt——这类会话的
+        快照系统提示词恒为空，评审材料看不到人格设定。这里从会话配置档案
+        解析人格，把提示词与开场对话补进快照，使评审 LLM 仍能看到被测 agent
+        的人格设定。解析失败 / 无人格 → 空串（评审层显示未捕获占位）。
+        """
+        pm = getattr(self.context, "persona_manager", None)
+        if pm is None or not hasattr(pm, "resolve_selected_persona"):
+            return ""
+        try:
+            provider_settings: dict = {}
+            conf_mgr = getattr(self.context, "astrbot_config_mgr", None)
+            if conf_mgr is not None and hasattr(conf_mgr, "get_conf"):
+                cfg = conf_mgr.get_conf(event.unified_msg_origin)
+                if cfg:
+                    provider_settings = cfg.get("provider_settings", {}) or {}
+            conversation = getattr(req, "conversation", None)
+            _, persona, _, _ = await pm.resolve_selected_persona(
+                umo=event.unified_msg_origin,
+                conversation_persona_id=getattr(conversation, "persona_id", None),
+                platform_name=event.get_platform_name(),
+                provider_settings=provider_settings,
+            )
+        except Exception:
+            self.logger.exception("解析被测 agent 人格设定失败，评审材料回退未捕获占位")
+            return ""
+        if not persona:
+            return ""
+        return _format_persona_snapshot(persona)

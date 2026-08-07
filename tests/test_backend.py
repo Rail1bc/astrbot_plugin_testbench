@@ -630,6 +630,25 @@ class FakeContext:
         """插件注册 Web API 时静默忽略（测试不需要真实注册）。"""
 
 
+class FakePersonaManager:
+    """模拟人格管理器：resolve_selected_persona 返回可配置 persona 并记录调用。"""
+
+    def __init__(
+        self,
+        persona: dict | None = None,
+        raise_on_call: bool = False,
+    ) -> None:
+        self.persona = persona
+        self._raise = raise_on_call
+        self.calls: list[dict] = []
+
+    async def resolve_selected_persona(self, **kwargs) -> tuple:
+        self.calls.append(kwargs)
+        if self._raise:
+            raise RuntimeError("人格解析失败")
+        return ("p_id", self.persona, None, False)
+
+
 def make_plugin_request(body: dict = None, query: str = "") -> PluginRequest:
     """构造一个带 JSON body 的 PluginRequest（需要与 handler 在同一异步上下文）。"""
 
@@ -4811,7 +4830,8 @@ async def test_assessor_step_llm_ok_with_context_modes():
     prompt = provider.calls[0]["prompt"]
     # 未捕获系统提示词 → 注入块占位文案仍存在，多轮记录随后
     assert prompt.startswith(
-        "【被测 Agent 系统提示词】\n（未捕获到被测 agent 系统提示词）\n\n"
+        "【以下是被测 Agent 系统提示词】\n（未捕获到被测 agent 系统提示词）\n"
+        "【以上是被测 Agent 系统提示词】\n\n"
     )
     assert "第 1 步:" in prompt
     # 结构化评审材料：中文标签块标注身份与输入/输出分界
@@ -5057,6 +5077,105 @@ async def test_plugin_on_llm_snapshots_actual_input():
     }
 
 
+def test_format_persona_snapshot():
+    """人格快照文本：prompt + 开场对话；两者都空 → 空串。"""
+    assert main_mod._format_persona_snapshot({}) == ""
+    persona = {
+        "prompt": "你是寒露",
+        "_begin_dialogs_processed": [
+            {"role": "user", "content": "你好", "_no_save": True},
+            {"role": "assistant", "content": "寒露在呢", "_no_save": True},
+        ],
+    }
+    out = main_mod._format_persona_snapshot(persona)
+    assert out.startswith("# Persona Instructions\n\n你是寒露\n")
+    assert "# 开场对话（begin_dialogs）\n\nuser: 你好\nassistant: 寒露在呢" in out
+    # 只有开场对话（begin_dialogs 型人格）→ 只出开场对话段
+    out2 = main_mod._format_persona_snapshot(
+        {"prompt": "", "_begin_dialogs_processed": [{"role": "user", "content": "hi"}]}
+    )
+    assert "Persona Instructions" not in out2
+    assert "user: hi" in out2
+
+
+@pytest.mark.asyncio
+async def test_resolve_persona_system_prompt_defensive():
+    """回退解析防御式：无 persona_manager / 解析异常 → 空串（评审占位兜底）。"""
+    queue = asyncio.Queue()
+    plugin = main_mod.VirtualSessionPlugin(FakeContext(queue))
+    ev = VirtualMessageEvent.create(
+        session_id="vs_1", sender_id="u1", sender_name="用户1", text="hi"
+    )
+    req = SimpleNamespace(conversation=None)
+    # FakeContext 无 persona_manager → 空串
+    assert await plugin._resolve_persona_system_prompt(ev, req) == ""
+    # persona_manager 解析异常 → 空串
+    plugin.context.persona_manager = FakePersonaManager(raise_on_call=True)
+    assert await plugin._resolve_persona_system_prompt(ev, req) == ""
+    # 无人格 → 空串
+    plugin.context.persona_manager = FakePersonaManager(persona=None)
+    assert await plugin._resolve_persona_system_prompt(ev, req) == ""
+
+
+@pytest.mark.asyncio
+async def test_resolve_persona_system_prompt_from_conf():
+    """回退解析从配置档案解析人格：prompt + 开场对话合入快照系统提示词。"""
+    queue = asyncio.Queue()
+    plugin = main_mod.VirtualSessionPlugin(FakeContext(queue))
+    plugin.context.persona_manager = FakePersonaManager(
+        persona={
+            "prompt": "你是寒露",
+            "_begin_dialogs_processed": [{"role": "user", "content": "你好"}],
+        }
+    )
+    ev = VirtualMessageEvent.create(
+        session_id="vs_1", sender_id="u1", sender_name="用户1", text="hi"
+    )
+    req = SimpleNamespace(conversation=SimpleNamespace(persona_id="p_hanlu"))
+    out = await plugin._resolve_persona_system_prompt(ev, req)
+    assert out.startswith("# Persona Instructions\n\n你是寒露\n")
+    assert "user: 你好" in out
+    # 会话级 persona_id 与 umo 都传给解析（镜像 _ensure_persona_and_skills）
+    call = plugin.context.persona_manager.calls[0]
+    assert call["umo"] == "webchat:FriendMessage:vs_1"
+    assert call["conversation_persona_id"] == "p_hanlu"
+
+
+@pytest.mark.asyncio
+async def test_plugin_on_llm_persona_fallback():
+    """on_llm：req.system_prompt 为空时回退解析人格（begin_dialogs 型会话）。"""
+    queue = asyncio.Queue()
+    plugin = main_mod.VirtualSessionPlugin(FakeContext(queue))
+    plugin.context.persona_manager = FakePersonaManager(
+        persona={
+            "prompt": "",
+            "_begin_dialogs_processed": [
+                {"role": "user", "content": "你好", "_no_save": True},
+                {"role": "assistant", "content": "寒露在呢", "_no_save": True},
+            ],
+        }
+    )
+    await plugin.runner.start(sessions=[make_session(1)], text="hi")
+    ev = queue.get_nowait()
+    req = SimpleNamespace(
+        prompt="装饰后 prompt", extra_user_content_parts=[], system_prompt=""
+    )
+    await plugin.on_llm(ev, req)
+    snap = ev.get_extra(ve_mod.TESTBENCH_LLM_INPUT_EXTRA_KEY)
+    assert snap["prompt"] == "装饰后 prompt"
+    assert (
+        snap["system_prompt"]
+        == "# 开场对话（begin_dialogs）\n\nuser: 你好\nassistant: 寒露在呢"
+    )
+    # 回退解析不影响非空 system_prompt 的捕获（原样保留）
+    req2 = SimpleNamespace(
+        prompt="p2", extra_user_content_parts=[], system_prompt="真实 SP"
+    )
+    await plugin.on_llm(ev, req2)
+    snap2 = ev.get_extra(ve_mod.TESTBENCH_LLM_INPUT_EXTRA_KEY)
+    assert snap2["system_prompt"] == "真实 SP"
+
+
 def test_build_input_text():
     """实际输入 = prompt + extra parts 拼接；无快照回退原始文本。"""
     text = build_input_text(
@@ -5210,16 +5329,21 @@ async def test_retry_llm_verdict_keeps_agent_system_prompt_field():
 
 
 def test_inject_system_prompt_block():
-    """注入块纯函数：有系统提示词 → 开头注入中文标签块；未捕获 → 占位文案块。"""
+    """注入块纯函数：前后闭合的「以下是/以上是」块包裹；未捕获 → 占位文案块。"""
     ctx = "【输入 · user（测试台）】\n问\n\n【输出 · agent（virtual_bot）】\n答"
     out = inject_system_prompt_block(ctx, "你是助手")
-    assert out == "【被测 Agent 系统提示词】\n你是助手\n\n" + ctx
+    assert out == (
+        "【以下是被测 Agent 系统提示词】\n你是助手\n"
+        "【以上是被测 Agent 系统提示词】\n\n" + ctx
+    )
     # 未捕获（None / 空串）→ 注入块仍存在，显示占位文案（详情可确认链路状态）
     assert inject_system_prompt_block(ctx, None) == (
-        "【被测 Agent 系统提示词】\n（未捕获到被测 agent 系统提示词）\n\n" + ctx
+        "【以下是被测 Agent 系统提示词】\n（未捕获到被测 agent 系统提示词）\n"
+        "【以上是被测 Agent 系统提示词】\n\n" + ctx
     )
     assert inject_system_prompt_block(ctx, "") == (
-        "【被测 Agent 系统提示词】\n（未捕获到被测 agent 系统提示词）\n\n" + ctx
+        "【以下是被测 Agent 系统提示词】\n（未捕获到被测 agent 系统提示词）\n"
+        "【以上是被测 Agent 系统提示词】\n\n" + ctx
     )
 
 
@@ -5258,7 +5382,9 @@ async def test_assessor_inject_system_prompt_rule_level():
     steps = make_steps({"kind": "llm", "profile_id": "rp_test", "context": "reply"})
     await assessor.assess(steps, [], [])
     prompt = provider.calls[0]["prompt"]
-    assert prompt.startswith("【被测 Agent 系统提示词】\n被测 SP\n\n")
+    assert prompt.startswith(
+        "【以下是被测 Agent 系统提示词】\n被测 SP\n【以上是被测 Agent 系统提示词】\n\n"
+    )
     # 注入后的上下文随 verdict 落盘（报告评审重试据此自包含）
     verdict = steps[0]["results"][0]["verdicts"][0]
     assert verdict["context_text"] == prompt
@@ -5293,7 +5419,8 @@ async def test_assessor_inject_system_prompt_rule_level():
     await assessor3.assess(steps3, [], [])
     prompt3 = provider3.calls[0]["prompt"]
     assert prompt3.startswith(
-        "【被测 Agent 系统提示词】\n（未捕获到被测 agent 系统提示词）\n\n"
+        "【以下是被测 Agent 系统提示词】\n（未捕获到被测 agent 系统提示词）\n"
+        "【以上是被测 Agent 系统提示词】\n\n"
     )
     assert "【输入 · user（测试台）】" in prompt3
 

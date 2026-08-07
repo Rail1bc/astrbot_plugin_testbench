@@ -34,6 +34,7 @@
 - **状态条消息内容固定高度、过长滚动**：`.run-status` 直接内联当前消息内容（测试集运行进度含完整 stepText），长文本 / 多行消息会把状态条顶高、挤压下方视图；限高（max-height 72px）+ 纵向滚动查看并保留换行（pre-wrap）——常态生效，不限于执行测试集。
 - **`{{agent_system_prompt}}` 占位符弃用，被测 agent 系统提示词改由规则级开关注入**：占位符展开依赖评审 Provider 把 system_prompt 真正传给评审 LLM——部分 Provider 忽略 / 改写 system_prompt，内容到不了评审 LLM；改为 LLM 断言**规则级**「注入提示词」开关（`rule.inject_system_prompt`，缺省开启，显式 false 才落盘）把被测 agent 的装饰后系统提示词注入评审输入（prompt）开头（`【被测 Agent 系统提示词】` 标签块，`Assessor.inject_system_prompt_block`）——prompt 是所有 Provider 必传的，对该问题天然免疫；`call_reviewer` 不再接收 / 展开占位符，残留字面量清成空串；verdict 的 `agent_system_prompt` 字段保留作信息（评审重试用存储的 `context_text`，已含注入内容，自包含）。
 - **未捕获到被测 agent 系统提示词时注入块仍存在**：开启注入（缺省）时评审输入恒以 `【被测 Agent 系统提示词】` 标签块开头——捕获到内容则注入全文，未捕获 / 为空则显示占位文案「（未捕获到被测 agent 系统提示词）」，报告评审详情可直观确认注入链路状态，不再与未开启注入的表现无异（此前无快照时该块整个消失，排查困难）。
+- **注入块改前后闭合标签 + 空系统提示词时回退解析人格**：注入块由单侧标签 `【被测 Agent 系统提示词】` 改为前后闭合的 `【以下是被测 Agent 系统提示词】…【以上是被测 Agent 系统提示词】`，长提示词也能清晰区分块边界（沿用中文标签块，避免与注入的 XML 标记冲突）；同时 `on_llm` 捕获到 `req.system_prompt` 为空时（**开场对话（begin_dialogs）型人格**把身份文本注入 `req.contexts` 对话历史而非 system_prompt，这类会话的快照系统提示词恒为空）回退从会话配置档案解析人格（`persona_manager.resolve_selected_persona`，经会话 umo + 会话级 persona_id + 档案 provider_settings，镜像框架装饰路径），把人格提示词与开场对话补进快照，评审 LLM 仍能看到被测 agent 的人格设定；解析失败 / 无人格回退未捕获占位。
 
 ### 🧪 Tests (测试)
 
@@ -48,6 +49,7 @@
 - 前端静态检查 +1：`test_frontend_message_editor_defaults_and_slice` 默认 0 断言 / textarea / hidden 修复 / slice 输入标记（61 → 62）。
 - 前端静态检查 +1：`test_frontend_run_status_scroll` 状态条消息限高滚动标记（62 → 63）。
 - 后端 +2：`test_inject_system_prompt_block` 注入块纯函数 + `test_assessor_inject_system_prompt_rule_level` 规则级注入开关（缺省注入 / 显式 false 不注入 / 无 llm_input 快照注入占位块）（229 → 231）。
+- 后端 +4：`test_format_persona_snapshot` 人格快照纯函数、`test_resolve_persona_system_prompt_defensive` 回退解析防御式（无 persona_manager / 解析异常 / 无人格 → 空串）、`test_resolve_persona_system_prompt_from_conf` 从配置档案解析（prompt + 开场对话合入、会话级 persona_id 与 umo 透传）、`test_plugin_on_llm_persona_fallback` 空 system_prompt 时 on_llm 回退补人格（231 → 235）。
 - 前端静态检查 +1：`test_frontend_llm_rule_inject_system_prompt` 注入开关静态标记（editor_js 的 `.ts-msg-rule-inject` 复选框 / collectRules 透传 / 占位符废弃文案 / css 样式，63 → 64）。
 - pure.js 动态测试 +3：buildRule 注入开关分支（缺省与 true → 不带 `inject_system_prompt`、显式 false → 字段、collectRules 透传 injectSystemPrompt）（51 → 54 断言组）。
 

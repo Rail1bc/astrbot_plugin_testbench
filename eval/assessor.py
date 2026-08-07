@@ -94,10 +94,14 @@ def inject_system_prompt_block(
     system_prompt 真正发给评审 LLM，占位符内容到不了模型）；改为注入评审
     输入（prompt）开头——prompt 是所有 Provider 必传的。注入块恒存在：未捕获
     （无快照）或内容为空时显示占位文案，报告详情可直观确认注入链路状态，
-    不静默吞掉。
+    不静默吞掉。用前后闭合的「以下是 / 以上是」块包裹内容，长提示词也能
+    清晰区分块边界（沿用中文标签块，避免与注入的 XML 标记冲突）。
     """
     content = agent_system_prompt or "（未捕获到被测 agent 系统提示词）"
-    return f"【被测 Agent 系统提示词】\n{content}\n\n{context_text}"
+    return (
+        f"【以下是被测 Agent 系统提示词】\n{content}\n"
+        f"【以上是被测 Agent 系统提示词】\n\n{context_text}"
+    )
 
 
 class Assessor:
