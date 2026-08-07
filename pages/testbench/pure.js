@@ -42,8 +42,10 @@ export function rangesFromFlags(flags) {
 // sliceRange（消息规则的切片范围输入，仅 context=slice 时生效）：合法输入
 // "2-4" / "3" / "3-4,10-12"（多段逗号分隔）经 parseSliceRange 解析为 0 基
 // {from, to} 区间列表写入 rule.slice_range，空 / "all" / 非法输入不写入
-// （回退该步及之前全部记录）
-export function buildRule(type, value, profileId, context, sliceRange) {
+// （回退该步及之前全部记录）。injectSystemPrompt（LLM 规则级「注入被测
+// Agent 系统提示词」开关，缺省开启）：显式 false 才写入
+// rule.inject_system_prompt（缺省时后端按开启处理，字段保持干净）
+export function buildRule(type, value, profileId, context, sliceRange, injectSystemPrompt) {
   if (!type) return null;
   if (type === "llm") {
     if (!profileId) return null;
@@ -53,6 +55,7 @@ export function buildRule(type, value, profileId, context, sliceRange) {
       const sc = parseSliceRange(sliceRange);
       if (sc && sc !== "all") rule.slice_range = sc;
     }
+    if (injectSystemPrompt === false) rule.inject_system_prompt = false;
     return rule;
   }
   if (RULE_VALUE_TYPES.has(type)) {
@@ -67,12 +70,19 @@ export function buildRule(type, value, profileId, context, sliceRange) {
   return { type };
 }
 
-// 行内多断言收集：ruleInputs 为 [{type, value, profileId, context, sliceRange?}]，
-// buildRule 归为 null 的整行丢弃
+// 行内多断言收集：ruleInputs 为 [{type, value, profileId, context, sliceRange?,
+// injectSystemPrompt?}]，buildRule 归为 null 的整行丢弃
 export function collectRules(ruleInputs) {
   const rules = [];
   for (const r of ruleInputs || []) {
-    const rule = buildRule(r.type, r.value, r.profileId, r.context, r.sliceRange);
+    const rule = buildRule(
+      r.type,
+      r.value,
+      r.profileId,
+      r.context,
+      r.sliceRange,
+      r.injectSystemPrompt,
+    );
     if (rule) rules.push(rule);
   }
   return rules;

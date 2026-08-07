@@ -73,6 +73,7 @@ Assessor = assr_mod.Assessor
 build_input_text = assr_mod.build_input_text
 format_turn = assr_mod.format_turn
 format_record = assr_mod.format_record
+inject_system_prompt_block = assr_mod.inject_system_prompt_block
 validate_profile = rev_mod.validate_profile
 metrics_contract_description = rev_mod.metrics_contract_description
 expand_prompt = rev_mod.expand_prompt
@@ -5128,30 +5129,20 @@ async def test_assessor_uses_actual_input_and_identity():
 
 
 @pytest.mark.asyncio
-async def test_call_reviewer_agent_system_prompt_placeholder():
-    """{{agent_system_prompt}}：传入展开为被测 agent 提示词，未传展开为空串。"""
+async def test_call_reviewer_deprecated_agent_system_prompt_placeholder_cleared():
+    """{{agent_system_prompt}} 占位符已废弃：残留字面量被清空，不再展开。"""
     profile = {
         **_valid_profile(),
         "system_prompt": "结合被测提示词评审：{{agent_system_prompt}}",
     }
     provider = FakeLLMProvider("prov_r", responses=['{"score": 88, "level": "好"}'])
     _, error, status, _ = await call_reviewer(
-        FakeContext(providers=[provider]),
-        profile,
-        "上下文",
-        agent_system_prompt="被测 SP",
+        FakeContext(providers=[provider]), profile, "上下文"
     )
     assert status is None and error is None
-    assert provider.calls[0]["system_prompt"] == "结合被测提示词评审：被测 SP"
-
-    # 未提供 → 空串（无字面量占位符残留）
-    provider2 = FakeLLMProvider("prov_r", responses=['{"score": 88, "level": "好"}'])
-    _, _, status2, _ = await call_reviewer(
-        FakeContext(providers=[provider2]), profile, "上下文"
-    )
-    assert status2 is None
-    assert "{{agent_system_prompt}}" not in provider2.calls[0]["system_prompt"]
-    assert provider2.calls[0]["system_prompt"].endswith("：")
+    # 占位符不再展开为被测 agent 提示词（该机制已废弃），字面量清成空串
+    assert provider.calls[0]["system_prompt"] == "结合被测提示词评审："
+    assert "{{" not in provider.calls[0]["system_prompt"]
 
 
 def test_llm_verdict_stores_agent_system_prompt():
@@ -5186,8 +5177,8 @@ def test_llm_verdict_stores_agent_system_prompt():
 
 
 @pytest.mark.asyncio
-async def test_retry_llm_verdict_passes_agent_system_prompt():
-    """报告评审重试透传 agent_system_prompt：重跑时占位符不再保持字面量。"""
+async def test_retry_llm_verdict_keeps_agent_system_prompt_field():
+    """报告评审重试保留 agent_system_prompt 字段（信息用）；占位符字面量清空。"""
     profile = {
         **_valid_profile(),
         "system_prompt": "SP: {{agent_system_prompt}}",
@@ -5208,8 +5199,93 @@ async def test_retry_llm_verdict_passes_agent_system_prompt():
         FakeContext(providers=[provider]), profile, verdict
     )
     assert err is None and new["status"] == "ok"
-    assert provider.calls[0]["system_prompt"] == "SP: 被测 SP"
+    # 占位符不再展开（已废弃）——字面量清空；重跑用存储的 context_text 喂 prompt
+    assert provider.calls[0]["system_prompt"] == "SP: "
+    assert provider.calls[0]["prompt"] == "上下文"
     assert new["agent_system_prompt"] == "被测 SP"
+
+
+def test_inject_system_prompt_block():
+    """注入块纯函数：有系统提示词 → 开头注入中文标签块；空 / 无 → 原样返回。"""
+    ctx = "【输入 · user（测试台）】\n问\n\n【输出 · agent（virtual_bot）】\n答"
+    out = inject_system_prompt_block(ctx, "你是助手")
+    assert out == "【被测 Agent 系统提示词】\n你是助手\n\n" + ctx
+    # 未捕获（None / 空串）→ 原样返回（不注入空块）
+    assert inject_system_prompt_block(ctx, None) == ctx
+    assert inject_system_prompt_block(ctx, "") == ctx
+
+
+@pytest.mark.asyncio
+async def test_assessor_inject_system_prompt_rule_level():
+    """LLM 断言规则级注入开关：缺省开启、inject_system_prompt=false 关闭。"""
+    profile = _valid_profile()
+
+    def make_provider():
+        return FakeLLMProvider("prov_r", responses=['{"score": 90, "level": "好"}'])
+
+    def make_steps(rule: dict) -> list[dict]:
+        return [
+            {
+                "status": "done",
+                "text": "问",
+                "rules": [rule],
+                "results": [
+                    {
+                        "session_id": "vs_1",
+                        "reply": "回答",
+                        "status": "ok",
+                        "llm_input": {
+                            "prompt": "实际输入",
+                            "extra_parts": [],
+                            "system_prompt": "被测 SP",
+                        },
+                    }
+                ],
+            }
+        ]
+
+    # 缺省（不写字段）→ 注入被测 agent 系统提示词到评审输入开头
+    provider = make_provider()
+    assessor = Assessor(FakeContext(providers=[provider]), {"rp_test": profile})
+    steps = make_steps({"kind": "llm", "profile_id": "rp_test", "context": "reply"})
+    await assessor.assess(steps, [], [])
+    prompt = provider.calls[0]["prompt"]
+    assert prompt.startswith("【被测 Agent 系统提示词】\n被测 SP\n\n")
+    # 注入后的上下文随 verdict 落盘（报告评审重试据此自包含）
+    verdict = steps[0]["results"][0]["verdicts"][0]
+    assert verdict["context_text"] == prompt
+
+    # inject_system_prompt=false → 不注入（评审输入即原结构化材料）
+    provider2 = make_provider()
+    assessor2 = Assessor(FakeContext(providers=[provider2]), {"rp_test": profile})
+    steps2 = make_steps(
+        {
+            "kind": "llm",
+            "profile_id": "rp_test",
+            "context": "reply",
+            "inject_system_prompt": False,
+        }
+    )
+    await assessor2.assess(steps2, [], [])
+    prompt2 = provider2.calls[0]["prompt"]
+    assert "被测 Agent 系统提示词" not in prompt2
+    assert prompt2.startswith("【输入 · user（测试台）】")
+
+    # 开启但未捕获系统提示词（无 llm_input 快照）→ 不注入（无内容可注入）
+    provider3 = make_provider()
+    assessor3 = Assessor(FakeContext(providers=[provider3]), {"rp_test": profile})
+    steps3 = [
+        {
+            "status": "done",
+            "text": "问",
+            "rules": [{"kind": "llm", "profile_id": "rp_test", "context": "reply"}],
+            "results": [{"session_id": "vs_1", "reply": "回答", "status": "ok"}],
+        }
+    ]
+    await assessor3.assess(steps3, [], [])
+    prompt3 = provider3.calls[0]["prompt"]
+    assert "被测 Agent 系统提示词" not in prompt3
+    assert prompt3.startswith("【输入 · user（测试台）】")
 
 
 def test_result_summary_carries_llm_input():

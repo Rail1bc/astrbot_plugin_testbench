@@ -1046,6 +1046,24 @@ code {
   flex-shrink: 0;
 }
 
+/* 「注入被测 Agent 系统提示词」开关（LLM 评审断言）：紧凑复选框，不换行 */
+.ts-msg-rule-inject {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}
+
+.ts-msg-rule-inject input {
+  margin: 0;
+  cursor: pointer;
+}
+
 /* 评审 Profile 管理区：摘要 + 新建/编辑/删除按钮 */
 .ts-reviewer {
   display: flex;

@@ -1034,6 +1034,35 @@ def test_frontend_llm_rule_row():
     assert "未选择评审 Profile" in editor_js, "保存前未拦截未选 profile 的 LLM 规则"
 
 
+def test_frontend_llm_rule_inject_system_prompt():
+    """LLM 评审断言须含规则级「注入被测 Agent 系统提示词」开关（缺省开启）。
+
+    开关粒度是单个断言而非测试集（用户澄清）：testset_editor.js 的 LLM 字段区
+    渲染 .ts-msg-rule-inject 复选框（缺省勾选），消息规则与最终断言收集都读入
+    injectSystemPrompt 传给 buildRule；pure.js 只在显式关闭时写入
+    rule.inject_system_prompt（缺省不写字段，后端按开启处理）；评审 Profile 表单
+    提示 {{agent_system_prompt}} 占位符已废弃、改由断言行开关注入。
+    """
+    editor_js = _read_module("testset_editor")
+    pure_js = _read_module("pure")
+    list_js = _read_module("testset_list")
+    css = (PLUGIN_DIR / "pages" / "testbench" / "style.css").read_text(encoding="utf-8")
+    assert 'className = "ts-msg-rule-inject"' in editor_js, "LLM 字段区缺少注入开关"
+    assert "注入提示词" in editor_js, "注入开关缺少可见标签"
+    assert 'injectSystemPrompt: llmBox.querySelector(".ts-msg-rule-inject input")' in (
+        editor_js
+    ), "消息规则收集未读入注入开关"
+    assert 'llmBox.querySelector(".ts-msg-rule-inject input").checked' in editor_js, (
+        "最终断言收集未读入注入开关"
+    )
+    assert "injectSystemPrompt === false" in pure_js, "buildRule 未按显式关闭写入字段"
+    assert "rule.inject_system_prompt = false" in pure_js, (
+        "buildRule 未写入 inject_system_prompt=false"
+    )
+    assert "占位符已废弃" in list_js, "Profile 表单未提示占位符已废弃"
+    assert ".ts-msg-rule-inject" in css, "style.css 缺少注入开关样式"
+
+
 def test_frontend_final_rules_editor():
     """测试集编辑窗口须含最终断言（跨轮）编辑区。
 

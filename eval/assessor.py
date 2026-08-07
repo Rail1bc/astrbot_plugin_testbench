@@ -6,7 +6,10 @@
   若某条机械规则未通过，同步骤后续 LLM 规则跳过（短路——成本 / 不确定性
   控制）。verdicts 写入该步骤对应会话的 results。LLM 规则 context=slice 时可
   配 ``rule.slice_range``（{from, to} 0 基闭区间列表，支持多段）限定喂给评审
-  LLM 的记录区间（未配时与 record 等效，即该步及之前全部记录）。
+  LLM 的记录区间（未配时与 record 等效，即该步及之前全部记录）。LLM 规则可
+  配 ``rule.inject_system_prompt``（缺省开启）：开启时在评审输入开头注入被测
+  agent 的（装饰后）系统提示词（占位符展开已废弃，注入 prompt 对所有
+  Provider 生效）。
 - **final_rules**：测试集级跨轮评估。每条 final_rule × 每会话，按 scope 切片
   步骤后评估整段记录；机械规则评估切片回复的拼接文本，LLM 规则按
   context（reply / record / slice）取上下文（final rule 的范围由 scope 承担，
@@ -80,6 +83,21 @@ def _session_agent_system_prompt(result: dict) -> str | None:
         if sp:
             return str(sp)
     return None
+
+
+def inject_system_prompt_block(
+    context_text: str, agent_system_prompt: str | None
+) -> str:
+    """把被测 agent 的（装饰后）系统提示词注入评审上下文开头（规则级可选）。
+
+    ``{{agent_system_prompt}}`` 占位符展开已废弃（部分评审 Provider 不把
+    system_prompt 真正发给评审 LLM，占位符内容到不了模型）；改为注入评审
+    输入（prompt）开头——prompt 是所有 Provider 必传的。未捕获（无快照）或
+    为空时原样返回。
+    """
+    if not agent_system_prompt:
+        return context_text
+    return f"【被测 Agent 系统提示词】\n{agent_system_prompt}\n\n{context_text}"
 
 
 class Assessor:
@@ -321,11 +339,15 @@ class Assessor:
             context_text = format_record(
                 self._slice_entries(entries, rule.get("slice_range"))
             )
+        # 规则级「注入被测 Agent 系统提示词」开关（缺省开启）：在评审输入开头
+        # 注入被测 agent 的装饰后系统提示词，供评审 LLM 对照评估。占位符展开
+        # 已废弃——注入 prompt 开头对所有 Provider 生效。
+        if rule.get("inject_system_prompt", True):
+            context_text = inject_system_prompt_block(context_text, agent_system_prompt)
         metrics, error, status, raw = await call_reviewer(
             self.context,
             profile,
             context_text,
-            agent_system_prompt=agent_system_prompt,
         )
         return llm_verdict(
             rule_index,

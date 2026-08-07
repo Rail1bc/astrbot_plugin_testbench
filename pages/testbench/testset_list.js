@@ -439,7 +439,7 @@ export function createTestsetList(env) {
     const agentPromptHint = document.createElement("p");
     agentPromptHint.className = "hint";
     agentPromptHint.textContent =
-      "提示词还可用 {{agent_system_prompt}} 占位符：运行时展开为被测 agent 的装饰后系统提示词（未捕获时为空串），由你在提示词中自行编排。";
+      "{{agent_system_prompt}} 占位符已废弃（评审 Provider 可能不透传系统提示词，内容到不了评审 LLM）：被测 agent 的系统提示词改由测试集里 LLM 断言行的「注入提示词」开关注入到评审输入开头。";
 
     const metricsBox = buildMetricsEditor(existing ? existing.metrics : null);
 

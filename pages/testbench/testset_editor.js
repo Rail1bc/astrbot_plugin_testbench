@@ -290,9 +290,25 @@ export function createTestsetEditor(env) {
     return inp;
   }
 
-  // LLM 规则字段区（profile + context 下拉 + 可选切片范围输入）；规则行与
-  // 最终断言行共用。withSlice 为真时（消息规则）提供切片范围输入——最终断言
-  // 的范围由行内 scope 输入承担，不重复配置
+  // 「注入被测 Agent 系统提示词」开关（仅 LLM 评审断言，规则级）：缺省开启，
+  // 关闭时评审输入开头不注入被测 agent 的（装饰后）系统提示词。占位符展开已
+  // 废弃——注入走评审输入（prompt）开头，对所有 Provider 生效
+  function buildInjectCb(rule) {
+    const label = document.createElement("label");
+    label.className = "ts-msg-rule-inject";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = !(rule && rule.inject_system_prompt === false);
+    cb.title =
+      "LLM 评审时在评审输入开头注入被测 Agent 的系统提示词（未捕获时自动跳过）";
+    label.append(cb, document.createTextNode("注入提示词"));
+    cb.addEventListener("change", markDirty);
+    return label;
+  }
+
+  // LLM 规则字段区（profile + context 下拉 + 可选切片范围输入 + 注入开关）；
+  // 规则行与最终断言行共用。withSlice 为真时（消息规则）提供切片范围输入——
+  // 最终断言的范围由行内 scope 输入承担，不重复配置
   function buildLlmBox(rule, withSlice) {
     const box = document.createElement("span");
     box.className = "ts-msg-rule-llm";
@@ -305,6 +321,7 @@ export function createTestsetEditor(env) {
     refreshSliceVisible();
     box.append(buildProfileSelect(rule), ctxSel);
     if (sliceInp) box.append(sliceInp);
+    box.append(buildInjectCb(rule));
     return box;
   }
 
@@ -688,6 +705,7 @@ export function createTestsetEditor(env) {
         llmBox.querySelector(".ts-msg-rule-profile").value,
         llmBox.querySelector(".ts-msg-rule-context").value,
         sliceEl ? sliceEl.value : "",
+        llmBox.querySelector(".ts-msg-rule-inject input").checked,
       );
       if (!rule) continue;
       const scope = parseScope(wrap.querySelector(".ts-final-rule-scope").value);
@@ -758,6 +776,7 @@ export function createTestsetEditor(env) {
           profileId: llmBox.querySelector(".ts-msg-rule-profile").value,
           context: llmBox.querySelector(".ts-msg-rule-context").value,
           sliceRange: sliceEl ? sliceEl.value : "",
+          injectSystemPrompt: llmBox.querySelector(".ts-msg-rule-inject input").checked,
         });
       }
       const text = row.querySelector(".ts-msg-text").value;

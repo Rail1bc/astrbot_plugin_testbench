@@ -32,6 +32,7 @@
 - **LLM 规则 slice 上下文可配范围切片**：消息级 LLM 规则选「范围切片记录」后新增范围输入（`rule.slice_range`，0 基闭区间，格式同最终断言范围「2-4 / 3 / 空=全部」）；后端 `Assessor._slice_entries` 按范围切片喂给评审 LLM 的记录并钳制边界（越界裁剪 / 倒序空 / 非法回退全部），未配范围时与 record 等效。
 - **切片范围支持多段**：切片范围输入可写多个段（逗号分隔，如 `3-4,10-12`），`rule.slice_range` 扩展为 0 基闭区间**列表**（仍兼容旧版单段 dict 存量数据）；`Assessor._slice_entries` 逐段切片拼接（越界裁剪 / 倒序段跳过 / 形状非法回退全部）；前端 `parseSliceRange` / `sliceRangeToText` 为多段解析与编辑回填（纯函数层，node:test 覆盖）。
 - **状态条消息内容固定高度、过长滚动**：`.run-status` 直接内联当前消息内容（测试集运行进度含完整 stepText），长文本 / 多行消息会把状态条顶高、挤压下方视图；限高（max-height 72px）+ 纵向滚动查看并保留换行（pre-wrap）——常态生效，不限于执行测试集。
+- **`{{agent_system_prompt}}` 占位符弃用，被测 agent 系统提示词改由规则级开关注入**：占位符展开依赖评审 Provider 把 system_prompt 真正传给评审 LLM——部分 Provider 忽略 / 改写 system_prompt，内容到不了评审 LLM；改为 LLM 断言**规则级**「注入提示词」开关（`rule.inject_system_prompt`，缺省开启，显式 false 才落盘）把被测 agent 的装饰后系统提示词注入评审输入（prompt）开头（`【被测 Agent 系统提示词】` 标签块，`Assessor.inject_system_prompt_block`）——prompt 是所有 Provider 必传的，对该问题天然免疫；`call_reviewer` 不再接收 / 展开占位符，残留字面量清成空串；verdict 的 `agent_system_prompt` 字段保留作信息（评审重试用存储的 `context_text`，已含注入内容，自包含）。
 
 ### 🧪 Tests (测试)
 
@@ -45,6 +46,9 @@
 - pure.js 动态测试 +5：多段切片范围（buildRule slice 多段、parseSliceRange 空 / 多段 / 非法、sliceRangeToText 回填，46 → 51 断言组）。
 - 前端静态检查 +1：`test_frontend_message_editor_defaults_and_slice` 默认 0 断言 / textarea / hidden 修复 / slice 输入标记（61 → 62）。
 - 前端静态检查 +1：`test_frontend_run_status_scroll` 状态条消息限高滚动标记（62 → 63）。
+- 后端 +2：`test_inject_system_prompt_block` 注入块纯函数 + `test_assessor_inject_system_prompt_rule_level` 规则级注入开关（缺省注入 / 显式 false 不注入 / 无 llm_input 快照不注入）（229 → 231）。
+- 前端静态检查 +1：`test_frontend_llm_rule_inject_system_prompt` 注入开关静态标记（editor_js 的 `.ts-msg-rule-inject` 复选框 / collectRules 透传 / 占位符废弃文案 / css 样式，63 → 64）。
+- pure.js 动态测试 +3：buildRule 注入开关分支（缺省与 true → 不带 `inject_system_prompt`、显式 false → 字段、collectRules 透传 injectSystemPrompt）（51 → 54 断言组）。
 
 ---
 

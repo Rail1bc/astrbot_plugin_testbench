@@ -125,6 +125,39 @@ test("buildRule: 非 slice 上下文忽略 sliceRange", () => {
   });
 });
 
+test("buildRule: llm 未显式关闭注入 → 不带 inject_system_prompt", () => {
+  assert.deepEqual(buildRule("llm", "", "rp_1", "reply", "", undefined), {
+    kind: "llm",
+    profile_id: "rp_1",
+    context: "reply",
+  });
+  assert.deepEqual(buildRule("llm", "", "rp_1", "reply", "", true), {
+    kind: "llm",
+    profile_id: "rp_1",
+    context: "reply",
+  });
+});
+
+test("buildRule: llm 显式关闭注入 → inject_system_prompt: false", () => {
+  assert.deepEqual(buildRule("llm", "", "rp_1", "reply", "", false), {
+    kind: "llm",
+    profile_id: "rp_1",
+    context: "reply",
+    inject_system_prompt: false,
+  });
+});
+
+test("collectRules: 透传 injectSystemPrompt 到 buildRule", () => {
+  const out = collectRules([
+    { type: "llm", value: "", profileId: "rp_1", context: "reply", injectSystemPrompt: false },
+    { type: "llm", value: "", profileId: "rp_2", context: "reply", injectSystemPrompt: true },
+  ]);
+  assert.deepEqual(out, [
+    { kind: "llm", profile_id: "rp_1", context: "reply", inject_system_prompt: false },
+    { kind: "llm", profile_id: "rp_2", context: "reply" },
+  ]);
+});
+
 // ---------- collectRules ----------
 
 test("collectRules: 空输入 → []", () => {
