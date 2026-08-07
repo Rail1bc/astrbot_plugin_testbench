@@ -52,7 +52,9 @@ class SessionsAPI(ConfRouteMixin):
             else:
                 overrides[key] = None
 
-        self.group_mgr.update_session(session_id, **overrides)
+        await self.group_mgr.write(
+            self.group_mgr.update_session, session_id, **overrides
+        )
         new_session = self.group_mgr.effective(group, session)
 
         # 平台或消息类型变更会使 umo 变化：清理旧 umo 的路由与对话历史，再按新 umo 同步
@@ -75,7 +77,7 @@ class SessionsAPI(ConfRouteMixin):
         ids = payload.get("ids")
         if not isinstance(ids, list) or not ids:
             return error_response("ids 不能为空", status_code=400)
-        removed = self.group_mgr.delete_sessions(ids)
+        removed = await self.group_mgr.write(self.group_mgr.delete_sessions, ids)
         sessions = [self.group_mgr.effective(group, s) for group, s in removed]
         await self._clear_conf_routes(sessions)
         await self.history_ops.delete_session_conversations(sessions)
@@ -106,8 +108,11 @@ class SessionsAPI(ConfRouteMixin):
         group, session = found
         if len(group.get("sessions", [])) + count > MAX_SESSIONS_PER_GROUP:
             return error_response("克隆后会话数超过测试组上限", status_code=400)
-        created = self.group_mgr.add_sessions(
-            group["id"], count, name_prefix=session.get("name")
+        created = await self.group_mgr.write(
+            self.group_mgr.add_sessions,
+            group["id"],
+            count,
+            name_prefix=session.get("name"),
         )
         resolved_created = [self.group_mgr.effective(group, s) for s in created]
         conf_id = group.get("conf_id") or None
@@ -148,7 +153,8 @@ class SessionsAPI(ConfRouteMixin):
             return error_response("未找到该虚拟会话", status_code=404)
         group, session = found
         name = payload.get("name")
-        new_group = self.group_mgr.create_group(
+        new_group = await self.group_mgr.write(
+            self.group_mgr.create_group,
             name=(
                 f"{group.get('name') or '测试组'} 衍生"
                 if not (isinstance(name, str) and name.strip())

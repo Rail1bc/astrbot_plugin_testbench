@@ -39,6 +39,26 @@ export function createEventController(env) {
     testConsumers.set(testId, { onSession, onAll, seen: new Set(), finished: false });
   }
 
+  // 面板异步补发警告行：pipeline 结束后仍有回复到达（检测不是捕获，内容未计入结果）
+  function renderPanelWarning(panel, warning) {
+    let el = panel.querySelector(".panel-warning");
+    if (!warning) {
+      if (el) el.remove();
+      return;
+    }
+    if (!el) {
+      el = document.createElement("div");
+      el.className = "panel-warning";
+      const status = panel.querySelector(".panel-status");
+      if (status) {
+        status.after(el);
+      } else {
+        panel.querySelector(".panel-body").appendChild(el);
+      }
+    }
+    el.textContent = "⚠ " + warning;
+  }
+
   // 统一的逐会话反馈：手动群发与测试集运行共用（面板显示回复耗时 + 逐会话历史刷新）
   function applySessionFeedback(s) {
     const panel = state.panelEls.get(s.session_id);
@@ -52,6 +72,7 @@ export function createEventController(env) {
           statusText(s.status) + (s.error ? `：${s.error}` : ""),
         );
       }
+      renderPanelWarning(panel, s.warning);
     }
     void env.loadHistory(s.session_id);
   }
@@ -230,7 +251,8 @@ export function createEventController(env) {
       // 从最近运行里找回并接管，否则后台任务在跑、前端却无任何进度。
       try {
         const runs = await listTestsetRuns();
-        const running = (runs || []).find((r) => r.status === "running");
+        // 后端返回 {runs: [...]}（与报告视图一致解包，勿把整个对象当数组）
+        const running = ((runs || {}).runs || []).find((r) => r.status === "running");
         if (running) activeRunId = running.run_id;
       } catch (err) {
         console.warn("拉取最近运行失败:", err);

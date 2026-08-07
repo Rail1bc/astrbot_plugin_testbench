@@ -33,10 +33,17 @@ class MetaAPI:
             except Exception as e:  # noqa: BLE001
                 self.logger.warning(f"读取 Provider {meta.id} 当前模型失败: {e}")
                 current_model = None
+            pc = prov.provider_config or {}
             providers.append(
                 {
-                    "id": (prov.provider_config or {}).get("id") or meta.id,
-                    "name": (prov.provider_config or {}).get("name") or meta.type,
+                    "id": pc.get("id") or meta.id,
+                    "name": (
+                        pc.get("name")
+                        or pc.get("provider_source_id")
+                        or pc.get("id")
+                        or meta.id
+                        or meta.type
+                    ),
                     "type": meta.type,
                     "current_model": current_model,
                     "models": models,

@@ -18,6 +18,8 @@ import {
   getStream,
   listConfs,
   listPlatforms,
+  listProviders,
+  listReviewers,
   ready,
   regenerateHistory,
   resetSessions,
@@ -368,10 +370,14 @@ async function sendToAll() {
         const ok = record.results.filter((r) => r.status === "ok").length;
         const noReply = record.results.filter((r) => r.status === "no_reply").length;
         const err = record.results.filter((r) => r.status === "error").length;
+        const warnings = Array.isArray(record.warnings) ? record.warnings : [];
+        const warnText = warnings.length
+          ? `，⚠ ${warnings.length} 条主动消息警告（定时任务可能向虚拟会话发送消息）`
+          : "";
         showRunStatus(
-          err ? "warn" : "ok",
+          err || warnings.length ? "warn" : "ok",
           `完成：成功 ${ok} / 无回复 ${noReply} / 错误 ${err}` +
-            `，耗时 avg ${s.avg}s，p95 ${s.p95}s`,
+            `，耗时 avg ${s.avg}s，p95 ${s.p95}s${warnText}`,
         );
       },
     );
@@ -739,6 +745,20 @@ async function loadOptions() {
   } catch (err) {
     console.warn("加载配置档案失败:", err);
     state.confs = [];
+  }
+  try {
+    const data = await listProviders();
+    state.providers = Array.isArray(data) ? data : [];
+  } catch (err) {
+    console.warn("加载 Provider 列表失败:", err);
+    state.providers = [];
+  }
+  try {
+    const data = await listReviewers();
+    state.reviewers = Array.isArray(data.reviewers) ? data.reviewers : [];
+  } catch (err) {
+    console.warn("加载评审 Profile 失败:", err);
+    state.reviewers = [];
   }
 }
 

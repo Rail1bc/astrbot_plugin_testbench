@@ -37,14 +37,24 @@
 
         <section class="card testsets-card" hidden>
           <div class="toolbar">
-            <span id="testset-count" class="count-label"></span>
+            <div class="tab-bar">
+              <button class="tab-btn active" data-tab="testset">测试集</button>
+              <button class="tab-btn" data-tab="reviewer">评审 Profile</button>
+            </div>
             <span class="toolbar-spacer"></span>
             <button id="btn-refresh-testsets" class="btn small">刷新</button>
           </div>
-          <div id="testset-list" class="group-list"></div>
-          <div class="recent-runs">
-            <div class="recent-runs-title">最近运行</div>
-            <div id="recent-runs"></div>
+          <div class="tab-pane" data-pane="testset">
+            <div class="toolbar">
+              <span id="testset-count" class="count-label"></span>
+            </div>
+            <div id="testset-list" class="group-list"></div>
+          </div>
+          <div class="tab-pane" data-pane="reviewer" hidden>
+            <div class="toolbar">
+              <span id="reviewer-count" class="count-label"></span>
+            </div>
+            <div id="reviewer-list" class="group-list"></div>
           </div>
         </section>
 
@@ -147,6 +157,7 @@
                 <span id="ts-dirty" class="hint warn-hint" hidden>有未保存的修改</span>
               </div>
               <div class="ts-actions">
+                <button id="btn-ts-mode" class="btn small" title="在「编辑 / 报告」视图之间切换">报告</button>
                 <button id="btn-ts-save" class="btn small">保存修改</button>
                 <button id="btn-ts-run" class="btn small primary">▶ 运行</button>
                 <button id="btn-ts-export" class="btn small">导出</button>
@@ -155,11 +166,43 @@
                 <input id="ts-import-file" type="file" accept=".json,application/json" hidden />
               </div>
             </div>
-            <div id="ts-messages" class="ts-messages"></div>
-            <div class="ts-foot">
-              <button id="btn-ts-add-msg" class="add-block">＋ 添加消息</button>
-              <span id="ts-segments" class="ts-segments"></span>
+            <div id="ts-edit-body">
+              <div class="ts-identity">
+                <span class="ts-identity-caption">发送身份</span>
+                <select id="ts-identity-mode" title="身份模式">
+                  <option value="single">单一身份</option>
+                  <option value="pool">身份池</option>
+                </select>
+                <select
+                  id="ts-identity-ref"
+                  title="单一身份：该测试集所有消息恒用此身份（空 = 默认身份「测试台」）"
+                ></select>
+                <select
+                  id="ts-pool-ref"
+                  title="身份池：消息可引用池内成员身份（空 = 默认身份「测试台」）"
+                  hidden
+                ></select>
+              </div>
+              <div class="ts-final-rules">
+                <div class="ts-final-head">
+                  <span class="ts-identity-caption">最终断言（跨轮）</span>
+                  <button id="btn-ts-add-final" class="btn small">＋ 添加</button>
+                </div>
+                <div id="ts-final-rules" class="ts-final-rules-list"></div>
+              </div>
+              <div class="ts-report">
+                <label class="settings-field">
+                  <input id="ts-report-enabled" type="checkbox" />
+                  <span>运行结束后产出持久化报告（随测试集删除）</span>
+                </label>
+              </div>
+              <div id="ts-messages" class="ts-messages"></div>
+              <div class="ts-foot">
+                <button id="btn-ts-add-msg" class="add-block">＋ 添加消息</button>
+                <span id="ts-segments" class="ts-segments"></span>
+              </div>
             </div>
+            <div id="ts-report-body" class="ts-report-body" hidden></div>
           </section>
         </div>
 

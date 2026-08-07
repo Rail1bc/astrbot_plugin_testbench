@@ -33,6 +33,9 @@ from astrbot.api.platform import (
 LLM_ERROR_MESSAGE_EXTRA_KEY = "_llm_error_message"
 # 与 main.py 的 on_llm hook 约定的 extra 键：标记 LLM 阶段确实被触发
 TESTBENCH_LLM_REQUESTED_EXTRA_KEY = "_testbench_llm_requested"
+# 与 main.py 的 on_llm hook 约定的 extra 键：实际喂给被测 LLM 的输入快照
+# （{"prompt", "extra_parts": [str], "system_prompt"}，供评审材料使用）
+TESTBENCH_LLM_INPUT_EXTRA_KEY = "_testbench_llm_input"
 # 虚拟会话的机器人自身 id（模拟 @机器人 时 At 的目标）
 BOT_SELF_ID = "virtual_bot"
 
@@ -240,4 +243,5 @@ class VirtualMessageEvent(AstrMessageEvent):
             "error": error or self.get_extra(LLM_ERROR_MESSAGE_EXTRA_KEY),
             "wake": wake,
             "reason": reason,
+            "llm_input": self.get_extra(TESTBENCH_LLM_INPUT_EXTRA_KEY),
         }

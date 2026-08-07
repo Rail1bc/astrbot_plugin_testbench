@@ -11,6 +11,8 @@
   --ok: #2f9e5f;
   --code-bg: #f0f2f5;
   --badge-bg: #eef0f3;
+  --bg-secondary: #f0f2f5;
+  --font-mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
 }
 
 [data-theme="dark"] {
@@ -26,6 +28,8 @@
   --ok: #4cbf7a;
   --code-bg: #2a2f38;
   --badge-bg: #2a2f38;
+  --bg-secondary: #2a2f38;
+  --font-mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
 }
 
 * {
@@ -355,6 +359,22 @@ textarea:focus {
   color: var(--warn);
   font-size: 12px;
   line-height: 1.5;
+}
+
+/* 测试集结果 / 报告视图的主动消息警告块（cron 任务可能向虚拟会话发送消息） */
+.warn-block {
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--warn) 35%, transparent);
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+  color: var(--warn);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.warn-block-title {
+  font-weight: 600;
+  margin-bottom: 2px;
 }
 
 .hint {
@@ -802,6 +822,45 @@ code {
   color: var(--danger);
 }
 
+/* 评审失败（LLM 调用失败 / 输出契约不符，pass 为 null）→ 警告色，与不通过区分 */
+.assert-skip {
+  color: var(--warn);
+}
+
+/* verdict 标记即详情入口按钮：点击查看 LLM 评审输出详情 */
+.verdict-chip {
+  background: none;
+  border: none;
+  padding: 0 1px;
+  margin: 0;
+  cursor: pointer;
+  font: inherit;
+  line-height: 1;
+}
+
+.verdict-chip:hover {
+  opacity: 0.7;
+}
+
+.verdict-detail-section {
+  font-weight: 600;
+  margin: 6px 0 4px;
+  color: var(--text-secondary);
+}
+
+.verdict-detail-pre {
+  white-space: pre-wrap;
+  word-break: break-all;
+  margin: 0;
+  padding: 8px;
+  background: var(--badge-bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  max-height: 240px;
+  overflow-y: auto;
+  font-size: 12px;
+}
+
 /* 测试集编辑窗口（右侧视图）：头部 + 消息行 + 批量段摘要 */
 .testset-editor {
   flex: 1;
@@ -836,6 +895,25 @@ code {
   flex-shrink: 0;
 }
 
+/* 发送身份配置行：模式 + 单身份 / 身份池下拉，选中的配置决定行内身份下拉来源 */
+.ts-identity {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.ts-identity select {
+  width: auto;
+  flex-shrink: 0;
+}
+
+.ts-identity-caption {
+  flex-shrink: 0;
+}
+
 .warn-hint {
   color: var(--warn);
 }
@@ -850,7 +928,17 @@ code {
   padding-right: 4px;
 }
 
+/* 消息行：第一行（序号/文本/命令/身份/自动@/批量/删除）+ 下方断言规则列表 */
 .ts-msg-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 10px;
+}
+
+.ts-msg-line {
   display: flex;
   gap: 8px;
   align-items: center;
@@ -869,14 +957,206 @@ code {
   min-width: 0;
 }
 
+/* 命令标记：紧凑开关，与批量勾选同风格 */
+.ts-msg-command {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}
+
+.ts-msg-command input {
+  width: auto;
+  margin: 0;
+  accent-color: var(--primary);
+  cursor: pointer;
+}
+
+/* 断言规则列表：缩进到与消息文本对齐，可多条 */
+.ts-msg-rules {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-left: 32px;
+}
+
+.ts-msg-rule {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
 .ts-msg-rule-type {
-  width: 130px;
+  width: 110px;
   flex-shrink: 0;
 }
 
 .ts-msg-rule-value {
-  width: 170px;
+  flex: 1;
+  min-width: 0;
+}
+
+.ts-msg-rule-del {
   flex-shrink: 0;
+}
+
+/* LLM 评审规则行：类型选择 LLM 时显示 profile + context 两个下拉（替代值输入） */
+.ts-msg-rule-llm {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  gap: 6px;
+}
+
+.ts-msg-rule-profile {
+  flex: 1;
+  min-width: 0;
+}
+
+.ts-msg-rule-context {
+  width: 150px;
+  flex-shrink: 0;
+}
+
+/* 评审 Profile 管理区：摘要 + 新建/编辑/删除按钮 */
+.ts-reviewer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--text-secondary);
+  padding: 4px 0;
+}
+
+.ts-reviewer-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ts-reviewer-summary .hint {
+  margin: 0;
+}
+
+/* 最终断言（跨轮）编辑区：规则行 + 范围输入 */
+.ts-final-rules {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 4px 0;
+}
+
+.ts-final-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ts-final-rule {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.ts-final-rule-scope {
+  width: 92px;
+  flex-shrink: 0;
+}
+
+/* 评审 Profile 表单：指标编辑器（key / type / 附加输入） */
+.metric-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.metric-row .metric-key {
+  width: 120px;
+  flex-shrink: 0;
+}
+
+.metric-row .metric-type {
+  width: 90px;
+  flex-shrink: 0;
+}
+
+.metric-row .metric-extra {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  gap: 6px;
+}
+
+.metric-row .metric-extra input {
+  flex: 1;
+  min-width: 0;
+}
+
+.metric-add {
+  align-self: flex-start;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  padding: 2px 10px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+/* {{metrics}} 展开内容预览（随指标编辑实时更新，只读） */
+.metrics-preview {
+  margin: 0;
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  background: var(--bg-secondary, rgba(127, 127, 127, 0.08));
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  max-height: 200px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.copy-btn {
+  align-self: flex-start;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 10px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.copy-btn:hover {
+  color: var(--text, inherit);
+  border-color: var(--text-secondary);
+}
+
+.ts-msg-add-rule {
+  align-self: flex-start;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  padding: 2px 10px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.ts-msg-add-rule:hover {
+  color: var(--primary);
+  border-color: var(--primary);
 }
 
 .ts-msg-sender {
@@ -931,6 +1211,83 @@ code {
 .ts-segments {
   font-size: 12px;
   color: var(--warn);
+}
+
+/* 报告产出开关（编辑体顶部配置行）：checkbox 与标签同行（settings-field 规则） */
+.ts-report {
+  flex-shrink: 0;
+}
+
+/* 报告视图（页眉「报告」切换）：滚动区 + 分区 + 条目 */
+.ts-report-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding-right: 4px;
+}
+
+.ts-report-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ts-report-section-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.report-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+.report-item-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.report-item-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+/* 报告条目（含总览与操作）：纵向堆叠 */
+.report-item-col {
+  align-items: stretch;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.report-item-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ts-report-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  color: var(--text-secondary);
+}
+
+.metrics-summary {
+  color: var(--text-secondary);
 }
 
 /* 群聊编辑视图（右侧「身份与群聊」视图的工作区）：头部 + 成员区 + 搜索添加区 */
@@ -1684,6 +2041,15 @@ code {
   color: var(--danger);
 }
 
+/* 面板异步补发警告行：pipeline 结束后仍有回复到达（未计入结果） */
+.panel-warning {
+  padding: 6px 12px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--warn);
+  word-break: break-all;
+}
+
 .panel-pending {
   max-height: 96px;
   overflow-y: auto;
@@ -1775,6 +2141,10 @@ code {
   border-radius: 10px;
   padding: 18px 20px;
   width: min(420px, 92vw);
+  /* 内容超过视口高度时弹窗整体限高，正文区内部滚动（操作按钮保持可见） */
+  max-height: min(85vh, 720px);
+  display: flex;
+  flex-direction: column;
 }
 
 .modal.modal-wide {
@@ -1792,6 +2162,14 @@ code {
   font-size: 14px;
   margin-bottom: 10px;
   word-break: break-word;
+}
+
+/* 弹窗正文：超过 .modal 限高时内部滚动；flex: 1 + min-height: 0 使
+   max-height 生效（否则 flex 子项按内容撑高不会收缩） */
+.modal-body {
+  overflow-y: auto;
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
 .settings-field {
@@ -1822,4 +2200,5 @@ code {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+  flex-shrink: 0;
 }

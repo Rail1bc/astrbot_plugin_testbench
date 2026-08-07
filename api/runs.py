@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from astrbot.api.web import error_response, json_response, request
 
+from ..core.cron_probe import collect_cron_warnings, target_sets
+
 
 class RunsAPI:
     """手动群发（/test/run）与其状态/在途查询（LLM 阶段 hook 仍在 main.py）。"""
@@ -40,6 +42,12 @@ class RunsAPI:
         if not isinstance(auto_at, bool):
             return error_response("auto_at 必须是布尔值", status_code=400)
         try:
+            # 启动前探测 cron 任务：把可能向虚拟会话发送主动消息的任务作为
+            # 运行级警告随 status()/事件流呈现（检测是增强，失败降级为无警告）
+            umos, session_ids = target_sets(session_objs)
+            warnings = await collect_cron_warnings(
+                getattr(self.context, "cron_manager", None), umos, session_ids
+            )
             test_id = await self.runner.start(
                 sessions=session_objs,
                 text=text,
@@ -50,6 +58,7 @@ class RunsAPI:
                 sender_id=sender_id,
                 sender_name=sender_name,
                 auto_at=auto_at,
+                warnings=warnings,
             )
         except ValueError as e:
             return error_response(str(e), status_code=400)
