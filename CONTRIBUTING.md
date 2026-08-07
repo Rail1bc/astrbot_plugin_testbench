@@ -48,8 +48,8 @@
     git clone https://github.com/Rail1bc/astrbot_plugin_testbench.git
     ```
 
-3. 确保您已安装 Python 3.10+。
-4. 安装项目依赖（通常 AstrBot 环境已包含大部分依赖，并且会自动安装插件所需的额外依赖。如果确实缺少依赖请查看 `requirements.txt`）。
+3. 确保您已安装 Python 3.12+（与 AstrBot 一致，插件 ruff 的 target-version 为 py312）。
+4. 安装项目依赖（插件**无第三方依赖**，只依赖 AstrBot 公共 API，不需要 `requirements.txt`；AstrBot 环境已提供全部所需）。
 
 ### 代码风格
 
@@ -61,7 +61,7 @@
 
 ### 提交 Pull Request (PR)
 
-1. **创建分支**：从仓库的最新开发分支，在本项目通常是 `dev/X.X.X` 或 `dev/local` 分支创建一个新的功能分支。
+1. **创建分支**：从仓库的开发分支 `dev` 创建一个新的功能分支（所有开发都在 `dev` 上进行，`main` 仅用于发布）。
 
     ```bash
     git checkout -b feat/your-feature-name
