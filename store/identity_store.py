@@ -104,10 +104,37 @@ class IdentityStore:
         directory = base / "virtual_session"
         directory.mkdir(parents=True, exist_ok=True)
         self._store = _ListStore(directory / "identities.json")
+        # sender_id → 管理员 惰性索引：首次查询时构建，写操作（create/update/
+        # delete）后失效，下次查询重建。runner 每次发送都要查一次角色，身份库
+        # 膨胀后线性扫描是热点（_resolve_role 曾对全部身份逐一比对）。
+        self._admin_index: set[str] | None = None
 
     async def write(self, func: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
         """经 _ListStore 实例锁线程化执行一次同步写操作（create/update/delete）。"""
         return await self._store.write(func, *args, **kwargs)
+
+    def _invalidate_admin_index(self) -> None:
+        """写操作后使索引失效（sender_id / is_admin 可能已变）。"""
+        self._admin_index = None
+
+    def is_admin_of(self, sender_id: str) -> bool:
+        """发送者 id 是否命中任一管理员身份。
+
+        语义与旧 `_resolve_role` 一致：sender_id 精确匹配且 ``is_admin`` 为真
+        即视为管理员（同一 sender_id 可对应多个身份，任一命中即真）；不在库
+        中、旧数据缺 is_admin 键一律非管理员。索引惰性构建，写操作后失效。
+        """
+        if self._admin_index is None:
+            # 与旧 _resolve_role 逐条扫描谓词逐点等价：仅 is_admin 身份的
+            # sender_id 入集；非 str / 缺键排除（旧实现与 str 查询值比较恒不
+            # 命中）；空串保留（旧实现 `"" == ""` 会命中）。isinstance 同时防
+            # 手改 JSON 里不可哈希值撑爆 set。
+            self._admin_index = {
+                ident["sender_id"]
+                for ident in self._store.list()
+                if ident.get("is_admin") and isinstance(ident.get("sender_id"), str)
+            }
+        return sender_id in self._admin_index
 
     def list_identities(self) -> list[dict]:
         return self._store.list()
@@ -133,6 +160,7 @@ class IdentityStore:
             "created_at": int(time.time()),
         }
         self._store.add(identity)
+        self._invalidate_admin_index()
         return identity
 
     def update_identity(
@@ -161,10 +189,16 @@ class IdentityStore:
             )
         if is_admin is not None:
             fields["is_admin"] = bool(is_admin)
-        return self._store.replace(identity_id, fields)
+        result = self._store.replace(identity_id, fields)
+        if result is not None:
+            self._invalidate_admin_index()
+        return result
 
     def delete_identities(self, ids: list[str]) -> int:
-        return self._store.remove(ids)
+        removed = self._store.remove(ids)
+        if removed:
+            self._invalidate_admin_index()
+        return removed
 
 
 class ChatGroupStore:

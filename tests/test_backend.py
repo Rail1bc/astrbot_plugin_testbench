@@ -4201,6 +4201,57 @@ def test_identity_is_admin_crud(tmp_path):
     assert old.get("is_admin", False) is False
 
 
+def test_identity_admin_index(tmp_path):
+    """is_admin_of 惰性索引：命中任一管理员身份即真；create/update/delete 失效重建。"""
+    store = IdentityStore(data_dir=tmp_path)
+    assert store._admin_index is None  # 惰性：查询前不构建
+    assert store.is_admin_of("nobody") is False  # 空库首次构建
+
+    admin = store.create_identity("管理员", "admin_1", is_admin=True)
+    store.create_identity("普通成员", "member_1")
+    # 创建使索引失效，查询重建 → 命中新管理员
+    assert store.is_admin_of("admin_1") is True
+    assert store.is_admin_of("member_1") is False
+
+    # 同一 sender_id 对应多个身份：任一管理员即真（与旧 _resolve_role 语义一致）
+    store.create_identity("同名成员", "admin_1")
+    assert store.is_admin_of("admin_1") is True
+
+    # 更新降级：is_admin 显式 false → 索引重建后不再命中
+    store.update_identity(admin["id"], is_admin=False)
+    assert store.is_admin_of("admin_1") is False
+
+    # 更新改 sender_id：旧 id 不再命中、新 id 命中
+    store.update_identity(admin["id"], sender_id="boss", is_admin=True)
+    assert store.is_admin_of("boss") is True
+    assert store.is_admin_of("admin_1") is False
+
+    # 删除管理员 → 不再命中
+    store.delete_identities([admin["id"]])
+    assert store.is_admin_of("boss") is False
+
+    # 重新加载：索引从持久化数据重建
+    store2 = IdentityStore(data_dir=tmp_path)
+    assert store2.is_admin_of("boss") is False
+    assert store2.is_admin_of("admin_1") is False
+
+    # 空串 sender_id + is_admin：索引与旧逐条扫描谓词等价（`"" == ""` 命中）
+    (tmp_path / "virtual_session" / "identities.json").write_text(
+        json.dumps(
+            {
+                "items": [
+                    {"id": "id_empty", "name": "空", "sender_id": "", "is_admin": True}
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    store3 = IdentityStore(data_dir=tmp_path)
+    assert store3.is_admin_of("") is True
+    assert store3.is_admin_of("anything") is False
+
+
 @pytest.mark.asyncio
 async def test_identity_api_is_admin(tmp_path):
     """API 级身份创建/更新透传 is_admin。"""

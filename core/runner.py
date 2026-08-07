@@ -301,14 +301,13 @@ class VirtualTestRunner:
         身份库中 is_admin 为真的身份对应管理员；未匹配到管理员身份（含未在
         库中的发送者、旧数据缺 is_admin 键）一律视为普通成员。覆盖全部发送
         路径：请求级 sender、绑定群聊默认成员、会话/组手动 sender 与默认
-        sender——凡其 sender_id 命中管理员身份即按管理员处理。
+        sender——凡其 sender_id 命中管理员身份即按管理员处理。经
+        ``IdentityStore.is_admin_of`` 惰性索引查询（O(1)，写操作后重建），
+        不做每次发送的身份库线性扫描。
         """
         if self.identity_store is None:
             return "member"
-        for ident in self.identity_store.list_identities():
-            if ident.get("sender_id") == sender_id and ident.get("is_admin"):
-                return "admin"
-        return "member"
+        return "admin" if self.identity_store.is_admin_of(sender_id) else "member"
 
     def mark_waiting_llm(self, entry_id: str) -> None:
         """标记消息已到达 LLM 阶段、正在等待会话锁（OnWaitingLLMRequestEvent）。"""

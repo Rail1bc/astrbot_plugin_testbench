@@ -5,6 +5,14 @@
 <!-- markdownlint-disable MD041 -->
 # ChangeLog
 
+## [v0.4.3] - 2026-08-07
+
+### ⚡ Performance (性能优化)
+
+- **身份库 sender_id → is_admin 惰性索引（Phase 3）**：`IdentityStore` 新增 `is_admin_of(sender_id)`——按 `sender_id` 惰性构建管理员身份索引（`create_identity` / `update_identity` / `delete_identities` 写操作后失效、下次查询重建），runner 的 `_resolve_role` 改走该 O(1) 查询，不再在每次发送时对身份库全量线性扫描（身份数量增长时避免每次群发都 O(n) 比对）。语义不变：任一身份命中（`sender_id` 精确匹配且 `is_admin` 为真）即按管理员处理，未命中 / 旧数据缺 `is_admin` 键一律普通成员。
+
+---
+
 ## [v0.4.2] - 2026-08-07
 
 ### 🧹 Chores / Refactoring (重构与工程化)

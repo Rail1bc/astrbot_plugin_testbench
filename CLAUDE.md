@@ -6,7 +6,7 @@
 
 会话测试台（astrbot_plugin_testbench）是一个 AstrBot 插件：通过框架原生插件页面创建「虚拟会话」，并把一句话并发投递给多个虚拟会话，用于测试插件、提示词、模型与整体稳定性。
 
-- **版本**：v0.4.2（metadata.yaml 中的版本号；版本号 bump 须经用户批准——用户已批准 Phase 2 升到 v0.4.2、Phase 3 / Phase 4 各允许升一个补丁版本）
+- **版本**：v0.4.3（metadata.yaml 中的版本号；版本号 bump 须经用户批准——用户已批准 Phase 2 升到 v0.4.2、Phase 3 升到 v0.4.3、Phase 4 允许再升一个补丁版本）
 - **兼容范围**：`astrbot_version: ">=4.24.1"`（v4.24.1 起提供插件页面 `subscribeSSE`，事件驱动前端依赖它）
 - **独立 git 仓库**：remote `git@github.com:Rail1bc/astrbot_plugin_testbench.git`；**开发在 `dev` 分支，`main` 仅用于发布**（release.yml 只在 main 上 metadata.yaml 变更时触发自动发版）
 - **无第三方依赖**：只依赖 AstrBot 公共 API（`astrbot.api.*`），不需要 requirements.txt
@@ -25,7 +25,7 @@
 
 **群聊消息的唤醒语义**：消息类型为 `GroupMessage` 时，是否唤醒机器人由发送时的 `auto_at` 选项决定（群发栏 `#run-auto-at` 勾选框默认开启，测试集每条消息可单独配置）——开启则消息链以 `At(机器人自身)` 开头、唤醒检查直接命中；关闭则消息以未唤醒状态进管道，只能被 filter 通过（如 Heartflow）唤醒。唤醒状态在结果摘要中可读（`wake` + `reason`，见「消息类型与自动@」）。
 
-**自动角色（event.role）**：发送时 runner 按解析后的发送者 id 在身份库中查 `is_admin`（`_resolve_role`），构造事件时设置 `event.role`（管理员 → `"admin"`，否则 `"member"`）——虚拟事件不再恒为成员，可触发 `computer_use_require_admin` 门控的计算机工具（见「工具安全警告」）。
+**自动角色（event.role）**：发送时 runner 按解析后的发送者 id 在身份库中查 `is_admin`（`_resolve_role` → `IdentityStore.is_admin_of` 惰性索引查询），构造事件时设置 `event.role`（管理员 → `"admin"`，否则 `"member"`）——虚拟事件不再恒为成员，可触发 `computer_use_require_admin` 门控的计算机工具（见「工具安全警告」）。
 
 ## 目录结构
 
@@ -119,7 +119,7 @@ astrbot_plugin_testbench/
 ### 测试身份与虚拟群聊（store/identity_store.py）
 
 - `IdentityStore` → `virtual_session/identities.json`（`{"items": [{id, name, sender_id, sender_name, is_admin, created_at}]}`）；`ChatGroupStore` → `virtual_session/chat_groups.json`（`{"items": [{id, name, member_ids, created_at}]}`）。两个类复用 `_ListStore`（全量写 JSON），类名带 Test 前缀须 `__test__ = False`（同 testset_store 模式）。
-- **身份 `is_admin`**（是否管理员）：新建恒写 `"is_admin": bool(is_admin)`（缺省 False）；旧数据缺键 → 读取一律 `identity.get("is_admin", False)`（后端与前端都如此，不做 `_load` setdefault）。`update_identity` 的 `is_admin` 用 None 哨兵：None=不变，**显式 false 也落盘**（前端取消勾选必须生效）。发送消息时 runner 按解析后的发送者 id 查身份库决定 `event.role`（见「工具安全警告」下的自动角色）。前端对管理员身份有**危险操作警告**：身份列表管理员徽标旁挂「⚠ 危险」徽标，表单勾选管理员时显示内联 `.dialog-warn` 警告条（可调用需管理员权限的工具、可能执行危险操作）。
+- **身份 `is_admin`**（是否管理员）：新建恒写 `"is_admin": bool(is_admin)`（缺省 False）；旧数据缺键 → 读取一律 `identity.get("is_admin", False)`（后端与前端都如此，不做 `_load` setdefault）。`update_identity` 的 `is_admin` 用 None 哨兵：None=不变，**显式 false 也落盘**（前端取消勾选必须生效）。发送消息时 runner 按解析后的发送者 id 查身份库决定 `event.role`（见「工具安全警告」下的自动角色）——经 `is_admin_of(sender_id)` **惰性索引**（`sender_id → 管理员` 集合，create/update/delete 后失效、查询时重建），不做每次发送的线性扫描。前端对管理员身份有**危险操作警告**：身份列表管理员徽标旁挂「⚠ 危险」徽标，表单勾选管理员时显示内联 `.dialog-warn` 警告条（可调用需管理员权限的工具、可能执行危险操作）。
 - 身份与虚拟群聊是**跨测试组共享的持久化资源**：组配置弹窗、群发栏身份选择器、测试集消息身份下拉、绑定群聊默认成员都引用它们。身份缺失字段回退名称；虚拟群聊 `_clean_member_ids` 只保留非空字符串并按出现顺序去重；删除身份后成员 id 保留（悬空引用，选择时按现存身份过滤）。
 - 新 API：`GET/POST /identities`、`POST /identities/delete`、`POST /identities/<id>/update`、`GET/POST /chat-groups`、`POST /chat-groups/delete`、`POST /chat-groups/<id>/update`。
 
@@ -128,7 +128,7 @@ astrbot_plugin_testbench/
 - **判定**（`conf_tool_info` 纯函数，与 AstrBot 运行时挂载逻辑一致）：配置启用了任何**可调用工具**即命中——`provider_settings.computer_use_runtime` 为 `local`/`sandbox`、`provider_settings.web_search`、顶层 `kb_agentic_mode`、`proactive_capability.add_cron_tools`（**缺省 True**，故默认配置本身即命中，绝大多数组/会话带标记——如实呈现，无排除逻辑）。`conf_has_callable_tools` 是布尔便捷入口。仅暴露布尔，详情留在纯函数内。
 - **呈现**：`GET /confs` 每个档案新增 `has_callable_tools` 布尔（档案未加载 → 宽松 False，仅显示用途）；组 / 会话配置弹窗内**内联警告条**（`buildToolWarningBar` 构建 `.dialog-warn` div，默认 hidden，配置档案下拉 change 时按 `confHasTools` 刷新，不阻塞提交）；会话弹窗按**有效配置**判定（`effectiveConfId`：显式默认哨兵 → "default"、真实 id → 该 id、空值继承 → 会话 conf_id → 组 conf_id → "default" 链）。组列表按 `g.security_warning` 显示「⚠ 工具」徽标。
 - **组标记实时计算、派生不持久化**：`list_groups` 逐组浅拷贝 `{**g, "security_warning": ...}`（`list_groups()` 返回的是 store 内共享 dict，直接改写会在下次 `_save()` 时把派生键持久化）；组或任一会话的有效配置命中即真——`conf_id` 为 None/"" 按默认配置判定、已删除档案回退默认（镜像 `astrbot_config_mgr.get_conf` 运行时回退语义），会话级 conf_id 优先于组级（镜像 `effective()`）。配置档案事后内容修改，下次列表即更新标记。
-- **自动角色**（见「消息处理路径」）：`VirtualMessageEvent.create(is_admin=...)` 设置 `event.role`；runner 的 `_resolve_role(sender_id)` 遍历身份库，`sender_id` 命中且 `is_admin` 为真 → "admin"（identity_store 为 None → 恒 "member"），覆盖全部发送路径（请求级 sender / 绑定群聊默认成员 / 手动 sender / 默认 testbench）。
+- **自动角色**（见「消息处理路径」）：`VirtualMessageEvent.create(is_admin=...)` 设置 `event.role`；runner 的 `_resolve_role(sender_id)` 经 `IdentityStore.is_admin_of` **惰性索引**查询（`sender_id → 管理员` 索引：create/update/delete 写操作后失效、首次查询重建，O(1) 判定，不做每次发送的身份库线性扫描；语义与旧实现一致——`sender_id` 命中任一 `is_admin` 为真的身份即 "admin"），`identity_store` 为 None → 恒 "member"，覆盖全部发送路径（请求级 sender / 绑定群聊默认成员 / 手动 sender / 默认 testbench）。
 
 ### 持久化写路径（store 层通用）
 
@@ -304,7 +304,7 @@ astrbot_plugin_testbench/
 ## 测试与验证
 
 > **开发流程（2026-08-05 起）**：本地**不跑**测试，修改直接提交推送到 `dev` 分支，
-> 由 GitHub Actions 自动把关——push 到 dev 触发 `pytest.yml`（280 个测试函数 +
+> 由 GitHub Actions 自动把关——push 到 dev 触发 `pytest.yml`（281 个测试函数 +
 > 前端 JS 检查 `js-check`：node --check 十四个页面脚本 + node:test 纯函数动态
 > 测试）+ `ruff-format.yml`；
 > dev 验证通过后合并到 `main`，metadata.yaml 变更即触发 release.yml 自动发版。
@@ -312,7 +312,7 @@ astrbot_plugin_testbench/
 
 测试随插件仓库维护（`tests/`，可与主仓库无关地推送、供协作者运行）。
 
-- `tests/test_backend.py`：后端单元测试（221 个），需要 astrbot（PyPI 包，插件运行时依赖）。以 **namespace package** 加载插件：`sys.path.insert(0, str(REPO_ROOT.parent))` 后 `import astrbot_plugin_testbench.*`——插件模块用相对导入（`from .group_store import ...`），必须按包加载，这与 AstrBot 在 data/plugins 下加载插件的方式一致。未安装 astrbot 时整组跳过（`pytest.importorskip`）。
+- `tests/test_backend.py`：后端单元测试（222 个），需要 astrbot（PyPI 包，插件运行时依赖）。以 **namespace package** 加载插件：`sys.path.insert(0, str(REPO_ROOT.parent))` 后 `import astrbot_plugin_testbench.*`——插件模块用相对导入（`from .group_store import ...`），必须按包加载，这与 AstrBot 在 data/plugins 下加载插件的方式一致。未安装 astrbot 时整组跳过（`pytest.importorskip`）。
 - `tests/test_frontend.py`：前端脚本静态检查（59 个），零依赖，任何环境可运行。
 - `tests/frontend/pure.test.mjs`：**pure.js 纯函数动态测试**（node:test，35 个断言组），零依赖；`node --test` 直接加载页面模块 `pages/testbench/pure.js`（仓库根 package.json 声明 `"type": "module"`）。
 
