@@ -38,33 +38,81 @@ export function rangesFromFlags(flags) {
 }
 
 // 行内 rule 构造：type 空 → null；需要值的类型值非空才保留（min_len / max_len
-// 须整数）；LLM 规则读 profile/context → {kind: "llm", profile_id, context?}
-export function buildRule(type, value, profileId, context) {
+// 须整数）；LLM 规则读 profile/context → {kind: "llm", profile_id, context?}。
+// sliceRange（消息规则的切片范围输入，仅 context=slice 时生效）：合法输入
+// "2-4" / "3" / "3-4,10-12"（多段逗号分隔）经 parseSliceRange 解析为 0 基
+// {from, to} 区间列表写入 rule.slice_range，空 / "all" / 非法输入不写入
+// （回退该步及之前全部记录）。injectSystemPrompt（LLM 规则级「注入被测
+// Agent 系统提示词」开关，缺省开启）：显式 false 才写入
+// rule.inject_system_prompt（缺省时后端按开启处理，字段保持干净）。
+// not（「取反」开关，仅叶）：true 时包裹 {op: "not", rule: <叶>}——表达
+// json / non_empty 等无否定类型的取反；LLM 叶同样可取反（后端对 error 等
+// pass 为 null 的 verdict 不取反，只取反确定的 bool）
+export function buildRule(
+  type,
+  value,
+  profileId,
+  context,
+  sliceRange,
+  injectSystemPrompt,
+  not,
+) {
+  let rule;
   if (!type) return null;
   if (type === "llm") {
     if (!profileId) return null;
-    const rule = { kind: "llm", profile_id: profileId };
+    rule = { kind: "llm", profile_id: profileId };
     if (context) rule.context = context;
-    return rule;
-  }
-  if (RULE_VALUE_TYPES.has(type)) {
+    if (context === "slice" && sliceRange) {
+      const sc = parseSliceRange(sliceRange);
+      if (sc && sc !== "all") rule.slice_range = sc;
+    }
+    if (injectSystemPrompt === false) rule.inject_system_prompt = false;
+  } else if (RULE_VALUE_TYPES.has(type)) {
     const v = String(value == null ? "" : value).trim();
     if (!v) return null;
     if (type === "min_len" || type === "max_len") {
       const n = Number(v);
-      return Number.isInteger(n) ? { type, value: n } : null;
+      rule = Number.isInteger(n) ? { type, value: n } : null;
+    } else {
+      rule = { type, value: v };
     }
-    return { type, value: v };
+  } else {
+    rule = { type };
   }
-  return { type };
+  if (!rule) return null;
+  return not ? { op: "not", rule } : rule;
 }
 
-// 行内多断言收集：ruleInputs 为 [{type, value, profileId, context}]，
-// buildRule 归为 null 的整行丢弃
+// 任意组构造：children 为该组的子规则输入列表（隐式 all，任一子规则通过
+// 即通过）→ {op: "any", rules}；全部子行无效 → null（收集时丢弃空组）。
+// 组内不嵌套任意组——编辑器组行内只加叶行，故 children 走 collectRules
+// （其 group 分支理论上不会在组内出现，保持兼容）
+export function buildAnyGroupRule(childInputs) {
+  const rules = collectRules(childInputs);
+  return rules.length ? { op: "any", rules } : null;
+}
+
+// 行内多断言收集：ruleInputs 为 [{type, value, profileId, context, sliceRange?,
+// injectSystemPrompt?, not?}]，buildRule 归为 null 的整行丢弃；kind === "group"
+// 的输入（任意组行，children 为子规则输入列表）经 buildAnyGroupRule 收集
 export function collectRules(ruleInputs) {
   const rules = [];
   for (const r of ruleInputs || []) {
-    const rule = buildRule(r.type, r.value, r.profileId, r.context);
+    if (r && r.kind === "group") {
+      const group = buildAnyGroupRule(r.children);
+      if (group) rules.push(group);
+      continue;
+    }
+    const rule = buildRule(
+      r.type,
+      r.value,
+      r.profileId,
+      r.context,
+      r.sliceRange,
+      r.injectSystemPrompt,
+      r.not,
+    );
     if (rule) rules.push(rule);
   }
   return rules;
@@ -102,6 +150,49 @@ export function parseScope(text) {
   const end = m[2] ? Number(m[2]) : start;
   if (start < 1 || end < start) return null;
   return { from: start - 1, to: end - 1 };
+}
+
+// 消息规则切片范围输入解析（支持多段，逗号分隔）：空 / "all" → "all"；
+// "2-4" → [{from:1, to:3}]；"3" → [{from:2, to:2}]；"3-4,10-12" →
+// [{from:2,to:3},{from:9,to:11}]；其余 → null（非法，保存前校验报错）。
+// 与 parseScope（最终断言 scope，单段）并存：slice 输入可多段，最终断言
+// scope 保持单段 {from,to} 语义（后端 final_rules 的 scope 只吃单段）
+export function parseSliceRange(text) {
+  const t = String(text == null ? "" : text).trim();
+  if (!t || t === "all") return "all";
+  const parts = t
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (!parts.length) return null;
+  const ranges = [];
+  for (const part of parts) {
+    const m = /^(\d+)(?:-(\d+))?$/.exec(part);
+    if (!m) return null;
+    const start = Number(m[1]);
+    const end = m[2] ? Number(m[2]) : start;
+    if (start < 1 || end < start) return null;
+    ranges.push({ from: start - 1, to: end - 1 });
+  }
+  return ranges;
+}
+
+// 切片范围回填文案（编辑框还原）：[{from,to},...] → "2-4,10-12"；
+// 旧单段 {from,to} 兼容 → "2-4"；空 / 非法 → ""（= 全部）
+export function sliceRangeToText(ranges) {
+  if (!ranges) return "";
+  const items = Array.isArray(ranges) ? ranges : [ranges];
+  return items
+    .map((r) => {
+      if (r && typeof r === "object" && r.from != null && r.to != null) {
+        const s = r.from + 1;
+        const e = r.to + 1;
+        return s === e ? String(s) : `${s}-${e}`;
+      }
+      return "";
+    })
+    .filter(Boolean)
+    .join(",");
 }
 
 // 信封解析（校验 format/version，预留「测试集市场」下载路径：传入 JSON 文本
@@ -235,5 +326,6 @@ export function segmentLabel(run, idx) {
   for (const [s, e] of (run && run.batch_ranges) || []) {
     if (idx >= s && idx <= e) return `第 ${s + 1}–${e + 1} 步（批量）`;
   }
-  return `第 ${idx + 1}/${run.steps.length} 步`;
+  const total = (run && run.steps && run.steps.length) || 0;
+  return total ? `第 ${idx + 1}/${total} 步` : `第 ${idx + 1} 步`;
 }

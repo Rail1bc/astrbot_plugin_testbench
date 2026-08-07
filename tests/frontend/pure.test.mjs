@@ -7,16 +7,19 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  buildAnyGroupRule,
   buildRule,
   collectEditorRows,
   collectRules,
   parseScope,
+  parseSliceRange,
   parseTestsetEnvelope,
   rangesFromFlags,
   ruleFailCount,
   ruleReviewFailCount,
   segmentLabel,
   segmentSummary,
+  sliceRangeToText,
 } from "../../pages/testbench/pure.js";
 
 // ---------- buildRule ----------
@@ -73,6 +76,89 @@ test("buildRule: llm 带 profile + context", () => {
   });
 });
 
+test("buildRule: 未知类型 → 原样 { type } 回退", () => {
+  assert.deepEqual(buildRule("mystery", "", "", ""), { type: "mystery" });
+});
+
+test("buildRule: llm slice 空范围 → 无 slice_range", () => {
+  assert.deepEqual(buildRule("llm", "", "rp_1", "slice", ""), {
+    kind: "llm",
+    profile_id: "rp_1",
+    context: "slice",
+  });
+});
+
+test("buildRule: llm slice 区间 → slice_range 0 基列表", () => {
+  assert.deepEqual(buildRule("llm", "", "rp_1", "slice", "2-4"), {
+    kind: "llm",
+    profile_id: "rp_1",
+    context: "slice",
+    slice_range: [{ from: 1, to: 3 }],
+  });
+});
+
+test("buildRule: llm slice 单步 → slice_range 列表", () => {
+  assert.deepEqual(buildRule("llm", "", "rp_1", "slice", "3"), {
+    kind: "llm",
+    profile_id: "rp_1",
+    context: "slice",
+    slice_range: [{ from: 2, to: 2 }],
+  });
+});
+
+test("buildRule: llm slice 多段 → slice_range 区间列表", () => {
+  assert.deepEqual(buildRule("llm", "", "rp_1", "slice", "3-4,10-12"), {
+    kind: "llm",
+    profile_id: "rp_1",
+    context: "slice",
+    slice_range: [
+      { from: 2, to: 3 },
+      { from: 9, to: 11 },
+    ],
+  });
+});
+
+test("buildRule: 非 slice 上下文忽略 sliceRange", () => {
+  assert.deepEqual(buildRule("llm", "", "rp_1", "record", "2-4"), {
+    kind: "llm",
+    profile_id: "rp_1",
+    context: "record",
+  });
+});
+
+test("buildRule: llm 未显式关闭注入 → 不带 inject_system_prompt", () => {
+  assert.deepEqual(buildRule("llm", "", "rp_1", "reply", "", undefined), {
+    kind: "llm",
+    profile_id: "rp_1",
+    context: "reply",
+  });
+  assert.deepEqual(buildRule("llm", "", "rp_1", "reply", "", true), {
+    kind: "llm",
+    profile_id: "rp_1",
+    context: "reply",
+  });
+});
+
+test("buildRule: llm 显式关闭注入 → inject_system_prompt: false", () => {
+  assert.deepEqual(buildRule("llm", "", "rp_1", "reply", "", false), {
+    kind: "llm",
+    profile_id: "rp_1",
+    context: "reply",
+    inject_system_prompt: false,
+  });
+});
+
+test("collectRules: 透传 injectSystemPrompt 到 buildRule", () => {
+  const out = collectRules([
+    { type: "llm", value: "", profileId: "rp_1", context: "reply", injectSystemPrompt: false },
+    { type: "llm", value: "", profileId: "rp_2", context: "reply", injectSystemPrompt: true },
+  ]);
+  assert.deepEqual(out, [
+    { kind: "llm", profile_id: "rp_1", context: "reply", inject_system_prompt: false },
+    { kind: "llm", profile_id: "rp_2", context: "reply" },
+  ]);
+});
+
 // ---------- collectRules ----------
 
 test("collectRules: 空输入 → []", () => {
@@ -91,6 +177,82 @@ test("collectRules: 丢弃 buildRule 归 null 的行", () => {
     { type: "contains", value: "x" },
     { kind: "llm", profile_id: "rp_1", context: "reply" },
   ]);
+});
+
+// ---------- 组合算子（any / not） ----------
+
+test("buildRule: not=true 包裹机械叶", () => {
+  assert.deepEqual(buildRule("contains", "x", "", "", "", undefined, true), {
+    op: "not",
+    rule: { type: "contains", value: "x" },
+  });
+});
+
+test("buildRule: not=true 包裹 LLM 叶", () => {
+  assert.deepEqual(buildRule("llm", "", "rp_1", "reply", "", undefined, true), {
+    op: "not",
+    rule: { kind: "llm", profile_id: "rp_1", context: "reply" },
+  });
+});
+
+test("buildRule: not=false / 空类型不包裹", () => {
+  assert.deepEqual(buildRule("contains", "x", "", "", "", undefined, false), {
+    type: "contains",
+    value: "x",
+  });
+  assert.equal(buildRule("", "x", "", "", "", undefined, true), null);
+});
+
+test("buildAnyGroupRule: 空子输入 → null（空组丢弃）", () => {
+  assert.equal(buildAnyGroupRule([]), null);
+  assert.equal(buildAnyGroupRule([{ type: "", value: "", profileId: "", context: "" }]), null);
+});
+
+test("buildAnyGroupRule: 收集子规则 → {op: 'any', rules}", () => {
+  assert.deepEqual(
+    buildAnyGroupRule([
+      { type: "contains", value: "a", profileId: "", context: "" },
+      { type: "json", value: "", profileId: "", context: "" },
+    ]),
+    { op: "any", rules: [{ type: "contains", value: "a" }, { type: "json" }] },
+  );
+});
+
+test("collectRules: kind='group' → 任意组节点（组内 not 子叶保留）", () => {
+  assert.deepEqual(
+    collectRules([
+      { type: "contains", value: "x", profileId: "", context: "" },
+      {
+        kind: "group",
+        children: [
+          { type: "contains", value: "a", profileId: "", context: "", not: true },
+          { type: "non_empty", value: "", profileId: "", context: "" },
+        ],
+      },
+      { type: "regex", value: "  ", profileId: "", context: "" },
+    ]),
+    [
+      { type: "contains", value: "x" },
+      {
+        op: "any",
+        rules: [
+          { op: "not", rule: { type: "contains", value: "a" } },
+          { type: "non_empty" },
+        ],
+      },
+    ],
+  );
+});
+
+test("collectRules: 空组与无效组内行丢弃", () => {
+  assert.deepEqual(
+    collectRules([
+      { kind: "group", children: [] },
+      { kind: "group", children: [{ type: "", value: "", profileId: "", context: "" }] },
+      { kind: "group", children: [{ type: "llm", value: "", profileId: "", context: "reply" }] },
+    ]),
+    [],
+  );
 });
 
 // ---------- rangesFromFlags ----------
@@ -180,6 +342,46 @@ test("parseScope: 非法输入 → null", () => {
   assert.equal(parseScope("4-2"), null);
   assert.equal(parseScope("abc"), null);
   assert.equal(parseScope("-1"), null);
+});
+
+// ---------- parseSliceRange / sliceRangeToText ----------
+
+test("parseSliceRange: 空 / all → all", () => {
+  assert.equal(parseSliceRange(""), "all");
+  assert.equal(parseSliceRange(" all "), "all");
+});
+
+test("parseSliceRange: 单段与多段 → 0 基区间列表", () => {
+  assert.deepEqual(parseSliceRange("3"), [{ from: 2, to: 2 }]);
+  assert.deepEqual(parseSliceRange("2-4"), [{ from: 1, to: 3 }]);
+  assert.deepEqual(parseSliceRange("3-4,10-12"), [
+    { from: 2, to: 3 },
+    { from: 9, to: 11 },
+  ]);
+  assert.deepEqual(parseSliceRange("1,5"), [{ from: 0, to: 0 }, { from: 4, to: 4 }]);
+});
+
+test("parseSliceRange: 非法输入 → null", () => {
+  assert.equal(parseSliceRange("0"), null);
+  assert.equal(parseSliceRange("4-2"), null);
+  assert.equal(parseSliceRange("3-4,abc"), null);
+  assert.equal(parseSliceRange(","), null);
+  assert.equal(parseSliceRange("-1"), null);
+});
+
+test("sliceRangeToText: 多段 / 单段 / 空 / 旧单段", () => {
+  assert.equal(
+    sliceRangeToText([
+      { from: 2, to: 3 },
+      { from: 9, to: 11 },
+    ]),
+    "3-4,10-12",
+  );
+  assert.equal(sliceRangeToText([{ from: 1, to: 3 }]), "2-4");
+  assert.equal(sliceRangeToText([{ from: 2, to: 2 }]), "3");
+  assert.equal(sliceRangeToText([]), "");
+  assert.equal(sliceRangeToText(null), "");
+  assert.equal(sliceRangeToText({ from: 1, to: 3 }), "2-4");
 });
 
 // ---------- parseTestsetEnvelope ----------
@@ -291,6 +493,65 @@ test("parseTestsetEnvelope: 非法 batch_ranges 过滤", () => {
   assert.deepEqual(parsed.batch_ranges, [[0, 1]]);
 });
 
+test("parseTestsetEnvelope: 缺 messages 数组 → 抛错", () => {
+  assert.throws(
+    () =>
+      parseTestsetEnvelope(
+        JSON.stringify({ format: "astrbot-testbench-testset", version: 2, name: "x" }),
+      ),
+    /缺少 messages 数组/,
+  );
+});
+
+test("parseTestsetEnvelope: 版本非 number → 抛错", () => {
+  assert.throws(
+    () =>
+      parseTestsetEnvelope(
+        JSON.stringify({
+          format: "astrbot-testbench-testset",
+          version: "2",
+          messages: [],
+        }),
+      ),
+    /不支持的测试集格式版本/,
+  );
+});
+
+test("parseTestsetEnvelope: 非字符串 text 行跳过", () => {
+  const parsed = parseTestsetEnvelope(
+    JSON.stringify({
+      format: "astrbot-testbench-testset",
+      version: 2,
+      name: "x",
+      messages: [{ text: "ok" }, { text: 123 }, { text: null }],
+    }),
+  );
+  assert.equal(parsed.messages.length, 1);
+  assert.equal(parsed.messages[0].text, "ok");
+});
+
+test("parseTestsetEnvelope: 畸形 final_rules 项过滤", () => {
+  const parsed = parseTestsetEnvelope(
+    JSON.stringify({
+      format: "astrbot-testbench-testset",
+      version: 2,
+      name: "x",
+      messages: [{ text: "a" }],
+      final_rules: [
+        { rule: { type: "contains", value: "x" }, scope: "all" },
+        { scope: "all" },
+        null,
+        { rule: "notdict" },
+        { rule: { type: "contains", value: "y" } },
+      ],
+    }),
+  );
+  assert.deepEqual(parsed.final_rules, [
+    { rule: { type: "contains", value: "x" }, scope: "all" },
+    { rule: { type: "contains", value: "y" } },
+  ]);
+});
+
 // ---------- ruleFailCount / ruleReviewFailCount ----------
 
 test("ruleFailCount: verdicts 优先，pass=false 计失败", () => {
@@ -304,6 +565,11 @@ test("ruleFailCount: 旧格式回退 assertion", () => {
   assert.equal(ruleFailCount({ assertion: { pass: false } }), 1);
   assert.equal(ruleFailCount({ assertion: { pass: true } }), 0);
   assert.equal(ruleFailCount({}), 0);
+});
+
+test("ruleFailCount: 空 verdicts → assertion 回退", () => {
+  assert.equal(ruleFailCount({ verdicts: [], assertion: { pass: false } }), 1);
+  assert.equal(ruleFailCount({ verdicts: [], assertion: { pass: true } }), 0);
 });
 
 test("ruleReviewFailCount: 只数 status error/invalid", () => {
@@ -332,4 +598,10 @@ test("segmentLabel: 批量段内/外", () => {
   const run = { batch_ranges: [[1, 2]], steps: [{}, {}, {}, {}] };
   assert.equal(segmentLabel(run, 1), "第 2–3 步（批量）");
   assert.equal(segmentLabel(run, 3), "第 4/4 步");
+});
+
+test("segmentLabel: 缺 steps 不崩溃", () => {
+  assert.equal(segmentLabel({ batch_ranges: [] }, 0), "第 1 步");
+  assert.equal(segmentLabel({}, 0), "第 1 步");
+  assert.equal(segmentLabel(undefined, 0), "第 1 步");
 });

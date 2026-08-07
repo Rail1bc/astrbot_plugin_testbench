@@ -30,6 +30,7 @@ _FRONTEND_MODULES = (
     "testset_run",
     "identity_list",
     "pure",
+    "render_markdown",
 )
 
 
@@ -811,6 +812,64 @@ def test_frontend_rules_editor():
     assert ".ts-msg-rule-value" in css, "style.css 缺少断言值输入样式"
 
 
+def test_frontend_message_editor_defaults_and_slice():
+    """测试集编辑视图 UI 优化：默认 0 断言 / 消息框纵向拉伸 / 固定规则隐藏
+    profile / slice 上下文范围配置。
+
+    - 新消息默认无断言行（renderMsgRow 回退空列表，不再渲染一条「无」类型行）。
+    - 消息文本为 textarea（可纵向拉伸，长文本输入），style.css 限高。
+    - `.ts-msg-rule-llm` 有 display:flex 覆盖 UA 的 [hidden]——须显式
+      `[hidden]` 规则，否则固定规则行也显示评审 Profile 下拉（曾出现）。
+    - LLM 规则 context=slice 时提供切片范围输入（.ts-msg-rule-slice），
+      buildRule 经 parseSliceRange 解析为 slice_range 0 基区间列表，支持多段
+      （3-4,10-12）；回填经 sliceRangeToText（纯函数层另由 node:test 覆盖）。
+    """
+    editor_js = _read_module("testset_editor")
+    pure_js = _read_module("pure")
+    assert "[null]" not in editor_js, "新消息仍默认渲染一条空断言行（应默认 0 断言）"
+    assert 'document.createElement("textarea")' in editor_js, "消息文本未用 textarea"
+    assert 'className = "ts-msg-text"' in editor_js, "消息框未保留 .ts-msg-text 类"
+    css = (PLUGIN_DIR / "pages" / "testbench" / "style.css").read_text(encoding="utf-8")
+    assert ".ts-msg-rule-llm[hidden]" in css, (
+        "style.css 未显式隐藏非 LLM 类型的 .ts-msg-rule-llm（display:flex 覆盖 [hidden]）"
+    )
+    # 同根因的 display:flex 覆盖 [hidden] 遗漏（对抗性审计发现，顺带修复）：
+    # .ts-report-body（编辑/报告切换失效）/ .cg-members（未选群聊仍占位）/ .panel-pending（空条不隐藏）
+    for sel in (
+        ".ts-report-body[hidden]",
+        ".cg-members[hidden]",
+        ".panel-pending[hidden]",
+    ):
+        assert sel in css, f"style.css 缺少 {sel}（display:flex 覆盖 [hidden]）"
+    assert "min-height: 34px" in css and "max-height: 180px" in css, (
+        "style.css 未给消息框限高（text 消息可纵向拉伸）"
+    )
+    assert "ts-msg-rule-slice" in editor_js, "testset_editor.js 缺少切片范围输入"
+    assert ".ts-msg-rule-slice" in css, "style.css 缺少切片范围输入样式"
+    assert "slice_range" in pure_js, "buildRule 未支持 slice_range"
+    assert "parseSliceRange" in pure_js, "pure.js 缺少多段切片范围解析"
+    assert "sliceRangeToText" in pure_js, "pure.js 缺少切片范围回填文案"
+
+
+def test_frontend_run_status_scroll():
+    """状态条消息内容固定高度、过长滚动（常态，不限于执行测试集）。
+
+    运行状态条（.run-status）直接内联当前消息内容——测试集运行进度含完整
+    stepText，长文本 / 多行消息会把状态条顶高、挤压下方视图。须限高 +
+    纵向滚动查看并保留换行（pre-wrap），任何来源的状态消息都受此约束。
+    """
+    css = (PLUGIN_DIR / "pages" / "testbench" / "style.css").read_text(encoding="utf-8")
+    assert "max-height: 72px" in css, (
+        "style.css 未给 .run-status 限高（长消息挤压视图）"
+    )
+    assert "overflow-y: auto" in css, (
+        "style.css 未给 .run-status 滚动（过长内容无法查看）"
+    )
+    assert "white-space: pre-wrap" in css, (
+        "style.css 未保留状态消息换行（多行消息折叠）"
+    )
+
+
 def test_frontend_testset_identity_config():
     """测试集编辑窗口须含身份配置（single 单一身份 / pool 身份池）。
 
@@ -967,13 +1026,42 @@ def test_frontend_llm_rule_row():
     assert 'className = "ts-msg-rule-llm"' in editor_js, "缺少 LLM 字段区容器"
     assert 'sel.value === "llm"' in editor_js, "类型切换未按 llm 显示 LLM 字段区"
     # 规则构造（buildRule）在 pure.js，编辑器把 LLM 行的 profile/context 下拉读入
-    assert 'const rule = { kind: "llm", profile_id: profileId }' in pure_js, (
+    assert '{ kind: "llm", profile_id: profileId }' in pure_js, (
         "LLM 规则未收集为 {kind: 'llm', profile_id}"
     )
     assert 'llmBox.querySelector(".ts-msg-rule-profile")' in editor_js, (
         "编辑器未读取 LLM 规则 profile 下拉"
     )
     assert "未选择评审 Profile" in editor_js, "保存前未拦截未选 profile 的 LLM 规则"
+
+
+def test_frontend_llm_rule_inject_system_prompt():
+    """LLM 评审断言须含规则级「注入被测 Agent 系统提示词」开关（缺省开启）。
+
+    开关粒度是单个断言而非测试集（用户澄清）：testset_editor.js 的 LLM 字段区
+    渲染 .ts-msg-rule-inject 复选框（缺省勾选），消息规则与最终断言收集都读入
+    injectSystemPrompt 传给 buildRule；pure.js 只在显式关闭时写入
+    rule.inject_system_prompt（缺省不写字段，后端按开启处理）；评审 Profile 表单
+    提示 {{agent_system_prompt}} 占位符已废弃、改由断言行开关注入。
+    """
+    editor_js = _read_module("testset_editor")
+    pure_js = _read_module("pure")
+    list_js = _read_module("testset_list")
+    css = (PLUGIN_DIR / "pages" / "testbench" / "style.css").read_text(encoding="utf-8")
+    assert 'className = "ts-msg-rule-inject"' in editor_js, "LLM 字段区缺少注入开关"
+    assert "注入提示词" in editor_js, "注入开关缺少可见标签"
+    assert 'injectSystemPrompt: llmBox.querySelector(".ts-msg-rule-inject input")' in (
+        editor_js
+    ), "消息规则收集未读入注入开关"
+    assert 'llmBox.querySelector(".ts-msg-rule-inject input").checked' in editor_js, (
+        "最终断言收集未读入注入开关"
+    )
+    assert "injectSystemPrompt === false" in pure_js, "buildRule 未按显式关闭写入字段"
+    assert "rule.inject_system_prompt = false" in pure_js, (
+        "buildRule 未写入 inject_system_prompt=false"
+    )
+    assert "占位符已废弃" in list_js, "Profile 表单未提示占位符已废弃"
+    assert ".ts-msg-rule-inject" in css, "style.css 缺少注入开关样式"
 
 
 def test_frontend_final_rules_editor():
@@ -1002,15 +1090,38 @@ def test_frontend_final_rules_editor():
     assert ".ts-final-rule" in css, "style.css 缺少最终断言行样式"
 
 
+def test_frontend_combo_rule_ui():
+    """规则区须支持任意组（any）与叶行取反（not）组合算子。
+
+    任意组为嵌套容器（组内子行隐式 all）：testset_editor.js 须有「＋ 任意组」
+    入口与 .ts-msg-rule-group 组容器（组内「＋ 断言」按钮），叶行须有
+    .ts-msg-rule-not 取反复选框；pure.js 的 buildAnyGroupRule 构造
+    {op: "any", rules}、buildRule 的 not 参数包裹 {op: "not", rule}，
+    collectRules 识别 kind === "group" 的输入。
+    """
+    editor_js = _read_module("testset_editor")
+    pure_js = _read_module("pure")
+    css = (PLUGIN_DIR / "pages" / "testbench" / "style.css").read_text(encoding="utf-8")
+    assert "＋ 任意组" in editor_js, "缺少「＋ 任意组」入口"
+    assert '"ts-msg-rule-group"' in editor_js, "缺少任意组容器类"
+    assert '"ts-msg-rule-not"' in editor_js, "缺少叶行取反复选框类"
+    assert "buildAnyGroupRule(" in pure_js, "pure.js 缺少任意组构造"
+    assert 'op: "any"' in pure_js, "pure.js 未构造 {op: 'any', rules}"
+    assert 'op: "not"' in pure_js, "pure.js 未构造 {op: 'not', rule}"
+    assert 'r.kind === "group"' in pure_js, "collectRules 未识别任意组输入"
+    assert ".ts-msg-rule-group" in css, "style.css 缺少任意组容器样式"
+    assert ".ts-msg-rule-not" in css, "style.css 缺少取反复选框样式"
+
+
 def test_frontend_reviewer_profile_form():
     """评审 Profile 管理：列表 tab + 新建/编辑/删除表单（支持多个）。
 
     testset_list.js 须经 listReviewers 拉取 profile、renderReviewerList 渲染
-    列表（未配置提示 + 新建入口）、openProfileForm 表单（provider / 模型 /
-    提示词 / 输出契约指标编辑器 buildMetricsEditor / collectMetrics），保存走
-    createReviewer / updateReviewer、删除走 deleteReviewers；编辑器保留行内
-    profile 下拉重建 refreshAllProfileSelects；state.js 须有 reviewers；
-    app.js 的 loadOptions 须预载 reviewers。
+    列表（未配置提示 + 新建入口）、openProfileForm 表单（Provider（供应商 /
+    模型，不单独配模型）/ 提示词 / 输出契约指标编辑器 buildMetricsEditor /
+    collectMetrics），保存走 createReviewer / updateReviewer、删除走
+    deleteReviewers；编辑器保留行内 profile 下拉重建 refreshAllProfileSelects；
+    state.js 须有 reviewers；app.js 的 loadOptions 须预载 reviewers。
     """
     list_js = _read_module("testset_list")
     editor_js = _read_module("testset_editor")
@@ -1061,7 +1172,7 @@ def test_frontend_reviewer_profile_metrics_preview():
 def test_frontend_profile_dialog_height_and_scroll():
     """新建/编辑评审 Profile 弹窗须限高内部滚动。
 
-    弹窗内容（Provider/模型/提示词/指标）曾整体超出视口高度、页面放不下：
+    弹窗内容（Provider/提示词/指标）曾整体超出视口高度、页面放不下：
     .modal 须限高（max-height + flex 列布局）、.modal-body 内部滚动
     （overflow-y: auto + flex 子项可收缩）、.modal-actions 固定在底部
     （flex-shrink: 0）；系统提示词 textarea 覆盖 .json-editor 的 360px
@@ -1096,6 +1207,11 @@ def test_frontend_reviewer_provider_list():
         "loadOptions 未把 Provider 列表写入 state.providers"
     )
     assert "state.providers" in list_js, "Profile 表单未读 state.providers"
+    # Provider 即「供应商 / 模型」：下拉须显示 current_model（不再单独配模型字段）
+    assert "p.current_model" in list_js, "Provider 下拉未显示当前模型"
+    assert "（${escapeHtml(p.current_model)}）" in list_js, "Provider 下拉未拼接模型名"
+    assert "providerCurrentModel(" in list_js, "缺少 Provider 当前模型解析"
+    assert "模型名不能为空" not in list_js, "表单仍保留独立模型必填校验"
 
 
 def test_frontend_reviewer_rail_location():
@@ -1256,6 +1372,100 @@ def test_frontend_report_list_actions():
     )
 
 
+def test_frontend_report_three_tabs():
+    """报告详情弹窗按 3 类组织（统计 / 详情 / LLM 报告），统计不展开会话。
+
+    统计 tab 用 buildReportOverview 纯聚合（metrics_summary 聚合行 + 断言
+    通过/失败总数 + 耗时 min/max/avg/p50/p95 + 评审失败），详情 tab 完整
+    执行数据（buildResultsTable / renderFinalVerdicts）+「导出原始数据」，
+    LLM 报告 tab 本阶段为占位（阶段 3 填充）。
+    """
+    reports_js = _read_module("testset_reports")
+    assert "统计" in reports_js and "详情" in reports_js and "LLM 报告" in reports_js, (
+        "报告详情弹窗缺少 3 个 tab"
+    )
+    assert "switchReportTab(" in reports_js, "缺少报告 tab 切换"
+    assert "data.assertions" in reports_js, "统计未读断言聚合（assertions）"
+    assert "data.durations" in reports_js, "统计未读耗时聚合（durations）"
+    assert "断言：通过" in reports_js, "缺少断言统计行文案"
+    assert "耗时：平均" in reports_js, "缺少耗时统计行文案"
+    assert "导出原始数据" in reports_js, "详情 tab 缺少导出原始数据入口"
+    assert "buildLlmReportPane(" in reports_js, "缺少 LLM 报告 tab 面板"
+
+
+def test_frontend_render_markdown_module():
+    """markdown 受限子集渲染器模块存在、导出纯函数、零依赖、文本转义防 XSS。
+
+    render_markdown.js 是 LLM 报告渲染器（阶段 3 新增）：parseMarkdown /
+    parseInline 零 DOM 依赖纯函数（node:test 直接加载测试），renderMarkdownBlocks
+    以调用方提供的 doc 渲染，文本一律经 textContent / createTextNode 落（LLM
+    输出是数据不是代码，进 DOM 前不拼 innerHTML），链接 href 仅放行 http(s)/
+    mailto（其余置 "#"）。行为由 tests/frontend/render_markdown.test.mjs 覆盖，
+    这里做结构性防回归。
+    """
+    import re
+
+    md_js = _read_module("render_markdown")
+    assert "export function parseMarkdown(" in md_js, "缺少 parseMarkdown 导出"
+    assert "export function parseInline(" in md_js, "缺少 parseInline 导出"
+    assert "export function renderMarkdownBlocks(" in md_js, (
+        "缺少 renderMarkdownBlocks 导出"
+    )
+    assert not re.search(r"^\s*import\b", md_js, re.MULTILINE), (
+        "render_markdown.js 不得 import 其它模块（保持零依赖可被 node:test 直接加载）"
+    )
+    assert "innerHTML" not in md_js, (
+        "渲染器不得拼 innerHTML（转义须由 textContent 保证）"
+    )
+    assert "safeHref" in md_js, "缺少链接协议白名单 safeHref"
+    # 报告视图从该模块 import 并渲染 LLM 报告文本
+    reports_js = _read_module("testset_reports")
+    assert 'from "./render_markdown.js"' in reports_js, "报告视图未 import 渲染器"
+
+
+def test_frontend_report_llm_form():
+    """测试集编辑器报告 LLM 配置表单（Provider 下拉 + 生成提示词）+ api 封装。
+
+    report_llm 是测试集级持久化配置：编辑视图报告开关下方有 Provider 下拉 /
+    提示词输入（initReportLlmConfig 初始化、collectReportLlmConfig 收集），
+    保存 payload 携带 report_llm；api.js 提供 generateLlmReport 端点封装。
+    """
+    editor_js = _read_module("testset_editor")
+    html = (PLUGIN_DIR / "pages" / "testbench" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    assert "ts-report-llm-provider" in html, "编辑视图缺少报告 LLM Provider 下拉"
+    assert "ts-report-llm-prompt" in html, "编辑视图缺少报告 LLM 提示词输入"
+    assert "initReportLlmConfig(" in editor_js, "缺少报告 LLM 配置初始化"
+    assert "collectReportLlmConfig()" in editor_js, "缺少报告 LLM 配置收集"
+    assert "report_llm: collectReportLlmConfig()" in editor_js, (
+        "保存 payload 未携带 report_llm"
+    )
+    assert "ts-report-llm-provider" in editor_js, "编辑器未绑定报告 LLM 下拉"
+    assert "ts-report-llm-prompt" in editor_js, "编辑器未绑定报告 LLM 提示词"
+    api_js = _read_module("api")
+    assert "generateLlmReport(" in api_js, "api.js 缺少 generateLlmReport 封装"
+    assert "llm-report" in api_js, "api.js 生成端点路径缺失"
+
+
+def test_frontend_report_llm_button_and_pane():
+    """报告条目「生成 LLM 报告」按钮与详情弹窗 LLM 报告 tab（阶段 3 落地）。
+
+    报告条目按钮仅在测试集配置了 report_llm（provider_id）时显示（未配置不
+    显示，避免死按钮）；生成 / 重新生成走 generateLlmReportAction；详情弹窗
+    LLM 报告 tab 用 renderMarkdownBlocks 渲染 markdown（无产物时给引导提示）。
+    """
+    reports_js = _read_module("testset_reports")
+    assert "生成 LLM 报告" in reports_js, "报告条目缺少生成 LLM 报告按钮"
+    assert "重新生成 LLM 报告" in reports_js, "缺少重新生成 LLM 报告文案"
+    assert "generateLlmReportAction(" in reports_js, "缺少生成 LLM 报告动作"
+    assert "renderMarkdownBlocks(" in reports_js, "LLM 报告 tab 未用渲染器渲染"
+    assert "未生成 LLM 报告" in reports_js, "缺少未生成 LLM 报告引导提示"
+    assert "ts.report_llm && ts.report_llm.provider_id" in reports_js, (
+        "生成按钮未按 report_llm 配置显隐"
+    )
+
+
 def test_frontend_pure_module_extracted():
     """纯函数抽取完整性：pure.js 承载可测纯逻辑，页面模块经 import 复用同一实现。
 
@@ -1298,4 +1508,52 @@ def test_frontend_pure_module_extracted():
     )
     assert "function ruleFailCount(" not in run_js, (
         "testset_run.js 残留 ruleFailCount 定义"
+    )
+
+
+def test_frontend_defensive_fixes():
+    """质量复审修复轮的防御性改动标记（防回归）。
+
+    本轮（v0.4.4 不 bump）修复：事件流订阅建立即失败的延迟重连、历史/消息流
+    加载失败回退缓存、群成员变更异步失败反馈、报告视图乱序响应丢弃、新建测试
+    集未保存修改确认、新建测试组直接建 0 会话空组不弹窗。各标记为修复的静态
+    落点，缺失即修复被回退。
+    """
+    reports_js = _read_module("testset_reports")
+    events_js = _read_module("events")
+    app_js = _read_module("app")
+    list_js = _read_module("testset_list")
+    identity_js = _read_module("identity_list")
+    gl_js = _read_module("group_list")
+    assert "reportSeq" in reports_js, "报告视图缺少渲染序号守卫 reportSeq"
+    assert "事件流订阅失败" in events_js, "事件流订阅建立失败缺少延迟重连"
+    assert "state.historyCache.get(id)" in app_js, "历史加载失败未回退缓存"
+    assert "state.streamCache.get(id)" in app_js, "消息流加载失败未回退缓存"
+    assert "doOpenNewTestset" in list_js, "新建测试集未提取 doOpenNewTestset（脏确认）"
+    assert "成员加入失败" in identity_js, "群成员加入失败缺少错误反馈"
+    assert "成员移除失败" in identity_js, "群成员移除失败缺少错误反馈"
+    assert "群聊名称保存失败" in identity_js, "群聊名称保存失败缺少错误反馈"
+    assert "createGroup({ count: 0 })" in gl_js, (
+        "「＋ 新建测试组」未改为直接建 0 会话空组"
+    )
+    assert "showRunStatus" in gl_js, "新建测试组后缺少状态提示"
+
+
+def test_frontend_modal_error_keeps_content():
+    """onOk 校验 / 请求失败时弹窗不关闭、表单内容保留（防回归）。
+
+    曾出现：新建评审 Profile 不合规时，确定按钮先关闭弹窗再执行 onOk，
+    onOk 抛错（前端校验或后端 400）时已填内容全部丢失、错误只在新弹窗里
+    提示。修复后失败在弹窗内联 #modal-error 区提示、内容原样保留，用户
+    修正后可直接再次保存。
+    """
+    modal_js = _read_module("modal")
+    html = _read_html()
+    assert 'id="modal-error"' in html, "index.html 缺少弹窗内联错误区"
+    assert "showModalError" in modal_js, "modal.js 缺少内联错误提示函数"
+    assert "clearModalError" in modal_js, "modal.js 缺少错误区清理函数"
+    # 失败路径先提示错误再 return（弹窗保持打开），成功路径才 hideModal——
+    # 静态断言错误分支不经过关闭弹窗的代码
+    assert "showModalError(err.message || String(err));\n    return;" in modal_js, (
+        "onOk 失败路径未保留弹窗（应先内联提示错误再 return，而非关闭弹窗）"
     )

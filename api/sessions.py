@@ -5,11 +5,11 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from astrbot.api.web import error_response, json_response, request
+from astrbot.api.web import error_response, json_response
 
 from ..core.conf_routes import delete_route_if_exists
 from ..store.group_store import umo_of
-from .common import MAX_SESSIONS_PER_GROUP, ConfRouteMixin
+from .common import MAX_SESSIONS_PER_GROUP, ConfRouteMixin, json_dict
 
 
 class SessionsAPI(ConfRouteMixin):
@@ -21,7 +21,9 @@ class SessionsAPI(ConfRouteMixin):
 
     async def update_session(self):
         """设置会话自身的配置覆盖；传 null 恢复继承组配置，conf_id 传空串显式使用默认档案。"""
-        payload = await request.json(default={})
+        payload = await json_dict()
+        if payload is None:
+            return error_response("请求体必须是 JSON 对象", status_code=400)
         session_id = payload.get("id")
         if not isinstance(session_id, str) or not session_id:
             return error_response("id 不能为空", status_code=400)
@@ -73,7 +75,9 @@ class SessionsAPI(ConfRouteMixin):
 
     async def delete_sessions(self):
         """删除虚拟会话，并联动清理其配置档案路由、原生对话历史与消息流。"""
-        payload = await request.json(default={})
+        payload = await json_dict()
+        if payload is None:
+            return error_response("请求体必须是 JSON 对象", status_code=400)
         ids = payload.get("ids")
         if not isinstance(ids, list) or not ids:
             return error_response("ids 不能为空", status_code=400)
@@ -87,7 +91,9 @@ class SessionsAPI(ConfRouteMixin):
     async def clone_sessions(self):
         """克隆会话：在源会话所属测试组内新建 count 个会话，并把源会话的
         对话历史拷贝给每个新会话——同一历史起点，可分别改配置/模型测试。"""
-        payload = await request.json(default={})
+        payload = await json_dict()
+        if payload is None:
+            return error_response("请求体必须是 JSON 对象", status_code=400)
         session_id = payload.get("session_id")
         count = payload.get("count")
         if not isinstance(session_id, str) or not session_id:
@@ -133,7 +139,9 @@ class SessionsAPI(ConfRouteMixin):
         """衍生会话：基于某会话的对话历史创建全新测试组，组内每个会话的历史
         都与该目标会话一致——同一起点的全新会话集合，便于后续分别改配置测试。
         新组继承源组的平台/档案/发送者配置。"""
-        payload = await request.json(default={})
+        payload = await json_dict()
+        if payload is None:
+            return error_response("请求体必须是 JSON 对象", status_code=400)
         session_id = payload.get("session_id")
         count = payload.get("count")
         if not isinstance(session_id, str) or not session_id:
@@ -213,7 +221,9 @@ class SessionsAPI(ConfRouteMixin):
 
     async def reset_sessions(self):
         """重置虚拟会话的对话历史与消息流（删除该 umo 下的全部对话）。"""
-        payload = await request.json(default={})
+        payload = await json_dict()
+        if payload is None:
+            return error_response("请求体必须是 JSON 对象", status_code=400)
         ids = payload.get("ids")
         if not isinstance(ids, list) or not ids:
             return error_response("ids 不能为空", status_code=400)

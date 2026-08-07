@@ -115,6 +115,19 @@ export function createTestsetList(env) {
   }
 
   function openNewTestset() {
+    // 与切换 / 删除 / 导入一致：有未保存修改时先确认，否则 createTestset 之后
+    // clearDirty 会把脏状态掩盖掉，未保存的编辑被静默丢弃
+    if (editor.getDirty()) {
+      showModal("新建将丢弃当前测试集的未保存修改，确定吗？", {
+        danger: true,
+        onOk: () => doOpenNewTestset(),
+      });
+      return;
+    }
+    doOpenNewTestset();
+  }
+
+  function doOpenNewTestset() {
     const inp = document.createElement("input");
     inp.type = "text";
     inp.value = "测试集";
@@ -289,6 +302,12 @@ export function createTestsetList(env) {
     return found ? found[1] : mode;
   }
 
+  // Provider 的当前模型（profile 省略 model 时评审用的实际模型）
+  function providerCurrentModel(providerId) {
+    const p = state.providers.find((x) => x.id === providerId);
+    return p ? p.current_model : null;
+  }
+
   // 渲染评审 Profile 列表：无 profile → 提示 + 新建入口；有 → 逐条摘要 + 编辑/删除
   function renderReviewerList() {
     const list = $("reviewer-list");
@@ -317,7 +336,9 @@ export function createTestsetList(env) {
         `</div>` +
         `<div class="group-meta">` +
         `<span class="badge" title="Provider">${escapeHtml(profile.provider_id)}</span>` +
-        `<span class="badge" title="模型">${escapeHtml(profile.model || "—")}</span>` +
+        `<span class="badge" title="模型（省略时用 Provider 当前模型）">${escapeHtml(
+          profile.model || providerCurrentModel(profile.provider_id) || "—",
+        )}</span>` +
         `<span class="badge" title="评审上下文">${contextModeLabel(profile.context)}</span>` +
         `<span class="badge" title="输出契约指标数">${metricsCount} 个指标</span>` +
         `</div>`;
@@ -366,7 +387,8 @@ export function createTestsetList(env) {
     editor.refreshAllProfileSelects();
   }
 
-  // 评审 Profile 表单弹窗（新建 / 编辑共用）：provider / 模型 / 提示词 / 输出契约指标。
+  // 评审 Profile 表单弹窗（新建 / 编辑共用）：Provider（供应商 / 模型，不单独
+  // 配模型）/ 提示词 / 输出契约指标。
   // 校验失败（throw）停留在弹窗；保存成功后刷新 Profile 列表与编辑器下拉
   function openProfileForm(existing) {
     const wrap = document.createElement("div");
@@ -380,25 +402,20 @@ export function createTestsetList(env) {
     inpNote.placeholder = "备注（可选）";
     inpNote.value = existing ? existing.note || "" : "";
 
+    // Provider 即「供应商 / 模型」：不单独配模型，评审用 Provider 当前模型；
+    // 下拉显示供应商名 + 当前模型，避免只显示供应商名无法区分同名供应商
     const selProvider = document.createElement("select");
     selProvider.innerHTML =
       `<option value="">选择 Provider…</option>` +
       state.providers
         .map(
           (p) =>
-            `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name || p.id)}</option>`,
+            `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name || p.id)}${
+              p.current_model ? `（${escapeHtml(p.current_model)}）` : ""
+            }</option>`,
         )
         .join("");
     if (existing && existing.provider_id) selProvider.value = existing.provider_id;
-
-    const inpModel = document.createElement("input");
-    inpModel.type = "text";
-    inpModel.placeholder = "模型名（如 gpt-4o），建议与当前 Provider 模型一致";
-    inpModel.value = existing ? existing.model || "" : "";
-    selProvider.addEventListener("change", () => {
-      const p = state.providers.find((x) => x.id === selProvider.value);
-      if (p && p.current_model) inpModel.value = p.current_model;
-    });
 
     const selContext = document.createElement("select");
     selContext.innerHTML = CONTEXT_MODES.filter(([v]) => v)
@@ -422,7 +439,7 @@ export function createTestsetList(env) {
     const agentPromptHint = document.createElement("p");
     agentPromptHint.className = "hint";
     agentPromptHint.textContent =
-      "提示词还可用 {{agent_system_prompt}} 占位符：运行时展开为被测 agent 的装饰后系统提示词（未捕获时为空串），由你在提示词中自行编排。";
+      "{{agent_system_prompt}} 占位符已废弃（评审 Provider 可能不透传系统提示词，内容到不了评审 LLM）：被测 agent 的系统提示词改由测试集里 LLM 断言行的「注入提示词」开关注入到评审输入开头。";
 
     const metricsBox = buildMetricsEditor(existing ? existing.metrics : null);
 
@@ -444,8 +461,7 @@ export function createTestsetList(env) {
     wrap.append(
       field("名称", inpName),
       field("备注", inpNote),
-      field("Provider", selProvider),
-      field("模型", inpModel),
+      field("Provider（供应商 / 模型）", selProvider),
       field("上下文", selContext),
       field("系统提示词", taPrompt),
       promptHint,
@@ -535,7 +551,6 @@ export function createTestsetList(env) {
       onOk: async () => {
         if (!inpName.value.trim()) throw new Error("评审 Profile 名称不能为空");
         if (!selProvider.value) throw new Error("请选择 Provider");
-        if (!inpModel.value.trim()) throw new Error("模型名不能为空");
         if (!taPrompt.value.trim()) throw new Error("系统提示词不能为空");
         const metrics = collectMetrics(metricsBox);
         if (!metrics.length) throw new Error("至少需要一个评审指标");
@@ -543,7 +558,9 @@ export function createTestsetList(env) {
           name: inpName.value.trim(),
           note: inpNote.value.trim() || undefined,
           provider_id: selProvider.value,
-          model: inpModel.value.trim(),
+          // model 清空：评审只用 Provider 当前模型；编辑旧 profile 时顺带清除
+          // 历史遗留的显式 model（表单已无模型字段，避免不可见的旧模型残留）
+          model: "",
           context: selContext.value,
           system_prompt: taPrompt.value,
           metrics,

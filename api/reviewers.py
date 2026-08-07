@@ -8,9 +8,10 @@ Reviewer profile 是评审层 LLM 规则的配置实体（provider / 模型 / �
 
 from __future__ import annotations
 
-from astrbot.api.web import error_response, json_response, request
+from astrbot.api.web import error_response, json_response
 
 from ..eval.reviewer import metrics_contract_description, validate_profile
+from .common import json_dict
 
 # profile 可更新字段（白名单；id / created_at 不可改）
 _PROFILE_KEYS = (
@@ -38,7 +39,9 @@ class ReviewersAPI:
 
     async def create_reviewer(self):
         """创建评审 profile（校验输出契约；支持多个，按 id 引用）。"""
-        payload = await request.json(default={})
+        payload = await json_dict()
+        if payload is None:
+            return error_response("请求体必须是 JSON 对象", status_code=400)
         candidate = _candidate_from(payload)
         errors = validate_profile(candidate)
         if errors:
@@ -50,7 +53,9 @@ class ReviewersAPI:
 
     async def update_reviewer(self, reviewer_id: str):
         """更新评审 profile（只更新传入字段；合并后校验输出契约）。"""
-        payload = await request.json(default={})
+        payload = await json_dict()
+        if payload is None:
+            return error_response("请求体必须是 JSON 对象", status_code=400)
         existing = self.reviewer_store.get_profile(reviewer_id)
         if existing is None:
             return error_response("未找到该评审 profile", status_code=404)
@@ -74,7 +79,9 @@ class ReviewersAPI:
         预览容忍半成品行：缺 key 的行丢弃（保存时 validate_profile 会拦截，
         这里只展示「已填好的合法行」展开成什么样）。
         """
-        payload = await request.json(default={})
+        payload = await json_dict()
+        if payload is None:
+            return error_response("请求体必须是 JSON 对象", status_code=400)
         metrics = payload.get("metrics")
         if not isinstance(metrics, list):
             return error_response("metrics 必须是列表", status_code=400)
@@ -89,7 +96,9 @@ class ReviewersAPI:
 
     async def delete_reviewers(self):
         """删除评审 profile。"""
-        payload = await request.json(default={})
+        payload = await json_dict()
+        if payload is None:
+            return error_response("请求体必须是 JSON 对象", status_code=400)
         ids = payload.get("ids")
         if not isinstance(ids, list) or not ids:
             return error_response("ids 不能为空", status_code=400)

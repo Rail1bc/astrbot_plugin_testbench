@@ -138,6 +138,12 @@ export async function retryReviews(reportId, payload) {
   );
 }
 
+export async function generateLlmReport(reportId) {
+  // 按测试集 report_llm 配置生成 LLM 报告；返回更新后的完整报告数据
+  // （data.llm_report 已写入）
+  return bridge.apiPost(`reports/${encodeURIComponent(reportId)}/llm-report`, {});
+}
+
 export async function listIdentities() {
   return bridge.apiGet("identities");
 }

@@ -40,6 +40,7 @@ from .core.virtual_event import (
     TESTBENCH_LLM_REQUESTED_EXTRA_KEY,
     VirtualMessageEvent,
 )
+from .eval.persona import resolve_agent_system_prompt
 from .history_ops import HistoryOps
 from .store.group_store import VirtualGroupManager
 from .store.identity_store import ChatGroupStore, IdentityStore
@@ -135,4 +136,32 @@ class VirtualSessionPlugin(
         if isinstance(event, VirtualMessageEvent) and event.entry_id:
             self.runner.mark_llm(event.entry_id)
             event.set_extra(TESTBENCH_LLM_REQUESTED_EXTRA_KEY, True)
-            event.set_extra(TESTBENCH_LLM_INPUT_EXTRA_KEY, _snapshot_llm_input(req))
+            snapshot = _snapshot_llm_input(req)
+            if not snapshot["system_prompt"]:
+                # begin_dialogs 型人格的身份不写进 req.system_prompt，从配置档案回退解析
+                snapshot["system_prompt"] = await self._resolve_persona_system_prompt(
+                    event, req
+                )
+            event.set_extra(TESTBENCH_LLM_INPUT_EXTRA_KEY, snapshot)
+
+    async def _resolve_persona_system_prompt(self, event, req) -> str:
+        """快照 system_prompt 为空时回退解析被测 agent 的人格（薄包装）。
+
+        astrbot 的人格装饰（`_ensure_persona_and_skills`）：人格的 `prompt`
+        字段写进 req.system_prompt，而**开场对话（begin_dialogs）型人格**把
+        身份文本注入 req.contexts 对话历史、不碰 system_prompt——这类会话的
+        快照系统提示词恒为空，评审材料看不到人格设定。这里从会话配置档案
+        解析人格，把提示词与开场对话补进快照，使评审 LLM 仍能看到被测 agent
+        的人格设定。解析失败 / 无人格 → 空串（评审层显示未捕获占位）。
+
+        实现与日志见 eval/persona.py（评审阶段 Assessor 复用同一份，捕获 hook
+        未触发时评审仍能补上人格）。
+        """
+        return await resolve_agent_system_prompt(
+            self.context,
+            umo=event.unified_msg_origin,
+            conv_persona_id=getattr(
+                getattr(req, "conversation", None), "persona_id", None
+            ),
+            platform_name=event.get_platform_name(),
+        )

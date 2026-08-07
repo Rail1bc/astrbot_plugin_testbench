@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from astrbot.api.web import error_response, json_response, request
+from astrbot.api.web import error_response, json_response
 
 from ..core.conf_routes import delete_route_if_exists
 from ..core.conf_tools import conf_has_callable_tools
 from ..store.group_store import umo_of
-from .common import MAX_SESSIONS_PER_GROUP, ConfRouteMixin
+from .common import MAX_SESSIONS_PER_GROUP, ConfRouteMixin, json_dict
 
 
 class GroupsAPI(ConfRouteMixin):
@@ -53,14 +53,21 @@ class GroupsAPI(ConfRouteMixin):
         return False
 
     async def create_group(self):
-        """创建测试组并生成组内虚拟会话，可选绑定配置档案（UCR 会话级路由）。"""
-        payload = await request.json(default={})
+        """创建测试组并生成组内虚拟会话，可选绑定配置档案（UCR 会话级路由）。
+
+        count=0 创建空测试组（前端「＋ 新建测试组」直接建空组不弹窗，用户
+        后续在编辑弹窗按「会话数量」补齐），避免先建会话再因取消弹窗留下
+        误建的会话。
+        """
+        payload = await json_dict()
+        if payload is None:
+            return error_response("请求体必须是 JSON 对象", status_code=400)
         count = payload.get("count", 1)
         if not isinstance(count, int) or isinstance(count, bool):
             return error_response("count 必须是整数", status_code=400)
-        if count < 1 or count > MAX_SESSIONS_PER_GROUP:
+        if count < 0 or count > MAX_SESSIONS_PER_GROUP:
             return error_response(
-                f"count 必须在 1-{MAX_SESSIONS_PER_GROUP} 之间",
+                f"count 必须在 0-{MAX_SESSIONS_PER_GROUP} 之间",
                 status_code=400,
             )
         conf_id = payload.get("conf_id") or None
@@ -83,7 +90,9 @@ class GroupsAPI(ConfRouteMixin):
 
     async def delete_groups(self):
         """删除测试组，并联动清理组内会话的配置档案路由、原生对话历史与消息流。"""
-        payload = await request.json(default={})
+        payload = await json_dict()
+        if payload is None:
+            return error_response("请求体必须是 JSON 对象", status_code=400)
         ids = payload.get("ids")
         if not isinstance(ids, list) or not ids:
             return error_response("ids 不能为空", status_code=400)
@@ -101,7 +110,9 @@ class GroupsAPI(ConfRouteMixin):
 
     async def add_group_sessions(self, group_id: str):
         """向测试组内新增会话（继承组配置，组配置档案同样应用到新会话）。"""
-        payload = await request.json(default={})
+        payload = await json_dict()
+        if payload is None:
+            return error_response("请求体必须是 JSON 对象", status_code=400)
         count = payload.get("count", 1)
         if not isinstance(count, int) or isinstance(count, bool):
             return error_response("count 必须是整数", status_code=400)
@@ -131,7 +142,9 @@ class GroupsAPI(ConfRouteMixin):
         会话已单独覆盖的字段不受组配置变更影响（会话覆盖优先）。平台或消息
         类型变更使 umo 变化：清理旧 umo 的路由与对话历史，再按新的有效配置同步。
         """
-        payload = await request.json(default={})
+        payload = await json_dict()
+        if payload is None:
+            return error_response("请求体必须是 JSON 对象", status_code=400)
         group = self.group_mgr.get_group(group_id)
         if group is None:
             return error_response("未找到该测试组", status_code=404)

@@ -7,6 +7,7 @@ from typing import Any
 from astrbot.api.web import error_response, json_response, request
 
 from ..store.testset_store import MAX_MESSAGES_PER_TESTSET
+from .common import json_dict
 
 
 class TestsetsAPI:
@@ -136,6 +137,17 @@ class TestsetsAPI:
             out.append({"rule": rule, "scope": scope})
         return out
 
+    @staticmethod
+    def _validate_report_llm(report_llm: Any) -> bool:
+        """校验报告 LLM 配置：提供时须为 dict 且 provider_id 非空字符串。"""
+        if report_llm is None:
+            return True
+        return (
+            isinstance(report_llm, dict)
+            and isinstance(report_llm.get("provider_id"), str)
+            and bool(report_llm["provider_id"].strip())
+        )
+
     def _clean_id_ref(self, value: Any) -> str | None:
         """清洗可选 id 引用：非空字符串保留（去空白），其余归一为 None。"""
         if isinstance(value, str) and value.strip():
@@ -208,7 +220,9 @@ class TestsetsAPI:
 
     async def create_testset(self):
         """创建测试集（名称 + 连续 user 消息序列，消息可带回复断言规则）。"""
-        payload = await request.json(default={})
+        payload = await json_dict()
+        if payload is None:
+            return error_response("请求体必须是 JSON 对象", status_code=400)
         messages = self._validate_messages(payload.get("messages"))
         if messages is None:
             return error_response("messages 必须是消息数组", status_code=400)
@@ -228,6 +242,11 @@ class TestsetsAPI:
         report_enabled = payload.get("report_enabled")
         if report_enabled is not None and not isinstance(report_enabled, bool):
             return error_response("report_enabled 必须是布尔值", status_code=400)
+        report_llm = payload.get("report_llm")
+        if not self._validate_report_llm(report_llm):
+            return error_response(
+                "report_llm 须为含 provider_id 的配置对象", status_code=400
+            )
         identity_mode, identity_id, chat_group_id, identity_snapshot, pool_snapshot = (
             self._resolve_identity_snapshot(payload)
         )
@@ -243,12 +262,15 @@ class TestsetsAPI:
             identity_snapshot=identity_snapshot,
             pool_snapshot=pool_snapshot,
             report_enabled=report_enabled or False,
+            report_llm=report_llm,
         )
         return json_response(testset)
 
     async def update_testset(self, testset_id: str):
         """更新测试集（名称、消息序列与批量发送范围整体替换）。"""
-        payload = await request.json(default={})
+        payload = await json_dict()
+        if payload is None:
+            return error_response("请求体必须是 JSON 对象", status_code=400)
         messages = self._validate_messages(payload.get("messages"))
         if messages is None:
             return error_response("messages 必须是消息数组", status_code=400)
@@ -268,6 +290,11 @@ class TestsetsAPI:
         report_enabled = payload.get("report_enabled")
         if report_enabled is not None and not isinstance(report_enabled, bool):
             return error_response("report_enabled 必须是布尔值", status_code=400)
+        report_llm = payload.get("report_llm")
+        if not self._validate_report_llm(report_llm):
+            return error_response(
+                "report_llm 须为含 provider_id 的配置对象", status_code=400
+            )
         identity_mode, identity_id, chat_group_id, identity_snapshot, pool_snapshot = (
             self._resolve_identity_snapshot(payload)
         )
@@ -284,6 +311,7 @@ class TestsetsAPI:
             identity_snapshot=identity_snapshot,
             pool_snapshot=pool_snapshot,
             report_enabled=report_enabled or False,
+            report_llm=report_llm,
         )
         if testset is None:
             return error_response("未找到该测试集", status_code=404)
@@ -291,7 +319,9 @@ class TestsetsAPI:
 
     async def delete_testsets(self):
         """删除测试集。"""
-        payload = await request.json(default={})
+        payload = await json_dict()
+        if payload is None:
+            return error_response("请求体必须是 JSON 对象", status_code=400)
         ids = payload.get("ids")
         if not isinstance(ids, list) or not ids:
             return error_response("ids 不能为空", status_code=400)
@@ -312,7 +342,9 @@ class TestsetsAPI:
         不影响执行；运行记录可经 ``/testsets/run/status`` 查询、
         ``/testsets/runs`` 找回、``abort`` 取消。
         """
-        payload = await request.json(default={})
+        payload = await json_dict()
+        if payload is None:
+            return error_response("请求体必须是 JSON 对象", status_code=400)
         testset_id = payload.get("testset_id")
         if not isinstance(testset_id, str) or not testset_id:
             return error_response("testset_id 不能为空", status_code=400)
@@ -352,7 +384,9 @@ class TestsetsAPI:
 
     async def abort_testset_run(self):
         """请求取消测试集运行：当前步骤照常完成并收结果，后续步骤不再发。"""
-        payload = await request.json(default={})
+        payload = await json_dict()
+        if payload is None:
+            return error_response("请求体必须是 JSON 对象", status_code=400)
         run_id = payload.get("run_id")
         if not isinstance(run_id, str) or not run_id:
             return error_response("run_id 不能为空", status_code=400)

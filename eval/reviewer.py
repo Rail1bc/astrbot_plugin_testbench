@@ -13,14 +13,18 @@
 profile 输出契约声明（指标类型必须配置声明、不能运行时推断——报告模板要算
 avg/min/max 就必须知道哪个字段是数字）：
 
-    {"provider_id", "model", "system_prompt", "context": "reply|record|slice",
+    {"provider_id", "model"?, "system_prompt", "context": "reply|record|slice",
      "metrics": [{"key", "type": "number|enum|text",
                   "enum_values"?, "pass_threshold"?, "pass_categories"?}]}
 
+``model`` 可省略（评审 Profile 只配 Provider 即可，省略时调用评审 LLM 传
+``model=None`` 使用 Provider 当前模型）；旧数据保留的显式 model 仍生效。
+
 system_prompt 支持占位符 ``{{metrics}}``（自动展开为逐字段取值要求 + 示例的
-简明输出契约描述，无需用户在提示词里手工维护）；也支持
-``{{agent_system_prompt}}``（被测 agent 的装饰后系统提示词，由用户在评审
-提示词中自行编排；未捕获时为空串）。
+简明输出契约描述，无需用户在提示词里手工维护）。``{{agent_system_prompt}}``
+占位符已废弃：被测 agent 的（装饰后）系统提示词改由 LLM 断言的可选「注入」
+开关（``rule.inject_system_prompt``，缺省开启）注入评审输入（prompt）开头——
+prompt 是所有 Provider 必传的，不依赖评审 Provider 是否透传 system_prompt。
 """
 
 from __future__ import annotations
@@ -46,8 +50,7 @@ def validate_profile(profile: dict) -> list[str]:
         or not profile["provider_id"].strip()
     ):
         errors.append("provider_id 必填")
-    if not isinstance(profile.get("model"), str) or not profile["model"].strip():
-        errors.append("model 必填")
+    # model 可选：省略时评审用 Provider 当前模型（`call_reviewer` 传 None）
     if (
         not isinstance(profile.get("system_prompt"), str)
         or not profile["system_prompt"].strip()
@@ -216,15 +219,17 @@ async def call_reviewer(
     context,
     profile: dict,
     context_text: str,
-    agent_system_prompt: str | None = None,
 ) -> tuple[list[dict] | None, str | None, str | None, str]:
     """调用评审 LLM 并解析校验输出。返回 (metrics, error, status, raw)。
 
     status ∈ ("error" | "invalid" | None)；metrics 仅在 ok（status=None）时非空。
     raw 为评审 LLM 的原始返回文本（error 无输出时为空串）。
 
-    agent_system_prompt：被测 agent 的（装饰后）系统提示词，供 ``{{agent_system_prompt}}``
-    占位符展开；未捕获时为空串（展开 ctx 恒含该键，避免字面量占位符残留）。
+    ``{{agent_system_prompt}}`` 占位符已废弃：被测 agent 的（装饰后）系统提示词
+    改由 LLM 断言的可选「注入」开关（assessor 在评审输入 prompt 开头注入，见
+    eval/assessor.py）承担——prompt 对所有 Provider 必传，不依赖评审 Provider
+    是否透传 system_prompt。此处仅清空残留字面量占位符，避免未经展开的占位符
+    泄漏到评审 LLM。
     """
     provider = None
     provider_id = profile.get("provider_id")
@@ -234,11 +239,11 @@ async def call_reviewer(
         return None, "未找到评审 Provider", "error", ""
     system_prompt = expand_prompt(
         profile.get("system_prompt") or "",
-        {
-            "metrics": metrics_contract_description(profile.get("metrics") or []),
-            "agent_system_prompt": agent_system_prompt or "",
-        },
+        {"metrics": metrics_contract_description(profile.get("metrics") or [])},
     )
+    # {{agent_system_prompt}} 占位符已废弃（注入改走 prompt 开头）；残留字面量
+    # 清成空串，避免未展开的占位符泄漏到评审 LLM 的 system_prompt。
+    system_prompt = re.sub(r"\{\{\s*agent_system_prompt\s*\}\}", "", system_prompt)
     try:
         resp = await provider.text_chat(
             prompt=context_text,
@@ -300,7 +305,8 @@ def llm_verdict(
     raw 为评审 LLM 原始返回文本，context_text 为评审时喂给 LLM 的上下文，
     两者供前端详情查看（error 无输出时为空串 / None）；profile_id 供报告
     评审重试按 id 解析当前 profile 重新调用；agent_system_prompt 随 verdict
-    存储，使报告评审重试自包含（重跑时仍能展开 ``{{agent_system_prompt}}``）。
+    存储作信息保留（评审重试用存储的 context_text——其中已含按开关注入的
+    被测 agent 系统提示词，故重跑自包含）。
     """
     if status is not None or error is not None:
         return {
@@ -350,7 +356,6 @@ async def retry_llm_verdict(
         context,
         profile,
         context_text,
-        agent_system_prompt=agent_system_prompt,
     )
     return (
         llm_verdict(

@@ -35,7 +35,11 @@ def conf_tool_info(conf: dict | None) -> dict[str, Any]:
             "cron_tools": False,
         }
     ps = conf.get("provider_settings") or {}
+    if not isinstance(ps, dict):
+        ps = {}
     pc = ps.get("proactive_capability") or {}
+    if not isinstance(pc, dict):
+        pc = {}
     info: dict[str, Any] = {
         "computer_use_runtime": ps.get("computer_use_runtime"),
         "web_search": bool(ps.get("web_search")),

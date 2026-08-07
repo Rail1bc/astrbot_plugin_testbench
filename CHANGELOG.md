@@ -5,6 +5,68 @@
 <!-- markdownlint-disable MD041 -->
 # ChangeLog
 
+## [v0.4.5] - 2026-08-07
+
+### 🐛 Bug Fixes (修复)
+
+- **运行器消息流写入失败不再挂起运行（HIGH）**：`_await_event` 的流回填调用包 try/except——`stream_store.update_reply` / `append` 抛错（磁盘故障等）时记录日志后继续，`done` / `test_done` 完成判定恒执行，运行不会挂到 `STALE_RUN_TIMEOUT` / `TESTSET_STEP_TIMEOUT` 超时。
+- **「＋ 新建测试组」改为直接建 0 会话空组、不再弹编辑弹窗**：此前创建即弹编辑弹窗，点取消测试组也已被创建（含 1 个会话）；现 `create_group` 允许 `count=0` 创建空测试组，前端直接建组留在列表、不弹窗，用户按需点 ✎ 编辑补配置与「会话数量」。
+- **全 POST handler 非 dict JSON 体不再 500**：`api/common.py` 新增 `json_dict()` 统一读取 helper，全部 POST handler（api/ 下 28 处 + `history_ops` 的 `save_history` / `regenerate_history` 2 处，共 30 处）的 `request.json(default={})` 调用点替换——数组 / 标量 / null 请求体统一返回 400「请求体必须是 JSON 对象」，不再因 `.get` 触发 AttributeError → 500。
+- **配置档案嵌套键类型错误不再崩溃**：`conf_tool_info` 对非 dict 的 `provider_settings` / `proactive_capability` 按空对象处理（配置被手改坏时 `list_confs` / `list_groups` 不再 500）。
+- **测试集消息清洗容忍非 dict 项**：`_normalize_messages` 对非 dict 消息项直接跳过（直调 store 时不因 `.get` 崩溃）。
+- **前端事件流订阅建立即失败可重连**：`connectEvents` 主体包 try/catch，`subscribeEvents` 初始 reject 时同样延迟 3s 重连（此前只在断线回调里重连，首次订阅失败事件层本会话报废）。
+- **历史 / 消息流加载失败回退缓存**：`loadHistory` / `loadStream` 的失败分支优先渲染 `state.historyCache` / `state.streamCache` 已有内容，仅无缓存时才显示错误（瞬态失败不再摧毁已渲染好的面板）。
+- **群成员变更异步失败有反馈**：`removeMember` / `addMember` / `saveChatGroupName` 的 API 失败包 try/catch 并显示错误状态（此前 unhandled rejection + 零反馈）。
+- **报告视图加渲染序号守卫**：`renderReportView` 两个 await 之间切换测试集 / 视图时丢弃乱序迟到响应，不再渲染错对象的运行 / 报告。
+- **「＋ 新建测试集」未保存修改先确认**：`openNewTestset` 有脏编辑时弹 danger 确认（此前 `createTestset` 后 `clearDirty` 把未保存编辑静默丢弃）。
+- **segmentLabel 缺 steps 不崩溃**：运行记录缺 `steps` 字段时回退「第 N 步」文案。
+- **弹窗保存失败不再关闭、丢失表单内容**：`modal.js` 的 ok 回调先执行 `onOk`，失败时弹窗保持打开、`#modal-error` 内联显示错误（此前新建评审 Profile 不合规时弹窗先关、已填内容全部丢失）；打开新弹窗前清除上次错误提示。
+- **固定规则不再显示评审 Profile 选择器**：`.ts-msg-rule-llm` 声明了 `display: flex`，覆盖 `[hidden]` 属性 UA 默认的 `display: none`——导致非 LLM 类型（如「包含」等固定规则）也显示 profile / 上下文下拉；补 `.ts-msg-rule-llm[hidden] { display: none; }` 显式隐藏（沿用 `.groups-card[hidden]` 等既有修复 pattern）。
+- **同根因 `display:flex` 覆盖 `[hidden]` 的 3 处遗漏（对抗性审计发现，顺带修复）**：`.ts-report-body`（「编辑 / 报告」切换时报告体不隐藏，切回编辑视图后报告内容仍显示在表单下方）、`.cg-members`（未选群聊时成员编辑区仍占位）、`.panel-pending`（无在途消息时消息条空占一行）——各补 `[hidden] { display: none; }`。
+
+### ✨ New Features (新功能)
+
+- **断言组合算子 any / not（testset-redesign v2 收尾①）**：消息规则支持**任意组（至少一条通过）**与**取反**——`rules` 列表元素 = 叶（机械或 LLM）| `{op:"any", rules:[叶...]}`（任一子规则通过即组通过）| `{op:"not", rule:叶}`（取反），顶层隐式 all（全部 entry 通过才整步通过）；评估由 `Assessor._eval_entry` 递归（机械子叶恒评估、LLM 子叶在组已被决定为通过后短路跳过；**每 entry 一条 verdict**，组 verdict 的 `metrics` 为全部子叶拼接、`detail` 说明「任意（至少一条通过）：X/Y 子规则通过」；not 取反子 verdict 的 pass，子 pass None（评审失败）不取反）；顶层短路语义不变（机械未过 → 后续 LLM 跳过）。**final_rules 不支持组合**（保持单叶）。前端规则区新增「＋ 任意组」按钮（组行 `.ts-msg-rule-group`，组内子行隐式 all、不嵌套）与叶行「取反」checkbox（`.ts-msg-rule-not`，机械与 LLM 叶都提供）；pure.js 新增 `buildAnyGroupRule` / `buildRule` 的 `not` 参数 / `collectRules` 识别 `kind:"group"`；store / API 不做规则键白名单，组合节点天然透传。
+- **报告按 3 类组织（testset-redesign v2 收尾②）**：报告详情弹窗改为「**统计 / 详情 / LLM 报告**」3 tab——**统计**为纯聚合不展开会话（`metrics_summary` 指标聚合行 + 新增「断言：通过 X / 失败 Y（共 Z）」`data.assertions` 与「耗时：平均 / 最小 / 最大 / p50 / p95（N 条）」`data.durations` + 评审失败数；后端 `build_assertion_stats` 只数 pass 非 None 的 verdict、`build_duration_stats` 收集全部 done 步骤 × 会话的数字耗时）；**详情**为完整执行数据（逐步骤×会话×verdict 明细 + 导出原始数据）；**LLM 报告**按测试集配置的 `report_llm` 一键生成。
+- **LLM 生成报告（testset-redesign v2 收尾③）**：测试集新增**报告 LLM 配置 `report_llm`**（`{provider_id, system_prompt?, model?}`——缺省模型用 Provider 当前模型，与评审 profile 一致；编辑视图报告开关下方配置，保存随测试集持久化）；报告条目按钮「生成 / 重新生成 LLM 报告」调新端点 `POST /reports/<report_id>/llm-report`（报告完整 JSON 作为 prompt 发给报告 LLM，成功落 `data.llm_report = {status, text, provider_id, model, generated_at}` 并持久化，重新生成覆盖）；报告详情弹窗 LLM 报告 tab 用新增的**markdown 受限子集渲染器**（`pages/testbench/render_markdown.js`：`parseMarkdown` / `parseInline` 零 DOM 依赖纯函数 + `renderMarkdownBlocks(blocks, doc)` 渲染——文本一律经 `textContent` / `createTextNode` 落（LLM 输出是数据不是代码，绝不拼 innerHTML），链接 `safeHref` 仅放行 http(s)/mailto、其余置 "#"，防 XSS）。
+
+### 🔄 Changed (行为变更)
+
+- **评审 Profile 不再单独配模型**：`validate_profile` 移除「model 必填」（省略时评审用 Provider 当前模型，`call_reviewer` 传 `model=None`）；表单删除模型输入框，Provider 下拉显示「供应商（当前模型）」，列表模型徽标按 Provider 当前模型解析；保存 / 编辑 profile 时顺带清除旧数据遗留的显式 model。
+- **新消息默认 0 条断言**：测试集编辑视图新消息默认不再渲染 1 条「无」类型空断言行，按需点「＋ 断言」添加。
+- **消息框改为 textarea 可纵向拉伸**：消息文本从单行 `<input type="text">` 改为 `<textarea>`（全局 `resize: vertical`），长文本可纵向拉大，消息可含换行。
+- **LLM 规则 slice 上下文可配范围切片**：消息级 LLM 规则选「范围切片记录」后新增范围输入（`rule.slice_range`，0 基闭区间，格式同最终断言范围「2-4 / 3 / 空=全部」）；后端 `Assessor._slice_entries` 按范围切片喂给评审 LLM 的记录并钳制边界（越界裁剪 / 倒序空 / 非法回退全部），未配范围时与 record 等效。
+- **切片范围支持多段**：切片范围输入可写多个段（逗号分隔，如 `3-4,10-12`），`rule.slice_range` 扩展为 0 基闭区间**列表**（仍兼容旧版单段 dict 存量数据）；`Assessor._slice_entries` 逐段切片拼接（越界裁剪 / 倒序段跳过 / 形状非法回退全部）；前端 `parseSliceRange` / `sliceRangeToText` 为多段解析与编辑回填（纯函数层，node:test 覆盖）。
+- **状态条消息内容固定高度、过长滚动**：`.run-status` 直接内联当前消息内容（测试集运行进度含完整 stepText），长文本 / 多行消息会把状态条顶高、挤压下方视图；限高（max-height 72px）+ 纵向滚动查看并保留换行（pre-wrap）——常态生效，不限于执行测试集。
+- **`{{agent_system_prompt}}` 占位符弃用，被测 agent 系统提示词改由规则级开关注入**：占位符展开依赖评审 Provider 把 system_prompt 真正传给评审 LLM——部分 Provider 忽略 / 改写 system_prompt，内容到不了评审 LLM；改为 LLM 断言**规则级**「注入提示词」开关（`rule.inject_system_prompt`，缺省开启，显式 false 才落盘）把被测 agent 的装饰后系统提示词注入评审输入（prompt）开头（`【被测 Agent 系统提示词】` 标签块，`Assessor.inject_system_prompt_block`）——prompt 是所有 Provider 必传的，对该问题天然免疫；`call_reviewer` 不再接收 / 展开占位符，残留字面量清成空串；verdict 的 `agent_system_prompt` 字段保留作信息（评审重试用存储的 `context_text`，已含注入内容，自包含）。
+- **未捕获到被测 agent 系统提示词时注入块仍存在**：开启注入（缺省）时评审输入恒以 `【被测 Agent 系统提示词】` 标签块开头——捕获到内容则注入全文，未捕获 / 为空则显示占位文案「（未捕获到被测 agent 系统提示词）」，报告评审详情可直观确认注入链路状态，不再与未开启注入的表现无异（此前无快照时该块整个消失，排查困难）。
+- **注入块改前后闭合标签 + 空系统提示词时回退解析人格**：注入块由单侧标签 `【被测 Agent 系统提示词】` 改为前后闭合的 `【以下是被测 Agent 系统提示词】…【以上是被测 Agent 系统提示词】`，长提示词也能清晰区分块边界（沿用中文标签块，避免与注入的 XML 标记冲突）；同时 `on_llm` 捕获到 `req.system_prompt` 为空时（**开场对话（begin_dialogs）型人格**把身份文本注入 `req.contexts` 对话历史而非 system_prompt，这类会话的快照系统提示词恒为空）回退从会话配置档案解析人格（`persona_manager.resolve_selected_persona`，经会话 umo + 会话级 persona_id + 档案 provider_settings，镜像框架装饰路径），把人格提示词与开场对话补进快照，评审 LLM 仍能看到被测 agent 的人格设定；解析失败 / 无人格回退未捕获占位；回退解析关键决策点打 `[testbench]` 前缀 INFO 日志（是否执行 / default_personality / 会话级 persona / 命中人格及内容规模），供排查「未捕获」。
+- **人格回退解析抽到 eval/persona.py，评审阶段也回退（不依赖捕获 hook）**：回退解析实现（`format_persona_snapshot` / `conversation_persona_id` / `resolve_agent_system_prompt`）从 main.py 抽到共享模块 `eval/persona.py`，`on_llm` 捕获时回退改为薄包装；`Assessor` 在步骤结果无 `llm_input` 快照 / 快照系统提示词为空时（捕获 hook 未触发或 begin_dialogs 型会话）评审阶段也调用同一份实现从会话配置档案解析人格补进评审材料——修复「未捕获」不依赖捕获链路，且评审输入恒带被测 agent 人格；评审阶段从对话存储回查会话级 persona_id（`conversation_persona_id`，防御式，失败回落档案 default_personality），结果按 umo 记忆（同一次运行内多次命中只解析一次）；日志改走根 `astrbot` logger——插件的专用 logger 支持按插件调级，INFO 日志可能被静默过滤，根 logger 与 AstrBot 自身模块记法一致、排查更可靠。
+
+### 🧪 Tests (测试)
+
+- 后端 +5：运行器流写入失败仍完成、`_normalize_messages` 非 dict 项、`conf_tool_info` 嵌套错型、`_scope_indices` 边界钳制、非 dict 请求体 400（223 → 228）。
+- pure.js 动态测试 +7：buildRule 未知类型回退、信封缺 messages / 版本非 number / 非字符串 text / 畸形 final_rules、ruleFailCount 空 verdicts 回退、segmentLabel 缺 steps（35 → 42 断言组）。
+- 前端静态检查 +1：`test_frontend_defensive_fixes` 防御性改动静态标记（59 → 60）。
+- 前端静态检查 +1：`test_frontend_modal_error_keeps_content` 弹窗 onOk 失败保留表单内容（60 → 61）。
+- 后端模型可选随测更新：`test_validate_profile_ok_and_errors` / `test_call_reviewer_ok_and_statuses` / `test_plugin_reviewer_crud` 覆盖省略 model、`model=None` 调用与无 model 创建（228 不变）。
+- 后端 +1：`test_assessor_message_rule_slice_range` 消息规则 slice_range 切片 / 缺省回退 / 边界钳制（228 → 229）。
+- pure.js 动态测试 +4：buildRule slice_range 分支（slice 空范围 / 区间 / 单步 / 非 slice 忽略，42 → 46 断言组）。
+- pure.js 动态测试 +5：多段切片范围（buildRule slice 多段、parseSliceRange 空 / 多段 / 非法、sliceRangeToText 回填，46 → 51 断言组）。
+- 前端静态检查 +1：`test_frontend_message_editor_defaults_and_slice` 默认 0 断言 / textarea / hidden 修复 / slice 输入标记（61 → 62）。
+- 前端静态检查 +1：`test_frontend_run_status_scroll` 状态条消息限高滚动标记（62 → 63）。
+- 后端 +2：`test_inject_system_prompt_block` 注入块纯函数 + `test_assessor_inject_system_prompt_rule_level` 规则级注入开关（缺省注入 / 显式 false 不注入 / 无 llm_input 快照注入占位块）（229 → 231）。
+- 后端 +4：`test_format_persona_snapshot` 人格快照纯函数、`test_resolve_persona_system_prompt_defensive` 回退解析防御式（无 persona_manager / 解析异常 / 无人格 → 空串）、`test_resolve_persona_system_prompt_from_conf` 从配置档案解析（prompt + 开场对话合入、会话级 persona_id 与 umo 透传）、`test_plugin_on_llm_persona_fallback` 空 system_prompt 时 on_llm 回退补人格（231 → 235）。
+- 后端 +1：`test_assessor_persona_fallback` 评审阶段回退解析人格（结果无 llm_input 快照时从配置档案补上、会话级 persona 回查失败回落档案、同 umo 结果 memo 只解析一次）（235 → 236）。
+- 前端静态检查 +1：`test_frontend_llm_rule_inject_system_prompt` 注入开关静态标记（editor_js 的 `.ts-msg-rule-inject` 复选框 / collectRules 透传 / 占位符废弃文案 / css 样式，63 → 64）。
+- pure.js 动态测试 +3：buildRule 注入开关分支（缺省与 true → 不带 `inject_system_prompt`、显式 false → 字段、collectRules 透传 injectSystemPrompt）（51 → 54 断言组）。
+- 后端 +15（236 → 251）：组合算子 any/not 递归评估（全过 / 部分过 / 全不过 / not 取反 / not 内 LLM / any 内 LLM 短路 / 顶层短路不回归 / 空组与未知形状容错 / 组 verdict 契约）、store 透传组合节点、报告断言统计 `build_assertion_stats` / 耗时统计 `build_duration_stats`（error/invalid 与短路跳过不计入、全 done 步骤）、report_llm 存储清洗 / API 校验 / LLM 报告生成端点（成功产物落 `data.llm_report` 并持久化、重新生成覆盖、未配置 400 / Provider 缺失 400 / 报告不存在 404 / 数据损坏 400 / 调用异常 400 不落库）。
+- pure.js 动态测试 +7：buildRule not 包裹（机械 / LLM 叶）、not=false / 空类型不包裹、buildAnyGroupRule 空子输入 → null、组节点收集、collectRules 识别 kind="group"（组内 not 子叶保留）、空组与无效组内行丢弃（54 → 61 断言组）。
+- 新增 `tests/frontend/render_markdown.test.mjs`（node:test，13 断言组）：parseInline 纯文本 / 粗斜体 / 行内代码 / 链接混排、parseMarkdown 标题 / 代码块 / 分隔线 / 无序有序列表 / 表格 / 单行 | 降级段落 / 空行与非法输入容错、renderMarkdownBlocks 块结构 / 表格 thead+tbody / **HTML 注入文本按文本渲染（不产生注入元素）** / 链接协议白名单（javascript: 置 "#"）——`node --test` 总数 61 → 74。
+- 前端静态检查 +5（64 → 69）：`test_frontend_combo_rule_ui`（「＋ 任意组」/ 组行 / 取反 checkbox / buildAnyGroupRule / op 节点形状）、`test_frontend_report_three_tabs`（统计 / 详情 / LLM 报告 3 tab 与断言 / 耗时统计行）、`test_frontend_render_markdown_module`（模块存在 / 导出纯函数 / 零依赖 / 不拼 innerHTML / safeHref）、`test_frontend_report_llm_form`（编辑器 report_llm 表单与保存 payload、api.js 封装）、`test_frontend_report_llm_button_and_pane`（生成按钮按配置显隐、LLM 报告 tab 渲染器接入）。
+
+---
+
 ## [v0.4.4] - 2026-08-07
 
 ### 🧹 Chores / Refactoring (重构与工程化)

@@ -30,6 +30,7 @@ import astrbot_plugin_testbench.core.testset_runner as tsr_mod  # noqa: E402
 import astrbot_plugin_testbench.core.virtual_event as ve_mod  # noqa: E402
 import astrbot_plugin_testbench.eval.assessor as assr_mod  # noqa: E402
 import astrbot_plugin_testbench.eval.mechanical as asrt_mod  # noqa: E402
+import astrbot_plugin_testbench.eval.persona as psn_mod  # noqa: E402
 import astrbot_plugin_testbench.eval.reporting as rpt_mod  # noqa: E402
 import astrbot_plugin_testbench.eval.reviewer as rev_mod  # noqa: E402
 import astrbot_plugin_testbench.history_ops as hops_mod  # noqa: E402
@@ -65,6 +66,8 @@ ReportStore = rps_mod.ReportStore
 StreamStore = stm_mod.StreamStore
 build_metrics_summary = rpt_mod.build_metrics_summary
 build_report_data = rpt_mod.build_report_data
+build_assertion_stats = rpt_mod.build_assertion_stats
+build_duration_stats = rpt_mod.build_duration_stats
 MAX_STREAM_MESSAGES = stm_mod.MAX_STREAM_MESSAGES
 evaluate_rule = asrt_mod.evaluate_rule
 duration_stats = stats_mod.duration_stats
@@ -73,6 +76,7 @@ Assessor = assr_mod.Assessor
 build_input_text = assr_mod.build_input_text
 format_turn = assr_mod.format_turn
 format_record = assr_mod.format_record
+inject_system_prompt_block = assr_mod.inject_system_prompt_block
 validate_profile = rev_mod.validate_profile
 metrics_contract_description = rev_mod.metrics_contract_description
 expand_prompt = rev_mod.expand_prompt
@@ -450,6 +454,7 @@ class FakeConvManager:
             cid=f"new_cid_{self._seq}",
             title=title or "",
             history=json.dumps(content or [], ensure_ascii=False),
+            persona_id=persona_id,
         )
         self._convs.setdefault(unified_msg_origin, []).append(conv)
         return conv.cid
@@ -601,12 +606,14 @@ class FakeContext:
         platform_mgr: FakePlatformManager | None = None,
         providers: list[FakeProvider] | None = None,
         conf_list: list[dict] | None = None,
+        conf: dict | None = None,
     ) -> None:
         self._queue = queue or asyncio.Queue()
         self._providers = providers or []
         self.astrbot_config_mgr = SimpleNamespace(
             ucr=ucr or FakeUCR(),
             get_conf_list=lambda: list(conf_list or []),
+            get_conf=lambda _umo: conf,  # 默认 None（无配置档案）
         )
         self.conversation_manager = conv_mgr or FakeConvManager()
         self.platform_manager = platform_mgr
@@ -627,6 +634,25 @@ class FakeContext:
 
     def register_web_api(self, *args, **kwargs) -> None:
         """插件注册 Web API 时静默忽略（测试不需要真实注册）。"""
+
+
+class FakePersonaManager:
+    """模拟人格管理器：resolve_selected_persona 返回可配置 persona 并记录调用。"""
+
+    def __init__(
+        self,
+        persona: dict | None = None,
+        raise_on_call: bool = False,
+    ) -> None:
+        self.persona = persona
+        self._raise = raise_on_call
+        self.calls: list[dict] = []
+
+    async def resolve_selected_persona(self, **kwargs) -> tuple:
+        self.calls.append(kwargs)
+        if self._raise:
+            raise RuntimeError("人格解析失败")
+        return ("p_id", self.persona, None, False)
 
 
 def make_plugin_request(body: dict = None, query: str = "") -> PluginRequest:
@@ -981,11 +1007,38 @@ async def test_plugin_create_group_applies_conf_route(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_plugin_create_group_invalid_count(tmp_path):
+async def test_plugin_create_group_zero_count_allowed(tmp_path):
     plugin = main_mod.VirtualSessionPlugin(FakeContext())
     plugin.group_mgr = VirtualGroupManager(data_dir=tmp_path)
-    resp = await call_handler(plugin.create_group, {"name": "组A", "count": 0})
+    # count=0 允许：创建 0 会话的空测试组（前端「＋ 新建测试组」直接建空组
+    # 不弹窗，用户后续在编辑弹窗按「会话数量」补齐）
+    resp = await call_handler(plugin.create_group, {"name": "空组", "count": 0})
+    assert resp.status_code == 200
+    body = json.loads(resp.body)
+    assert len(body["sessions"]) == 0
+    # 负数仍拒绝
+    resp = await call_handler(plugin.create_group, {"name": "组A", "count": -1})
     assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_plugin_post_handler_non_dict_body_400(tmp_path):
+    """POST handler 收到非 dict JSON 体（数组/标量/null）→ 400 而非 500。
+
+    修复前 request.json(default={}) 只防解析失败，数组体直接 .get 触发
+    AttributeError → 500；json_dict 统一把非 dict 体转 400。覆盖 api/ 与
+    history_ops 的 save_history / regenerate_history 两处 handler。
+    """
+    plugin = main_mod.VirtualSessionPlugin(FakeContext())
+    plugin.group_mgr = VirtualGroupManager(data_dir=tmp_path)
+    plugin.report_store = rps_mod.ReportStore(data_dir=tmp_path)
+    handlers = [plugin.delete_reports, plugin.save_history, plugin.regenerate_history]
+    for bad_body in ([1, 2], "x", None):
+        for handler in handlers:
+            resp = await call_handler(handler, bad_body)
+            assert resp.status_code == 400, (
+                f"{handler.__name__} 非 dict 体 {bad_body!r} 应被拒绝"
+            )
 
 
 @pytest.mark.asyncio
@@ -2451,6 +2504,17 @@ def test_testset_store_message_auto_at(tmp_path):
     assert msgs[1]["auto_at"] is True
     assert "auto_at" not in msgs[2]  # 非 bool 丢弃
     assert "auto_at" not in msgs[3]  # 缺省不落字段（发送时按 True）
+
+
+def test_normalize_messages_ignores_non_dict_items():
+    """_normalize_messages 对非 dict 消息项直接跳过（数据损坏可见但不崩溃）。"""
+    out = TestsetStore._normalize_messages(
+        [{"text": "a"}, "junk", 42, None, {"text": "  b  "}]
+    )
+    assert out == [
+        {"text": "a", "rules": []},
+        {"text": "b", "rules": []},
+    ]
 
 
 def test_testset_store_delete_unknown(tmp_path):
@@ -4058,6 +4122,47 @@ async def test_runner_writes_stream(tmp_path):
     assert msgs[1]["text"] == "回复"
 
 
+class _FailingReplyStreamStore:
+    """append 正常返回固定 id；update_reply 抛 OSError（模拟流回填磁盘故障）。"""
+
+    def __init__(self) -> None:
+        self.appended: list[dict] = []
+
+    async def append(self, session_id: str, message: dict) -> str:
+        self.appended.append(message)
+        return "m1"
+
+    async def update_reply(self, session_id: str, message_id: str, status: str) -> None:
+        raise OSError("模拟流写入磁盘故障")
+
+
+@pytest.mark.asyncio
+async def test_runner_stream_write_failure_still_completes():
+    """流回填失败不阻断结果收集：完成判定恒执行，运行不挂死。
+
+    修复前 _await_event 里流写入无 try/except：update_reply 抛错会让任务在
+    完成判定之前死亡，done/test_done 不触发，运行挂到 STALE_RUN_TIMEOUT。
+    """
+    queue = asyncio.Queue()
+    runner = VirtualTestRunner(
+        FakeContext(queue), stream_store=_FailingReplyStreamStore()
+    )
+    session = make_session(1)
+
+    async def handler(event):
+        await event.send(MessageChain().message("回复"))
+        event.cleanup_temporary_local_files()
+
+    task = asyncio.create_task(consume(queue, handler))
+    try:
+        test_id = await runner.start(sessions=[session], text="hello")
+        rec = await wait_run_done(runner, test_id)
+    finally:
+        task.cancel()
+    assert rec["done"] is True
+    assert rec["results"][0]["status"] == "ok"
+
+
 @pytest.mark.asyncio
 async def test_runner_auto_at_request_level():
     """auto@ 是请求级选项：默认开启，仅群聊消息生效，私聊恒不生效。"""
@@ -4125,6 +4230,20 @@ def test_conf_tool_info():
             }
         }
     )
+
+
+def test_conf_tool_info_wrong_typed_nested():
+    """嵌套键类型错误（配置被手改坏）不崩溃：非 dict 按空对象处理。
+
+    与缺键同语义——空配置 cron 工具缺省 True，故坏值也不改变判定，
+    只是不再 AttributeError。
+    """
+    assert conf_tool_info({"provider_settings": "x"})["has_callable_tools"] is True
+    info = conf_tool_info({"provider_settings": {"proactive_capability": 5}})
+    assert (
+        info["has_callable_tools"] is True
+    )  # proactive_capability 非 dict → cron 缺省 True
+    assert info["cron_tools"] is True
 
 
 @pytest.mark.asyncio
@@ -4436,10 +4555,13 @@ def _valid_profile() -> dict:
 
 def test_validate_profile_ok_and_errors():
     assert validate_profile(_valid_profile()) == []
+    # model 可选：省略即用 Provider 当前模型（评审 Profile 只配 Provider）
+    nomodel = _valid_profile()
+    del nomodel["model"]
+    assert validate_profile(nomodel) == []
     errors = validate_profile({})
     assert "name 必填" in errors
     assert "provider_id 必填" in errors
-    assert "model 必填" in errors
     assert "system_prompt 必填" in errors
     assert "metrics 至少需要一个指标" in errors
 
@@ -4535,6 +4657,13 @@ async def test_call_reviewer_ok_and_statuses():
     assert raw == '{"score": 88, "level": "好"}'
     # 提示词展开：system_prompt 里 {{metrics}} 被替换为契约 JSON 描述
     assert "score" in provider.calls[0]["system_prompt"]
+
+    # 无 model 的 profile → text_chat model=None（评审用 Provider 当前模型）
+    nomodel = _valid_profile()
+    nomodel["model"] = None
+    nm_provider = FakeLLMProvider("prov_r", responses=['{"score": 90, "level": "好"}'])
+    await call_reviewer(FakeContext(providers=[nm_provider]), nomodel, "x")
+    assert nm_provider.calls[0]["model"] is None
 
     # 未找到评审 Provider → error（无输出，raw 为空串）
     metrics, error, status, raw = await call_reviewer(FakeContext(), profile, "x")
@@ -4705,13 +4834,119 @@ async def test_assessor_step_llm_ok_with_context_modes():
     verdict = steps[0]["results"][0]["verdicts"][0]
     assert verdict["status"] == "ok" and verdict["pass"] is True
     prompt = provider.calls[0]["prompt"]
-    assert prompt.startswith("第 1 步:")
+    # 未捕获系统提示词 → 注入块占位文案仍存在，多轮记录随后
+    assert prompt.startswith(
+        "【以下是被测 Agent 系统提示词】\n（未捕获到被测 agent 系统提示词）\n"
+        "【以上是被测 Agent 系统提示词】\n\n"
+    )
+    assert "第 1 步:" in prompt
     # 结构化评审材料：中文标签块标注身份与输入/输出分界
     assert "【输入 · user（测试台）】\n问" in prompt
     assert "【输出 · agent（virtual_bot）】\n回答" in prompt
     # 评审输入（喂给 LLM 的上下文）与评审输出（LLM 原始返回）随 verdict 落盘
     assert verdict["context_text"] == prompt
     assert verdict["raw"] == '{"score": 90, "level": "好"}'
+
+
+@pytest.mark.asyncio
+async def test_assessor_message_rule_slice_range():
+    """LLM 规则 context=slice：slice_range 限定评审记录区间；缺省回退全部。
+
+    消息规则在第 3 步，记录为第 1-3 步；slice_range 区间列表（前端多段输入
+    3-4,10-12 解析产物）只喂对应步给评审 LLM；不配 slice_range 时与 record
+    等效（全部记录）。_slice_entries 边界钳制同 _scope_indices（越界裁剪 /
+    倒序段跳过 / 形状非法回退原样），列表形式与旧单段 dict 都支持。
+    """
+
+    def build_steps(rule: dict) -> list[dict]:
+        return [
+            {
+                "status": "done",
+                "text": "q1",
+                "rules": [],
+                "results": [{"session_id": "vs_1", "reply": "r1", "status": "ok"}],
+            },
+            {
+                "status": "done",
+                "text": "q2",
+                "rules": [],
+                "results": [{"session_id": "vs_1", "reply": "r2", "status": "ok"}],
+            },
+            {
+                "status": "done",
+                "text": "q3",
+                "rules": [rule],
+                "results": [{"session_id": "vs_1", "reply": "r3", "status": "ok"}],
+            },
+        ]
+
+    # 切片 [{1,1}] → 评审上下文只含第 2 步（列表形式，前端多段输入产物）
+    provider = FakeLLMProvider("prov_r", responses=['{"score": 90, "level": "好"}'])
+    assessor = Assessor(
+        FakeContext(providers=[provider]), {"rp_test": _valid_profile()}
+    )
+    steps = build_steps(
+        {
+            "kind": "llm",
+            "profile_id": "rp_test",
+            "context": "slice",
+            "slice_range": [{"from": 1, "to": 1}],
+        }
+    )
+    await assessor.assess(steps, [], [{"id": "vs_1"}])
+    verdict = steps[2]["results"][0]["verdicts"][0]
+    assert verdict["status"] == "ok" and verdict["pass"] is True
+    # format_record 在切片后重新编号（从「第 1 步:」起），故按内容断言只含第 2 步
+    prompt = provider.calls[0]["prompt"]
+    assert "q2" in prompt and "r2" in prompt
+    assert "q1" not in prompt and "q3" not in prompt
+
+    # 多段 [{0,0},{2,2}] → 只含第 1 步与第 3 步（q2 排除）
+    provider3 = FakeLLMProvider("prov_r", responses=['{"score": 90, "level": "好"}'])
+    assessor3 = Assessor(
+        FakeContext(providers=[provider3]), {"rp_test": _valid_profile()}
+    )
+    steps3 = build_steps(
+        {
+            "kind": "llm",
+            "profile_id": "rp_test",
+            "context": "slice",
+            "slice_range": [{"from": 0, "to": 0}, {"from": 2, "to": 2}],
+        }
+    )
+    await assessor3.assess(steps3, [], [{"id": "vs_1"}])
+    prompt3 = provider3.calls[0]["prompt"]
+    assert "q1" in prompt3 and "r1" in prompt3
+    assert "q3" in prompt3 and "r3" in prompt3
+    assert "q2" not in prompt3
+
+    # 缺省（无 slice_range）→ 回退全部记录（与 record 等效）
+    provider2 = FakeLLMProvider("prov_r", responses=['{"score": 90, "level": "好"}'])
+    assessor2 = Assessor(
+        FakeContext(providers=[provider2]), {"rp_test": _valid_profile()}
+    )
+    steps2 = build_steps({"kind": "llm", "profile_id": "rp_test", "context": "slice"})
+    await assessor2.assess(steps2, [], [{"id": "vs_1"}])
+    prompt2 = provider2.calls[0]["prompt"]
+    assert "第 1 步:" in prompt2 and "第 2 步:" in prompt2
+    assert "第 3 步:" in prompt2
+
+    # _slice_entries 边界钳制：越界裁剪 / 倒序段跳过 / 形状非法回退原样；
+    # 列表形式与旧单段 dict 都支持
+    entries = ["a", "b", "c"]
+    assert Assessor._slice_entries(entries, [{"from": 1, "to": 1}]) == ["b"]
+    assert Assessor._slice_entries(
+        entries, [{"from": 0, "to": 0}, {"from": 2, "to": 2}]
+    ) == ["a", "c"]
+    assert Assessor._slice_entries(
+        entries, [{"from": 1, "to": 1}, {"from": 2, "to": 2}]
+    ) == ["b", "c"]
+    assert Assessor._slice_entries(entries, [{"from": 3, "to": 1}]) == []
+    assert Assessor._slice_entries(entries, [{"from": 1, "to": 1}, "bad"]) == entries
+    assert Assessor._slice_entries(entries, {"from": -3, "to": 10}) == entries
+    assert Assessor._slice_entries(entries, {"from": 3, "to": 1}) == []
+    assert Assessor._slice_entries(entries, None) == entries
+    assert Assessor._slice_entries(entries, "all") == entries
 
 
 @pytest.mark.asyncio
@@ -4730,6 +4965,412 @@ async def test_assessor_llm_missing_profile():
     verdict = steps[0]["results"][0]["verdicts"][0]
     assert verdict["status"] == "error"
     assert "找不到评审 profile" in verdict["detail"]
+
+
+@pytest.mark.asyncio
+async def test_assessor_any_group_mechanical():
+    """any 组合：任一子规则通过即通过；metrics 拼接全部已评估子叶。"""
+
+    def step(rules: list[dict]) -> list[dict]:
+        return [
+            {
+                "status": "done",
+                "text": "q",
+                "rules": rules,
+                "results": [{"session_id": "vs_1", "reply": "ab cx", "status": "ok"}],
+            }
+        ]
+
+    assessor = Assessor(FakeContext(), {"rp_test": _valid_profile()})
+    # 部分通过：任一子叶通过 → 组通过，metrics 拼接两个子叶的 bool 指标
+    steps = step(
+        [
+            {
+                "op": "any",
+                "rules": [
+                    {"type": "contains", "value": "ab"},
+                    {"type": "contains", "value": "zz"},
+                ],
+            }
+        ]
+    )
+    await assessor.assess(steps, [], [{"id": "vs_1"}])
+    v = steps[0]["results"][0]["verdicts"][0]
+    assert v["rule_index"] == 0
+    assert v["status"] == "ok" and v["pass"] is True
+    assert v["metrics"] == [
+        {"key": "pass", "type": "bool", "value": True},
+        {"key": "pass", "type": "bool", "value": False},
+    ]
+    assert "任意（至少一条通过）：1/2 子规则通过" in v["detail"]
+
+    # 全部不通过 → 组不通过
+    steps2 = step([{"op": "any", "rules": [{"type": "contains", "value": "zz"}]}])
+    await assessor.assess(steps2, [], [{"id": "vs_1"}])
+    v2 = steps2[0]["results"][0]["verdicts"][0]
+    assert v2["pass"] is False and "0/1 子规则通过" in v2["detail"]
+
+    # 全部通过 → 组通过
+    steps3 = step(
+        [
+            {
+                "op": "any",
+                "rules": [
+                    {"type": "contains", "value": "ab"},
+                    {"type": "non_empty"},
+                ],
+            }
+        ]
+    )
+    await assessor.assess(steps3, [], [{"id": "vs_1"}])
+    v3 = steps3[0]["results"][0]["verdicts"][0]
+    assert v3["pass"] is True and "2/2 子规则通过" in v3["detail"]
+
+
+@pytest.mark.asyncio
+async def test_assessor_any_group_llm_short_circuit():
+    """any 组内：机械子叶通过 → 后续 LLM 子叶跳过（不调评审 LLM）。"""
+    provider = FakeLLMProvider("prov_r", responses=['{"score": 88, "level": "好"}'])
+    assessor = Assessor(
+        FakeContext(providers=[provider]), {"rp_test": _valid_profile()}
+    )
+    steps = [
+        {
+            "status": "done",
+            "text": "q",
+            "rules": [
+                {
+                    "op": "any",
+                    "rules": [
+                        {"type": "contains", "value": "ab"},
+                        {"kind": "llm", "profile_id": "rp_test", "context": "reply"},
+                    ],
+                }
+            ],
+            "results": [{"session_id": "vs_1", "reply": "ab cx", "status": "ok"}],
+        }
+    ]
+    await assessor.assess(steps, [], [{"id": "vs_1"}])
+    verdicts = steps[0]["results"][0]["verdicts"]
+    assert len(verdicts) == 1  # 组产 1 条 verdict
+    v = verdicts[0]
+    assert v["status"] == "ok" and v["pass"] is True
+    assert v["metrics"] == [{"key": "pass", "type": "bool", "value": True}]
+    assert provider.calls == []  # 组内 LLM 子叶被短路，未调用评审
+
+    # 机械子叶未通过 → 组内 LLM 子叶仍评估（组未被决定为通过）
+    provider2 = FakeLLMProvider("prov_r", responses=['{"score": 88, "level": "好"}'])
+    assessor2 = Assessor(
+        FakeContext(providers=[provider2]), {"rp_test": _valid_profile()}
+    )
+    steps2 = [
+        {
+            "status": "done",
+            "text": "q",
+            "rules": [
+                {
+                    "op": "any",
+                    "rules": [
+                        {"type": "contains", "value": "zz"},
+                        {"kind": "llm", "profile_id": "rp_test", "context": "reply"},
+                    ],
+                }
+            ],
+            "results": [{"session_id": "vs_1", "reply": "ab cx", "status": "ok"}],
+        }
+    ]
+    await assessor2.assess(steps2, [], [{"id": "vs_1"}])
+    v2 = steps2[0]["results"][0]["verdicts"][0]
+    assert v2["pass"] is True  # LLM 子叶评估并通过
+    assert len(provider2.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_assessor_any_group_status_error_all_children_fail():
+    """any 组全部子叶 error / invalid → 组 status error、pass None（评审失败单列）。"""
+    steps = [
+        {
+            "status": "done",
+            "text": "q",
+            "rules": [
+                {
+                    "op": "any",
+                    "rules": [
+                        {"kind": "llm", "profile_id": "rp_ghost", "context": "reply"},
+                        {"kind": "llm", "profile_id": "rp_ghost2", "context": "reply"},
+                    ],
+                }
+            ],
+            "results": [{"session_id": "vs_1", "reply": "回复", "status": "ok"}],
+        }
+    ]
+    assessor = Assessor(FakeContext(), {})  # 无 profile → LLM 子叶 error
+    await assessor.assess(steps, [], [])
+    v = steps[0]["results"][0]["verdicts"][0]
+    assert v["status"] == "error"
+    assert v["pass"] is False  # 组合结果严格按「通过」判定：失败子叶视为未通过
+    assert "0/2 子规则通过" in v["detail"]
+
+    # 混合：机械子叶未通过（status ok）+ error LLM 子叶 → 组 status ok（非全部失败）
+    steps2 = [
+        {
+            "status": "done",
+            "text": "q",
+            "rules": [
+                {
+                    "op": "any",
+                    "rules": [
+                        {"type": "contains", "value": "zz"},
+                        {"kind": "llm", "profile_id": "rp_ghost", "context": "reply"},
+                    ],
+                }
+            ],
+            "results": [{"session_id": "vs_1", "reply": "ab cx", "status": "ok"}],
+        }
+    ]
+    assessor2 = Assessor(FakeContext(), {})
+    await assessor2.assess(steps2, [], [])
+    v2 = steps2[0]["results"][0]["verdicts"][0]
+    assert v2["status"] == "ok"  # 机械子叶 status ok → 组非全部失败
+    assert v2["pass"] is False  # 两个子叶都未通过 → 组未通过
+    assert "0/2 子规则通过" in v2["detail"]
+
+
+@pytest.mark.asyncio
+async def test_assessor_not_negation():
+    """not 取反：pass 取反、metrics 保留、rule_index 为 entry 下标。"""
+    assessor = Assessor(FakeContext(), {"rp_test": _valid_profile()})
+
+    def step(rules: list[dict]) -> list[dict]:
+        return [
+            {
+                "status": "done",
+                "text": "q",
+                "rules": rules,
+                "results": [{"session_id": "vs_1", "reply": "ab cx", "status": "ok"}],
+            }
+        ]
+
+    # 原规则通过 → 取反后未通过（机械子叶 detail 保留，带取反前缀）
+    steps = step([{"op": "not", "rule": {"type": "contains", "value": "ab"}}])
+    await assessor.assess(steps, [], [{"id": "vs_1"}])
+    v = steps[0]["results"][0]["verdicts"][0]
+    assert v["rule_index"] == 0
+    assert v["status"] == "ok" and v["pass"] is False
+    assert v["metrics"] == [{"key": "pass", "type": "bool", "value": True}]
+    assert v["detail"] == "取反：回复包含 'ab'"
+
+    # 原规则未通过 → 取反后通过（detail 带取反前缀）
+    steps2 = step([{"op": "not", "rule": {"type": "contains", "value": "zz"}}])
+    await assessor.assess(steps2, [], [{"id": "vs_1"}])
+    v2 = steps2[0]["results"][0]["verdicts"][0]
+    assert v2["pass"] is True
+    assert v2["detail"] == "取反：回复不包含 ['zz']"
+
+
+@pytest.mark.asyncio
+async def test_assessor_not_llm_roundtrip():
+    """not 内 LLM：取反 LLM 叶的 pass；error verdict 的 pass None 不取反。"""
+    provider = FakeLLMProvider("prov_r", responses=['{"score": 88, "level": "好"}'])
+    assessor = Assessor(
+        FakeContext(providers=[provider]), {"rp_test": _valid_profile()}
+    )
+    steps = [
+        {
+            "status": "done",
+            "text": "q",
+            "rules": [
+                {
+                    "op": "not",
+                    "rule": {
+                        "kind": "llm",
+                        "profile_id": "rp_test",
+                        "context": "reply",
+                    },
+                }
+            ],
+            "results": [{"session_id": "vs_1", "reply": "回复", "status": "ok"}],
+        }
+    ]
+    await assessor.assess(steps, [], [{"id": "vs_1"}])
+    v = steps[0]["results"][0]["verdicts"][0]
+    assert v["status"] == "ok"
+    assert v["pass"] is False  # LLM 判定通过（score 88 ≥ 80）→ 取反未通过
+    assert v["metrics"][0] == {"key": "score", "type": "number", "value": 88}
+    assert v["context_text"] is not None  # 子 verdict 的评审上下文保留
+    assert v["profile_id"] == "rp_test"
+    assert (
+        v["detail"] == "取反（原规则通过，取反后未通过）"
+    )  # LLM ok 无 detail → 回退文案
+    assert len(provider.calls) == 1
+    assert provider.calls[0]["prompt"] == v["context_text"]
+
+    # 评审失败（profile 缺失 → error）→ pass None 不取反
+    steps2 = [
+        {
+            "status": "done",
+            "text": "q",
+            "rules": [
+                {
+                    "op": "not",
+                    "rule": {
+                        "kind": "llm",
+                        "profile_id": "rp_ghost",
+                        "context": "reply",
+                    },
+                }
+            ],
+            "results": [{"session_id": "vs_1", "reply": "回复", "status": "ok"}],
+        }
+    ]
+    assessor2 = Assessor(FakeContext(), {})
+    await assessor2.assess(steps2, [], [])
+    v2 = steps2[0]["results"][0]["verdicts"][0]
+    assert v2["status"] == "error" and v2["pass"] is None
+
+
+@pytest.mark.asyncio
+async def test_assessor_combo_skipped_when_top_level_short_circuit():
+    """顶层短路：非 LLM entry 未通过 → 后续组合内 LLM 与直接 LLM 都跳过。"""
+    provider = FakeLLMProvider("prov_r", responses=['{"score": 88, "level": "好"}'])
+    assessor = Assessor(
+        FakeContext(providers=[provider]), {"rp_test": _valid_profile()}
+    )
+    steps = [
+        {
+            "status": "done",
+            "text": "q",
+            "rules": [
+                {"type": "contains", "value": "zz"},  # 未通过 → 短路
+                {
+                    "op": "not",
+                    "rule": {
+                        "kind": "llm",
+                        "profile_id": "rp_test",
+                        "context": "reply",
+                    },
+                },
+                {"kind": "llm", "profile_id": "rp_test", "context": "reply"},
+            ],
+            "results": [{"session_id": "vs_1", "reply": "ab cx", "status": "ok"}],
+        }
+    ]
+    await assessor.assess(steps, [], [{"id": "vs_1"}])
+    verdicts = steps[0]["results"][0]["verdicts"]
+    assert len(verdicts) == 1  # 组合与直接 LLM 都被短路
+    assert verdicts[0]["status"] == "ok" and verdicts[0]["pass"] is False
+    assert provider.calls == []
+
+
+@pytest.mark.asyncio
+async def test_assessor_any_group_under_top_level_short_circuit():
+    """顶层短路下 any 组：LLM 子叶跳过、机械子叶仍评估。"""
+    provider = FakeLLMProvider("prov_r", responses=['{"score": 88, "level": "好"}'])
+    assessor = Assessor(
+        FakeContext(providers=[provider]), {"rp_test": _valid_profile()}
+    )
+    steps = [
+        {
+            "status": "done",
+            "text": "q",
+            "rules": [
+                {"type": "contains", "value": "zz"},  # 未通过 → 短路
+                {
+                    "op": "any",
+                    "rules": [
+                        {"kind": "llm", "profile_id": "rp_test", "context": "reply"},
+                        {"type": "contains", "value": "ab"},
+                    ],
+                },
+            ],
+            "results": [{"session_id": "vs_1", "reply": "ab cx", "status": "ok"}],
+        }
+    ]
+    await assessor.assess(steps, [], [{"id": "vs_1"}])
+    verdicts = steps[0]["results"][0]["verdicts"]
+    assert len(verdicts) == 2
+    group = verdicts[1]
+    assert group["pass"] is True  # 机械子叶仍评估并通过
+    assert group["metrics"] == [{"key": "pass", "type": "bool", "value": True}]
+    assert provider.calls == []  # 组内 LLM 子叶被跳过
+
+
+@pytest.mark.asyncio
+async def test_assessor_combo_tolerance_malformed():
+    """空组 / 非 list rules / 非 dict 子规则 / 未知 op：容错不崩溃。"""
+    assessor = Assessor(FakeContext(), {})
+    steps = [
+        {
+            "status": "done",
+            "text": "q",
+            "rules": [
+                {"op": "any", "rules": []},  # 空组 → 不产 verdict
+                {"op": "any", "rules": "bad"},  # rules 非 list → 不产 verdict
+                {"op": "not", "rule": "bad"},  # 子规则非 dict → 不产 verdict
+                "坏数据",  # 非 dict entry → 不产 verdict、不短路
+                {"op": "bogus", "rules": []},  # 未知 op → 按叶走机械未知类型兜底
+            ],
+            "results": [{"session_id": "vs_1", "reply": "回复", "status": "ok"}],
+        }
+    ]
+    await assessor.assess(steps, [], [])
+    verdicts = steps[0]["results"][0]["verdicts"]
+    assert len(verdicts) == 1
+    v = verdicts[0]
+    assert v["status"] == "ok" and v["pass"] is False
+    assert "未知断言类型" in v["detail"]
+
+
+@pytest.mark.asyncio
+async def test_assessor_llm_failure_does_not_short_circuit():
+    """直接 LLM 叶 pass False 不触发短路（与现状一致）：后续 LLM 仍评估。"""
+    provider = FakeLLMProvider(
+        "prov_r",
+        responses=['{"score": 10, "level": "差"}', '{"score": 88, "level": "好"}'],
+    )
+    assessor = Assessor(
+        FakeContext(providers=[provider]), {"rp_test": _valid_profile()}
+    )
+    steps = [
+        {
+            "status": "done",
+            "text": "q",
+            "rules": [
+                {"kind": "llm", "profile_id": "rp_test", "context": "reply"},
+                {"kind": "llm", "profile_id": "rp_test", "context": "reply"},
+            ],
+            "results": [{"session_id": "vs_1", "reply": "回复", "status": "ok"}],
+        }
+    ]
+    await assessor.assess(steps, [], [{"id": "vs_1"}])
+    verdicts = steps[0]["results"][0]["verdicts"]
+    assert len(verdicts) == 2
+    assert verdicts[0]["pass"] is False and verdicts[1]["pass"] is True
+    assert len(provider.calls) == 2
+
+
+def test_testset_store_passthrough_combo_rules(tmp_path):
+    """store 透传组合节点：any / not 组合 dict 原样保留（清洗不做键白名单）。"""
+    store = TestsetStore(data_dir=tmp_path)
+    ts = store.create_testset(
+        "组合",
+        [
+            {
+                "text": "a",
+                "rules": [
+                    {"op": "any", "rules": [{"type": "contains", "value": "x"}]},
+                    {"op": "not", "rule": {"type": "non_empty"}},
+                ],
+            }
+        ],
+    )
+    rules = ts["messages"][0]["rules"]
+    assert rules == [
+        {"op": "any", "rules": [{"type": "contains", "value": "x"}]},
+        {"op": "not", "rule": {"type": "non_empty"}},
+    ]
+    reloaded = TestsetStore(data_dir=tmp_path)
+    assert reloaded.get_testset(ts["id"])["messages"][0]["rules"] == rules
 
 
 @pytest.mark.asyncio
@@ -4779,6 +5420,14 @@ async def test_assessor_final_rules_scope():
     mech = out[1]
     assert mech["results"][0]["verdict"]["pass"] is True
     assert mech["results"][0]["verdict"]["metrics"][0]["value"] is True
+
+
+def test_assessor_scope_indices_clamping():
+    """_scope_indices 边界钳制：越界裁剪、倒序空、非 dict 回退全部。"""
+    assert Assessor._scope_indices({"from": -3, "to": 10}, 5) == [0, 1, 2, 3, 4]
+    assert Assessor._scope_indices({"from": 2, "to": 2}, 5) == [2]
+    assert Assessor._scope_indices({"from": 3, "to": 1}, 5) == []
+    assert Assessor._scope_indices("all", 3) == [0, 1, 2]
 
 
 # ---------- 实际输入快照与结构化评审材料 ----------
@@ -4838,6 +5487,176 @@ async def test_plugin_on_llm_snapshots_actual_input():
         "extra_parts": ["<system_reminder>x</system_reminder>"],
         "system_prompt": "被测 SP",
     }
+
+
+def test_format_persona_snapshot():
+    """人格快照文本：prompt + 开场对话；两者都空 → 空串。"""
+    assert psn_mod.format_persona_snapshot({}) == ""
+    persona = {
+        "prompt": "你是寒露",
+        "_begin_dialogs_processed": [
+            {"role": "user", "content": "你好", "_no_save": True},
+            {"role": "assistant", "content": "寒露在呢", "_no_save": True},
+        ],
+    }
+    out = psn_mod.format_persona_snapshot(persona)
+    assert out.startswith("# Persona Instructions\n\n你是寒露\n")
+    assert "# 开场对话（begin_dialogs）\n\nuser: 你好\nassistant: 寒露在呢" in out
+    # 只有开场对话（begin_dialogs 型人格）→ 只出开场对话段
+    out2 = psn_mod.format_persona_snapshot(
+        {"prompt": "", "_begin_dialogs_processed": [{"role": "user", "content": "hi"}]}
+    )
+    assert "Persona Instructions" not in out2
+    assert "user: hi" in out2
+
+
+@pytest.mark.asyncio
+async def test_resolve_persona_system_prompt_defensive():
+    """回退解析防御式：无 persona_manager / 解析异常 → 空串（评审占位兜底）。"""
+    queue = asyncio.Queue()
+    plugin = main_mod.VirtualSessionPlugin(FakeContext(queue))
+    ev = VirtualMessageEvent.create(
+        session_id="vs_1", sender_id="u1", sender_name="用户1", text="hi"
+    )
+    req = SimpleNamespace(conversation=None)
+    # FakeContext 无 persona_manager → 空串
+    assert await plugin._resolve_persona_system_prompt(ev, req) == ""
+    # persona_manager 解析异常 → 空串
+    plugin.context.persona_manager = FakePersonaManager(raise_on_call=True)
+    assert await plugin._resolve_persona_system_prompt(ev, req) == ""
+    # 无人格 → 空串
+    plugin.context.persona_manager = FakePersonaManager(persona=None)
+    assert await plugin._resolve_persona_system_prompt(ev, req) == ""
+
+
+@pytest.mark.asyncio
+async def test_resolve_persona_system_prompt_from_conf():
+    """回退解析从配置档案解析人格：prompt + 开场对话合入快照系统提示词。"""
+    queue = asyncio.Queue()
+    plugin = main_mod.VirtualSessionPlugin(
+        FakeContext(queue, conf={"provider_settings": {"default_personality": "p_x"}})
+    )
+    plugin.context.persona_manager = FakePersonaManager(
+        persona={
+            "prompt": "你是寒露",
+            "_begin_dialogs_processed": [{"role": "user", "content": "你好"}],
+        }
+    )
+    ev = VirtualMessageEvent.create(
+        session_id="vs_1", sender_id="u1", sender_name="用户1", text="hi"
+    )
+    req = SimpleNamespace(conversation=SimpleNamespace(persona_id="p_hanlu"))
+    out = await plugin._resolve_persona_system_prompt(ev, req)
+    assert out.startswith("# Persona Instructions\n\n你是寒露\n")
+    assert "user: 你好" in out
+    # 会话级 persona_id、umo 与档案 provider_settings 都传给解析
+    # （镜像 _ensure_persona_and_skills 的入参）
+    call = plugin.context.persona_manager.calls[0]
+    assert call["umo"] == "webchat:FriendMessage:vs_1"
+    assert call["conversation_persona_id"] == "p_hanlu"
+    assert call["provider_settings"] == {"default_personality": "p_x"}
+
+
+@pytest.mark.asyncio
+async def test_plugin_on_llm_persona_fallback():
+    """on_llm：req.system_prompt 为空时回退解析人格（begin_dialogs 型会话）。"""
+    queue = asyncio.Queue()
+    plugin = main_mod.VirtualSessionPlugin(FakeContext(queue))
+    plugin.context.persona_manager = FakePersonaManager(
+        persona={
+            "prompt": "",
+            "_begin_dialogs_processed": [
+                {"role": "user", "content": "你好", "_no_save": True},
+                {"role": "assistant", "content": "寒露在呢", "_no_save": True},
+            ],
+        }
+    )
+    await plugin.runner.start(sessions=[make_session(1)], text="hi")
+    ev = queue.get_nowait()
+    req = SimpleNamespace(
+        prompt="装饰后 prompt", extra_user_content_parts=[], system_prompt=""
+    )
+    await plugin.on_llm(ev, req)
+    snap = ev.get_extra(ve_mod.TESTBENCH_LLM_INPUT_EXTRA_KEY)
+    assert snap["prompt"] == "装饰后 prompt"
+    assert (
+        snap["system_prompt"]
+        == "# 开场对话（begin_dialogs）\n\nuser: 你好\nassistant: 寒露在呢"
+    )
+    # 回退解析不影响非空 system_prompt 的捕获（原样保留）
+    req2 = SimpleNamespace(
+        prompt="p2", extra_user_content_parts=[], system_prompt="真实 SP"
+    )
+    await plugin.on_llm(ev, req2)
+    snap2 = ev.get_extra(ve_mod.TESTBENCH_LLM_INPUT_EXTRA_KEY)
+    assert snap2["system_prompt"] == "真实 SP"
+
+
+@pytest.mark.asyncio
+async def test_assessor_persona_fallback():
+    """评审阶段回退解析人格：捕获 hook 未留下快照时，Assessor 从配置档案补上。
+
+    结果无 llm_input 快照（捕获链路未触发）→ 评审输入仍以注入块带上被测
+    agent 人格；会话级 persona_id 经对话存储回查（`conversation_persona_id`，
+    镜像框架装饰路径入参；无会话时回落档案 default_personality）；同 umo
+    的多个结果只解析一次（memo）。
+    """
+    provider = FakeLLMProvider(
+        "prov_r",
+        responses=['{"score": 90, "level": "好"}', '{"score": 85, "level": "好"}'],
+    )
+    context = FakeContext(
+        providers=[provider],
+        conf={"provider_settings": {"default_personality": "p_hanlu"}},
+    )
+    context.persona_manager = FakePersonaManager(
+        persona={
+            "prompt": "你是寒露",
+            "_begin_dialogs_processed": [{"role": "user", "content": "你好"}],
+        }
+    )
+    # vs_1 有会话级人格（对话存储回查命中）；vs_2 无会话 → 回落档案
+    await context.conversation_manager.new_conversation(
+        "webchat:FriendMessage:vs_1", persona_id="p_hanlu"
+    )
+    assessor = Assessor(context, {"rp_test": _valid_profile()})
+    steps = [
+        {
+            "status": "done",
+            "text": "问",
+            "rules": [{"kind": "llm", "profile_id": "rp_test", "context": "record"}],
+            "results": [
+                {
+                    "session_id": "vs_1",
+                    "reply": "回答",
+                    "status": "ok",
+                    "umo": "webchat:FriendMessage:vs_1",
+                },
+                {
+                    "session_id": "vs_2",
+                    "reply": "回答2",
+                    "status": "ok",
+                    "umo": "webchat:FriendMessage:vs_2",
+                },
+            ],
+        }
+    ]
+    await assessor.assess(steps, [], [])
+    prompt = provider.calls[0]["prompt"]
+    assert prompt.startswith(
+        "【以下是被测 Agent 系统提示词】\n# Persona Instructions\n\n你是寒露\n"
+    )
+    assert "【以上是被测 Agent 系统提示词】" in prompt
+    # 解析入参：会话级 persona_id 回查命中（vs_1）/ 回落档案（vs_2），
+    # 档案 provider_settings 透传；不同 umo 各解析一次（memo 按 umo 记忆）
+    call1 = context.persona_manager.calls[0]
+    assert call1["umo"] == "webchat:FriendMessage:vs_1"
+    assert call1["conversation_persona_id"] == "p_hanlu"
+    assert call1["provider_settings"] == {"default_personality": "p_hanlu"}
+    call2 = context.persona_manager.calls[1]
+    assert call2["umo"] == "webchat:FriendMessage:vs_2"
+    assert call2["conversation_persona_id"] is None
+    assert len(context.persona_manager.calls) == 2
 
 
 def test_build_input_text():
@@ -4916,30 +5735,20 @@ async def test_assessor_uses_actual_input_and_identity():
 
 
 @pytest.mark.asyncio
-async def test_call_reviewer_agent_system_prompt_placeholder():
-    """{{agent_system_prompt}}：传入展开为被测 agent 提示词，未传展开为空串。"""
+async def test_call_reviewer_deprecated_agent_system_prompt_placeholder_cleared():
+    """{{agent_system_prompt}} 占位符已废弃：残留字面量被清空，不再展开。"""
     profile = {
         **_valid_profile(),
         "system_prompt": "结合被测提示词评审：{{agent_system_prompt}}",
     }
     provider = FakeLLMProvider("prov_r", responses=['{"score": 88, "level": "好"}'])
     _, error, status, _ = await call_reviewer(
-        FakeContext(providers=[provider]),
-        profile,
-        "上下文",
-        agent_system_prompt="被测 SP",
+        FakeContext(providers=[provider]), profile, "上下文"
     )
     assert status is None and error is None
-    assert provider.calls[0]["system_prompt"] == "结合被测提示词评审：被测 SP"
-
-    # 未提供 → 空串（无字面量占位符残留）
-    provider2 = FakeLLMProvider("prov_r", responses=['{"score": 88, "level": "好"}'])
-    _, _, status2, _ = await call_reviewer(
-        FakeContext(providers=[provider2]), profile, "上下文"
-    )
-    assert status2 is None
-    assert "{{agent_system_prompt}}" not in provider2.calls[0]["system_prompt"]
-    assert provider2.calls[0]["system_prompt"].endswith("：")
+    # 占位符不再展开为被测 agent 提示词（该机制已废弃），字面量清成空串
+    assert provider.calls[0]["system_prompt"] == "结合被测提示词评审："
+    assert "{{" not in provider.calls[0]["system_prompt"]
 
 
 def test_llm_verdict_stores_agent_system_prompt():
@@ -4974,8 +5783,8 @@ def test_llm_verdict_stores_agent_system_prompt():
 
 
 @pytest.mark.asyncio
-async def test_retry_llm_verdict_passes_agent_system_prompt():
-    """报告评审重试透传 agent_system_prompt：重跑时占位符不再保持字面量。"""
+async def test_retry_llm_verdict_keeps_agent_system_prompt_field():
+    """报告评审重试保留 agent_system_prompt 字段（信息用）；占位符字面量清空。"""
     profile = {
         **_valid_profile(),
         "system_prompt": "SP: {{agent_system_prompt}}",
@@ -4996,8 +5805,107 @@ async def test_retry_llm_verdict_passes_agent_system_prompt():
         FakeContext(providers=[provider]), profile, verdict
     )
     assert err is None and new["status"] == "ok"
-    assert provider.calls[0]["system_prompt"] == "SP: 被测 SP"
+    # 占位符不再展开（已废弃）——字面量清空；重跑用存储的 context_text 喂 prompt
+    assert provider.calls[0]["system_prompt"] == "SP: "
+    assert provider.calls[0]["prompt"] == "上下文"
     assert new["agent_system_prompt"] == "被测 SP"
+
+
+def test_inject_system_prompt_block():
+    """注入块纯函数：前后闭合的「以下是/以上是」块包裹；未捕获 → 占位文案块。"""
+    ctx = "【输入 · user（测试台）】\n问\n\n【输出 · agent（virtual_bot）】\n答"
+    out = inject_system_prompt_block(ctx, "你是助手")
+    assert out == (
+        "【以下是被测 Agent 系统提示词】\n你是助手\n"
+        "【以上是被测 Agent 系统提示词】\n\n" + ctx
+    )
+    # 未捕获（None / 空串）→ 注入块仍存在，显示占位文案（详情可确认链路状态）
+    assert inject_system_prompt_block(ctx, None) == (
+        "【以下是被测 Agent 系统提示词】\n（未捕获到被测 agent 系统提示词）\n"
+        "【以上是被测 Agent 系统提示词】\n\n" + ctx
+    )
+    assert inject_system_prompt_block(ctx, "") == (
+        "【以下是被测 Agent 系统提示词】\n（未捕获到被测 agent 系统提示词）\n"
+        "【以上是被测 Agent 系统提示词】\n\n" + ctx
+    )
+
+
+@pytest.mark.asyncio
+async def test_assessor_inject_system_prompt_rule_level():
+    """LLM 断言规则级注入开关：缺省开启、inject_system_prompt=false 关闭。"""
+    profile = _valid_profile()
+
+    def make_provider():
+        return FakeLLMProvider("prov_r", responses=['{"score": 90, "level": "好"}'])
+
+    def make_steps(rule: dict) -> list[dict]:
+        return [
+            {
+                "status": "done",
+                "text": "问",
+                "rules": [rule],
+                "results": [
+                    {
+                        "session_id": "vs_1",
+                        "reply": "回答",
+                        "status": "ok",
+                        "llm_input": {
+                            "prompt": "实际输入",
+                            "extra_parts": [],
+                            "system_prompt": "被测 SP",
+                        },
+                    }
+                ],
+            }
+        ]
+
+    # 缺省（不写字段）→ 注入被测 agent 系统提示词到评审输入开头
+    provider = make_provider()
+    assessor = Assessor(FakeContext(providers=[provider]), {"rp_test": profile})
+    steps = make_steps({"kind": "llm", "profile_id": "rp_test", "context": "reply"})
+    await assessor.assess(steps, [], [])
+    prompt = provider.calls[0]["prompt"]
+    assert prompt.startswith(
+        "【以下是被测 Agent 系统提示词】\n被测 SP\n【以上是被测 Agent 系统提示词】\n\n"
+    )
+    # 注入后的上下文随 verdict 落盘（报告评审重试据此自包含）
+    verdict = steps[0]["results"][0]["verdicts"][0]
+    assert verdict["context_text"] == prompt
+
+    # inject_system_prompt=false → 不注入（评审输入即原结构化材料）
+    provider2 = make_provider()
+    assessor2 = Assessor(FakeContext(providers=[provider2]), {"rp_test": profile})
+    steps2 = make_steps(
+        {
+            "kind": "llm",
+            "profile_id": "rp_test",
+            "context": "reply",
+            "inject_system_prompt": False,
+        }
+    )
+    await assessor2.assess(steps2, [], [])
+    prompt2 = provider2.calls[0]["prompt"]
+    assert "被测 Agent 系统提示词" not in prompt2
+    assert prompt2.startswith("【输入 · user（测试台）】")
+
+    # 开启但未捕获系统提示词（无 llm_input 快照）→ 注入占位块（详情可见链路状态）
+    provider3 = make_provider()
+    assessor3 = Assessor(FakeContext(providers=[provider3]), {"rp_test": profile})
+    steps3 = [
+        {
+            "status": "done",
+            "text": "问",
+            "rules": [{"kind": "llm", "profile_id": "rp_test", "context": "reply"}],
+            "results": [{"session_id": "vs_1", "reply": "回答", "status": "ok"}],
+        }
+    ]
+    await assessor3.assess(steps3, [], [])
+    prompt3 = provider3.calls[0]["prompt"]
+    assert prompt3.startswith(
+        "【以下是被测 Agent 系统提示词】\n（未捕获到被测 agent 系统提示词）\n"
+        "【以上是被测 Agent 系统提示词】\n\n"
+    )
+    assert "【输入 · user（测试台）】" in prompt3
 
 
 def test_result_summary_carries_llm_input():
@@ -5067,6 +5975,13 @@ async def test_plugin_reviewer_crud(tmp_path):
     assert profile["id"].startswith("rp_")
     assert profile["context"] == "reply"  # 缺省
 
+    # 不配 model（只配 Provider）→ 200，model 落 None（评审用 Provider 当前模型）
+    resp_nm = await call_handler(
+        plugin.create_reviewer, {k: v for k, v in payload.items() if k != "model"}
+    )
+    assert resp_nm.status_code == 200
+    assert json.loads(resp_nm.body)["model"] is None
+
     # 支持多个 profile：再创建 → 200（消息规则 / 最终断言按 profile_id 引用）
     resp2 = await call_handler(
         plugin.create_reviewer, {**payload, "name": "二审", "model": "review-2"}
@@ -5093,14 +6008,14 @@ async def test_plugin_reviewer_crud(tmp_path):
     )
     assert resp6.status_code == 400
 
-    # 列表（两个 profile）+ 按需删除（部分删除保留其余）
+    # 列表（三个 profile）+ 按需删除（部分删除保留其余）
     listing = await plugin.list_reviewers()
     reviewers = json.loads(listing.body)["reviewers"]
-    assert len(reviewers) == 2
+    assert len(reviewers) == 3
     resp7 = await call_handler(plugin.delete_reviewers, {"ids": [profile["id"]]})
     assert json.loads(resp7.body)["deleted"] == 1
     listing2 = await plugin.list_reviewers()
-    assert len(json.loads(listing2.body)["reviewers"]) == 1
+    assert len(json.loads(listing2.body)["reviewers"]) == 2
     resp8 = await call_handler(plugin.delete_reviewers, {"ids": []})
     assert resp8.status_code == 400
 
@@ -5594,6 +6509,80 @@ def test_build_report_data_snapshot():
     assert data["status"] == "done"
     assert len(data["sessions"]) == 1
     assert data["steps"][0]["results"] == []
+    # 报告 3 类组织：断言 / 耗时统计随默认模板一并产出
+    assert data["assertions"] == {"total": 0, "passed": 0, "failed": 0}
+    assert data["durations"]["count"] == 0
+    assert data["durations"]["min"] == 0.0
+
+
+def test_build_assertion_stats():
+    """断言统计：pass 为 bool 才计入，error/invalid（pass None）与短路跳过的
+    LLM（不产 verdict）不计入；final 级 verdict 一并统计。"""
+    run = {
+        "steps": [
+            {
+                "status": "done",
+                "results": [
+                    {
+                        "session_id": "vs_1",
+                        "verdicts": [
+                            {"rule_index": 0, "status": "ok", "pass": True},
+                            {"rule_index": 1, "status": "ok", "pass": False},
+                            # 评审失败：pass 为 None，不计入断言计数
+                            {"rule_index": 2, "status": "error", "pass": None},
+                            {"rule_index": 3, "status": "invalid", "pass": None},
+                        ],
+                    }
+                ],
+            }
+        ],
+        "final_verdicts": [
+            {
+                "rule_index": 0,
+                "results": [
+                    {"session_id": "vs_1", "verdict": {"status": "ok", "pass": True}},
+                    {
+                        "session_id": "vs_2",
+                        "verdict": {"status": "error", "pass": None},
+                    },
+                ],
+            }
+        ],
+    }
+    assert build_assertion_stats(run) == {"total": 3, "passed": 2, "failed": 1}
+
+
+def test_build_duration_stats():
+    """耗时统计：只取 status=done 步骤的 results，耗时须为非 bool 数字；
+    数字但为 bool（True/False）排除。"""
+    run = {
+        "steps": [
+            {
+                "status": "done",
+                "results": [
+                    {"session_id": "vs_1", "duration": 1.5},
+                    {"session_id": "vs_2", "duration": 2.5},
+                ],
+            },
+            {
+                "status": "done",
+                "results": [
+                    {"session_id": "vs_1", "duration": 1.0},
+                    {"session_id": "vs_2", "duration": "n/a"},  # 非数字排除
+                    {"session_id": "vs_3", "duration": True},  # bool 排除
+                ],
+            },
+            {
+                "status": "error",  # 未完成步骤的 results 不计入
+                "results": [{"session_id": "vs_1", "duration": 99.0}],
+            },
+        ]
+    }
+    stats = build_duration_stats(run)
+    assert stats["count"] == 3
+    assert stats["min"] == 1.0
+    assert stats["max"] == 2.5
+    assert stats["avg"] == round(5.0 / 3, 3)
 
 
 def test_testset_store_report_enabled(tmp_path):
@@ -5629,6 +6618,207 @@ def test_testset_store_report_enabled(tmp_path):
         )
     reloaded = TestsetStore(data_dir=tmp_path)
     assert reloaded.get_testset("ts_old")["report_enabled"] is False
+
+
+def test_testset_store_report_llm(tmp_path):
+    """测试集存储 report_llm：缺省 None、合法配置落盘（provider_id 去空白）、
+    非 dict / 缺 provider_id → None、system_prompt 非字符串 → ""、更新整体替换、
+    旧数据缺键 setdefault None。"""
+    store = TestsetStore(data_dir=tmp_path)
+    ts = store.create_testset("默认", [{"text": "m"}])
+    assert ts["report_llm"] is None
+
+    ts2 = store.create_testset(
+        "带报告 LLM",
+        [{"text": "m"}],
+        report_llm={"provider_id": " prov_x ", "system_prompt": "总结", "model": "m1"},
+    )
+    assert ts2["report_llm"] == {
+        "provider_id": "prov_x",
+        "system_prompt": "总结",
+        "model": "m1",
+    }
+    # 未提供 model：清洗后不含该键（生成时用 Provider 当前模型）
+    ts3 = store.create_testset(
+        "无模型", [], report_llm={"provider_id": "p", "system_prompt": "s"}
+    )
+    assert ts3["report_llm"] == {"provider_id": "p", "system_prompt": "s"}
+
+    # 清洗：非 dict → None；缺 provider_id → None；system_prompt 非字符串 → ""
+    assert store.create_testset("T", [], report_llm="nope")["report_llm"] is None
+    assert (
+        store.create_testset("T", [], report_llm={"system_prompt": "x"})["report_llm"]
+        is None
+    )
+    ts4 = store.create_testset(
+        "T", [], report_llm={"provider_id": "p", "system_prompt": 123}
+    )
+    assert ts4["report_llm"] == {"provider_id": "p", "system_prompt": ""}
+
+    # 更新整体替换；缺省 → 置 None（清空旧配置）
+    updated = store.update_testset(
+        ts2["id"], "带报告 LLM", [], report_llm={"provider_id": "p2"}
+    )
+    assert updated["report_llm"] == {"provider_id": "p2", "system_prompt": ""}
+    updated2 = store.update_testset(ts2["id"], "带报告 LLM", [])
+    assert updated2["report_llm"] is None
+
+    # 持久化 + 旧数据缺键 → setdefault None
+    with (tmp_path / "virtual_session" / "testsets.json").open(
+        "w", encoding="utf-8"
+    ) as f:
+        json.dump(
+            {
+                "testsets": [
+                    {
+                        "id": "ts_old",
+                        "name": "旧",
+                        "created_at": 0,
+                        "messages": [],
+                        "batch_ranges": [],
+                    }
+                ]
+            },
+            f,
+        )
+    reloaded = TestsetStore(data_dir=tmp_path)
+    assert reloaded.get_testset("ts_old")["report_llm"] is None
+
+
+@pytest.mark.asyncio
+async def test_plugin_testset_report_llm_validation(tmp_path):
+    """测试集 API 的 report_llm：非法形状 → 400；合法配置落盘；更新生效。"""
+    plugin = main_mod.VirtualSessionPlugin(FakeContext())
+    plugin.testset_store = TestsetStore(data_dir=tmp_path)
+
+    resp = await call_handler(
+        plugin.create_testset, {"name": "T", "messages": [], "report_llm": "nope"}
+    )
+    assert resp.status_code == 400
+    resp = await call_handler(
+        plugin.create_testset,
+        {"name": "T", "messages": [], "report_llm": {"system_prompt": "x"}},
+    )
+    assert resp.status_code == 400
+
+    resp = await call_handler(
+        plugin.create_testset,
+        {"name": "T", "messages": [], "report_llm": {"provider_id": "prov_x"}},
+    )
+    assert resp.status_code == 200
+    ts = json.loads(resp.body)
+    assert ts["report_llm"] == {"provider_id": "prov_x", "system_prompt": ""}
+
+    # 更新：非法 → 400；合法生效
+    resp = await call_handler(
+        plugin.update_testset,
+        {"name": "x", "messages": [], "report_llm": []},
+        ts["id"],
+    )
+    assert resp.status_code == 400
+    resp = await call_handler(
+        plugin.update_testset,
+        {"name": "x", "messages": [], "report_llm": {"provider_id": "p2"}},
+        ts["id"],
+    )
+    assert resp.status_code == 200
+    assert json.loads(resp.body)["report_llm"] == {
+        "provider_id": "p2",
+        "system_prompt": "",
+    }
+
+
+@pytest.mark.asyncio
+async def test_plugin_generate_llm_report(tmp_path):
+    """LLM 报告生成端点：成功产物落 data.llm_report 并持久化（重新生成覆盖）；
+    未配置报告 LLM / Provider 缺失 → 400；报告不存在 → 404；调用异常 → 400。"""
+    provider = FakeLLMProvider("prov_r", responses=["# 报告\n\n**总结**", "第二版"])
+    plugin = main_mod.VirtualSessionPlugin(FakeContext(providers=[provider]))
+    plugin.testset_store = TestsetStore(data_dir=tmp_path)
+    plugin.report_store = ReportStore(data_dir=tmp_path)
+    ts = plugin.testset_store.create_testset(
+        "带报告 LLM",
+        [{"text": "问"}],
+        report_llm={"provider_id": "prov_r", "system_prompt": "生成报告"},
+    )
+    report = plugin.report_store.add_report(
+        ts["id"], "tr_1", {"status": "done", "testset_id": ts["id"]}
+    )
+
+    resp = await call_handler(plugin.generate_llm_report, {}, report["id"])
+    assert resp.status_code == 200
+    body = json.loads(resp.body)
+    llm = body["llm_report"]
+    assert llm["status"] == "ok"
+    assert llm["text"] == "# 报告\n\n**总结**"
+    assert llm["provider_id"] == "prov_r"
+    assert llm["model"] is None  # 未配模型 → Provider 当前模型
+    assert isinstance(llm["generated_at"], int)
+    # 报告数据整体作为 prompt 传给报告 LLM（含 testset_id，JSON 可读）
+    assert len(provider.calls) == 1
+    assert provider.calls[0]["system_prompt"] == "生成报告"
+    assert provider.calls[0]["model"] is None
+    assert json.loads(provider.calls[0]["prompt"])["testset_id"] == ts["id"]
+    # 持久化：重开 store 仍可读（update_report 整体替换 data）
+    assert (
+        plugin.report_store.get_report(report["id"])["data"]["llm_report"] is not None
+    )
+
+    # 重新生成覆盖旧产物（第二次调用）
+    resp2 = await call_handler(plugin.generate_llm_report, {}, report["id"])
+    assert json.loads(resp2.body)["llm_report"]["text"] == "第二版"
+    assert len(provider.calls) == 2
+
+    # 测试集未配置报告 LLM → 400（报告存在但无配置）
+    ts_no = plugin.testset_store.create_testset("无配置", [{"text": "问"}])
+    report_no = plugin.report_store.add_report(
+        ts_no["id"], "tr_2", {"status": "done", "testset_id": ts_no["id"]}
+    )
+    resp3 = await call_handler(plugin.generate_llm_report, {}, report_no["id"])
+    assert resp3.status_code == 400
+    assert "未配置报告 LLM" in resp3.body.decode("utf-8")
+
+    # 配置的 Provider 缺失 → 400
+    ts_missing = plugin.testset_store.create_testset(
+        "缺 Provider",
+        [{"text": "问"}],
+        report_llm={"provider_id": "prov_gone", "system_prompt": ""},
+    )
+    report_missing = plugin.report_store.add_report(
+        ts_missing["id"], "tr_3", {"status": "done", "testset_id": ts_missing["id"]}
+    )
+    resp4 = await call_handler(plugin.generate_llm_report, {}, report_missing["id"])
+    assert resp4.status_code == 400
+    assert "找不到报告 Provider" in resp4.body.decode("utf-8")
+
+    # 报告不存在 → 404；数据损坏（非 dict）→ 400
+    resp5 = await call_handler(plugin.generate_llm_report, {}, "rp_none")
+    assert resp5.status_code == 404
+    report_bad = plugin.report_store.add_report(ts["id"], "tr_4", "不是 dict")
+    resp6 = await call_handler(plugin.generate_llm_report, {}, report_bad["id"])
+    assert resp6.status_code == 400
+    assert "报告数据损坏" in resp6.body.decode("utf-8")
+
+    # 报告 LLM 调用异常 → 400（不落库）
+    boom = FakeLLMProvider("prov_r", raise_on_call=True)
+    plugin2 = main_mod.VirtualSessionPlugin(FakeContext(providers=[boom]))
+    plugin2.testset_store = TestsetStore(data_dir=tmp_path)
+    plugin2.report_store = ReportStore(data_dir=tmp_path)
+    ts_boom = plugin2.testset_store.create_testset(
+        "异常",
+        [{"text": "问"}],
+        report_llm={"provider_id": "prov_r", "system_prompt": ""},
+    )
+    report_boom = plugin2.report_store.add_report(
+        ts_boom["id"], "tr_5", {"status": "done", "testset_id": ts_boom["id"]}
+    )
+    resp7 = await call_handler(plugin2.generate_llm_report, {}, report_boom["id"])
+    assert resp7.status_code == 400
+    assert "报告生成失败" in resp7.body.decode("utf-8")
+    # 失败不落库：报告保持原样（无 llm_report）
+    assert (
+        "llm_report" not in plugin2.report_store.get_report(report_boom["id"])["data"]
+    )
 
 
 @pytest.mark.asyncio
@@ -5872,6 +7062,10 @@ async def test_plugin_retry_report_reviews_all_and_targets(tmp_path):
     assert len(provider.calls) == 3
     # 机械 verdict 仍不参与（无 profile_id）
     assert body["report"]["steps"][0]["results"][0]["verdicts"][0]["status"] == "ok"
+    # 断言 / 耗时聚合随评审重试一并重建（与 metrics_summary 同批 update_report）
+    # 4 条 verdict 全部重试为 pass=True（机械 + 3 条 LLM 均通过）
+    assert body["report"]["assertions"] == {"total": 4, "passed": 4, "failed": 0}
+    assert body["report"]["durations"]["count"] == 0
 
     # 单条重试：targets 定位消息级第 2 条 LLM verdict
     resp2 = await call_handler(

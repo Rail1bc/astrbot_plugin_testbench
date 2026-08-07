@@ -965,6 +965,8 @@ code {
 .ts-msg-text {
   flex: 1;
   min-width: 0;
+  min-height: 34px;
+  max-height: 180px;
 }
 
 /* 命令标记：紧凑开关，与批量勾选同风格 */
@@ -1015,12 +1017,76 @@ code {
   flex-shrink: 0;
 }
 
-/* LLM 评审规则行：类型选择 LLM 时显示 profile + context 两个下拉（替代值输入） */
+/* 「取反」开关（消息断言叶行）：紧凑复选框，不换行 */
+.ts-msg-rule-not {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}
+
+.ts-msg-rule-not input {
+  margin: 0;
+  cursor: pointer;
+}
+
+/* 任意组容器：虚线边框 + 子规则区缩进，与平铺断言区分 */
+.ts-msg-rule-group {
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  padding: 4px 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ts-msg-rule-group-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.ts-msg-rule-group-head span {
+  flex: 1;
+}
+
+.ts-msg-rule-group-del {
+  flex-shrink: 0;
+}
+
+.ts-msg-rule-group-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-left: 12px;
+}
+
+/* 规则区底部按钮栏：「＋ 断言」与「＋ 任意组」并排 */
+.ts-msg-rule-addbar {
+  display: flex;
+  gap: 8px;
+  align-self: flex-start;
+}
+
+/* LLM 评审规则行：类型选择 LLM 时显示 profile + context 下拉（替代值输入）。
+   本容器有 display: flex，会覆盖 UA 的 [hidden] 规则——非 LLM 类型 / 非 slice
+   上下文须显式隐藏（曾导致固定规则行也显示评审 Profile 下拉） */
 .ts-msg-rule-llm {
   flex: 1;
   min-width: 0;
   display: flex;
   gap: 6px;
+}
+
+.ts-msg-rule-llm[hidden] {
+  display: none;
 }
 
 .ts-msg-rule-profile {
@@ -1031,6 +1097,29 @@ code {
 .ts-msg-rule-context {
   width: 150px;
   flex-shrink: 0;
+}
+
+.ts-msg-rule-slice {
+  width: 140px;
+  flex-shrink: 0;
+}
+
+/* 「注入被测 Agent 系统提示词」开关（LLM 评审断言）：紧凑复选框，不换行 */
+.ts-msg-rule-inject {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}
+
+.ts-msg-rule-inject input {
+  margin: 0;
+  cursor: pointer;
 }
 
 /* 评审 Profile 管理区：摘要 + 新建/编辑/删除按钮 */
@@ -1228,6 +1317,31 @@ code {
   flex-shrink: 0;
 }
 
+/* 报告 LLM 配置（报告开关下方）：Provider 下拉 + 生成提示词 */
+.ts-report-llm {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.ts-report-llm-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ts-report-llm select {
+  width: auto;
+  flex-shrink: 0;
+}
+
+.ts-report-llm textarea {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+}
+
 /* ---------- 报告视图（页眉「编辑 / 报告」切换：最近运行 + 持久化报告） ---------- */
 
 /* 滚动区 + 分区 + 条目 */
@@ -1239,6 +1353,78 @@ code {
   flex-direction: column;
   gap: 14px;
   padding-right: 4px;
+}
+
+/* display: flex 覆盖 UA 的 [hidden]——「编辑 / 报告」切换时报告体须显式隐藏 */
+.ts-report-body[hidden] {
+  display: none;
+}
+
+/* LLM 报告 markdown 渲染（render_markdown.js 产物）：文本一律 textContent 渲染 */
+.md-render {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  line-height: 1.6;
+  word-break: break-word;
+}
+
+.md-render h1,
+.md-render h2,
+.md-render h3 {
+  margin: 4px 0 0;
+  line-height: 1.4;
+}
+
+.md-render p {
+  margin: 0;
+}
+
+.md-render ul,
+.md-render ol {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.md-render pre {
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-secondary);
+  overflow-x: auto;
+  white-space: pre-wrap;
+}
+
+.md-render table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+.md-render th,
+.md-render td {
+  border: 1px solid var(--border);
+  padding: 3px 8px;
+  text-align: left;
+}
+
+.md-render code {
+  background: var(--bg-secondary);
+  padding: 0 4px;
+  border-radius: 4px;
+  font-size: 11px;
+}
+
+.md-render pre code {
+  background: none;
+  padding: 0;
+}
+
+.md-render hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 4px 0;
 }
 
 .ts-report-section {
@@ -1344,6 +1530,11 @@ code {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+/* display: flex 覆盖 UA 的 [hidden]——未选群聊时成员编辑区须显式隐藏 */
+.cg-members[hidden] {
+  display: none;
 }
 
 .cg-section-title {
@@ -1589,6 +1780,12 @@ code {
   margin-top: 8px;
   font-size: 13px;
   word-break: break-all;
+  /* 状态条消息内容固定高度、过长滚动：内容直接内联当前消息（测试集进度含完整
+     stepText），长文本 / 多行消息会把状态条顶高挤压下方视图；限高 + 纵向滚动
+     查看，保留换行（pre-wrap）——常态生效，不限于执行测试集 */
+  white-space: pre-wrap;
+  max-height: 72px;
+  overflow-y: auto;
 }
 
 .run-status.ok {
@@ -2075,6 +2272,11 @@ code {
   font-size: 12px;
 }
 
+/* display: flex 覆盖 UA 的 [hidden]——无在途消息时消息条须显式隐藏 */
+.panel-pending[hidden] {
+  display: none;
+}
+
 .pending-item {
   display: flex;
   align-items: center;
@@ -2215,4 +2417,18 @@ code {
   justify-content: flex-end;
   gap: 8px;
   flex-shrink: 0;
+}
+
+/* 弹窗内联错误（onOk 校验 / 后端 4xx 时弹窗不关闭、保留表单内容，此处提示；
+   位于 body 与 actions 之间、不受 body 内部滚动影响，始终可见） */
+.modal-error {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  color: var(--danger);
+  font-size: 12px;
+  line-height: 1.5;
+  word-break: break-word;
 }

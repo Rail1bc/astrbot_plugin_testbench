@@ -7,7 +7,9 @@
 
 from __future__ import annotations
 
-from astrbot.api.web import error_response, json_response, request
+from astrbot.api.web import error_response, json_response
+
+from .common import json_dict
 
 
 def _require_ids(payload: dict) -> list[str] | None:
@@ -33,7 +35,9 @@ class IdentitiesAPI:
 
     async def create_identity(self):
         """创建测试身份（name 必填；sender_id / sender_name 缺失时回退名称）。"""
-        payload = await request.json(default={})
+        payload = await json_dict()
+        if payload is None:
+            return error_response("请求体必须是 JSON 对象", status_code=400)
         name = payload.get("name")
         if not isinstance(name, str) or not name.strip():
             return error_response("name 不能为空", status_code=400)
@@ -48,7 +52,9 @@ class IdentitiesAPI:
 
     async def update_identity(self, identity_id: str):
         """更新测试身份（只更新传入字段）。"""
-        payload = await request.json(default={})
+        payload = await json_dict()
+        if payload is None:
+            return error_response("请求体必须是 JSON 对象", status_code=400)
         updated = await self.identity_store.write(
             self.identity_store.update_identity,
             identity_id,
@@ -63,7 +69,9 @@ class IdentitiesAPI:
 
     async def delete_identities(self):
         """删除测试身份。"""
-        payload = await request.json(default={})
+        payload = await json_dict()
+        if payload is None:
+            return error_response("请求体必须是 JSON 对象", status_code=400)
         ids = _require_ids(payload)
         if ids is None:
             return error_response("ids 不能为空", status_code=400)
@@ -80,7 +88,9 @@ class IdentitiesAPI:
 
     async def create_chat_group(self):
         """创建虚拟群聊（name 必填；member_ids 引用身份 id）。"""
-        payload = await request.json(default={})
+        payload = await json_dict()
+        if payload is None:
+            return error_response("请求体必须是 JSON 对象", status_code=400)
         name = payload.get("name")
         if not isinstance(name, str) or not name.strip():
             return error_response("name 不能为空", status_code=400)
@@ -93,7 +103,9 @@ class IdentitiesAPI:
 
     async def update_chat_group(self, group_id: str):
         """更新虚拟群聊（只更新传入字段）。"""
-        payload = await request.json(default={})
+        payload = await json_dict()
+        if payload is None:
+            return error_response("请求体必须是 JSON 对象", status_code=400)
         updated = await self.chat_group_store.write(
             self.chat_group_store.update_chat_group,
             group_id,
@@ -106,7 +118,9 @@ class IdentitiesAPI:
 
     async def delete_chat_groups(self):
         """删除虚拟群聊。"""
-        payload = await request.json(default={})
+        payload = await json_dict()
+        if payload is None:
+            return error_response("请求体必须是 JSON 对象", status_code=400)
         ids = _require_ids(payload)
         if ids is None:
             return error_response("ids 不能为空", status_code=400)
@@ -126,7 +140,9 @@ class IdentitiesAPI:
 
     async def clear_stream(self):
         """清空指定会话的消息流。"""
-        payload = await request.json(default={})
+        payload = await json_dict()
+        if payload is None:
+            return error_response("请求体必须是 JSON 对象", status_code=400)
         ids = _require_ids(payload)
         if ids is None:
             return error_response("ids 不能为空", status_code=400)

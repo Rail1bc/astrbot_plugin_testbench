@@ -195,6 +195,22 @@
                   <input id="ts-report-enabled" type="checkbox" />
                   <span>运行结束后产出持久化报告（随测试集删除）</span>
                 </label>
+                <div class="ts-report-llm">
+                  <div class="ts-report-llm-row">
+                    <span class="ts-identity-caption">报告 LLM</span>
+                    <select
+                      id="ts-report-llm-provider"
+                      title="用于生成 LLM 报告（markdown 总结）的 Provider；不单独配模型，用 Provider 当前模型（同评审 profile）"
+                    >
+                      <option value="">选择 Provider…</option>
+                    </select>
+                  </div>
+                  <textarea
+                    id="ts-report-llm-prompt"
+                    rows="3"
+                    placeholder="生成报告的系统提示词（可选）。报告完整 JSON 以用户消息形式随提示词发送给报告 LLM。"
+                  ></textarea>
+                </div>
               </div>
               <div id="ts-messages" class="ts-messages"></div>
               <div class="ts-foot">
@@ -237,6 +253,7 @@
     <div id="modal-mask" class="modal-mask" hidden>
       <div class="modal" role="dialog" aria-modal="true">
         <div id="modal-body" class="modal-body"></div>
+        <div id="modal-error" class="modal-error" hidden></div>
         <div class="modal-actions">
           <button id="modal-cancel" class="btn">取消</button>
           <button id="modal-ok" class="btn primary">确定</button>

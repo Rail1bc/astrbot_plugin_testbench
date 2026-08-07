@@ -17,6 +17,8 @@ from __future__ import annotations
 import copy
 from typing import Any
 
+from ..stats import duration_stats
+
 
 def _collect_verdict(
     verdict: Any, per_key: dict[str, dict], review_failures: list[int]
@@ -102,6 +104,55 @@ def build_metrics_summary(run: dict) -> dict:
     return {"review_failures": review_failures[0], "metrics": metrics}
 
 
+def build_assertion_stats(run: dict) -> dict:
+    """统计全部断言 verdict 的通过 / 失败数（消息级 + final 级）。
+
+    与 ``build_metrics_summary`` 的 review_failures 语义一致：pass 为
+    None（error / invalid 评审失败，评审过程出问题）不计入断言计数，
+    只计确定的 bool 结果；pass=False（规则判为不通过）计入失败。
+    """
+    total = passed = failed = 0
+
+    def count(verdict: Any) -> None:
+        nonlocal total, passed, failed
+        p = verdict.get("pass") if isinstance(verdict, dict) else None
+        if p is None:
+            return
+        total += 1
+        if p is True:
+            passed += 1
+        else:
+            failed += 1
+
+    for step in run.get("steps") or []:
+        for result in step.get("results") or []:
+            for verdict in result.get("verdicts") or []:
+                count(verdict)
+    for final in run.get("final_verdicts") or []:
+        for entry in final.get("results") or []:
+            count(entry.get("verdict"))
+    return {"total": total, "passed": passed, "failed": failed}
+
+
+def build_duration_stats(run: dict) -> dict:
+    """统计全部已完成步骤 × 会话的回复耗时（min/max/avg/p50/p95 + 条数）。
+
+    只取 ``status == "done"`` 步骤的 results（error / 未运行步骤的结果不
+    可靠或为空）；耗时须为非 bool 的数字。
+    """
+    durations: list[float] = []
+    for step in run.get("steps") or []:
+        if step.get("status") != "done":
+            continue
+        for result in step.get("results") or []:
+            d = result.get("duration")
+            if isinstance(d, (int, float)) and not isinstance(d, bool):
+                durations.append(d)
+    stats = duration_stats(durations)
+    stats["count"] = len(durations)
+    return stats
+
+
 def build_report_data(run: dict) -> dict:
     """组装报告数据（运行终态快照）：run 元数据 + 深拷贝产物 + 总览聚合。
 
@@ -119,4 +170,6 @@ def build_report_data(run: dict) -> dict:
         "steps": copy.deepcopy(run.get("steps") or []),
         "final_verdicts": copy.deepcopy(run.get("final_verdicts") or []),
         "metrics_summary": build_metrics_summary(run),
+        "assertions": build_assertion_stats(run),
+        "durations": build_duration_stats(run),
     }

@@ -167,13 +167,22 @@ export function createEventController(env) {
   // 订阅 /events 并做一次快照对账：订阅建立后（流已 open）用一次性接口取回
   // 当前权威状态，补上订阅前/断线期间丢失的事件（事件均为全量快照，幂等覆盖）
   async function connectEvents() {
-    await subscribeEvents(handleEvent, () => {
-      // 断线：延迟重连；丢的事件由 reconcileEvents 的一次性取回兜底
+    try {
+      await subscribeEvents(handleEvent, () => {
+        // 断线：延迟重连；丢的事件由 reconcileEvents 的一次性取回兜底
+        setTimeout(() => {
+          void connectEvents().catch((err) => console.error("重连事件流失败:", err));
+        }, 3000);
+      });
+      void reconcileEvents();
+    } catch (err) {
+      // 订阅建立即失败（而非连接中断后 onError 回调触发）：同样延迟重试，
+      // 避免事件层本会话报废（subscribeEvents 失败时 eventSub 保持 null，可重新订阅）
+      console.error("事件流订阅失败:", err);
       setTimeout(() => {
-        void connectEvents().catch((err) => console.error("重连事件流失败:", err));
+        void connectEvents().catch((e) => console.error("重连事件流失败:", e));
       }, 3000);
-    });
-    void reconcileEvents();
+    }
   }
 
   async function reconcileEvents() {
