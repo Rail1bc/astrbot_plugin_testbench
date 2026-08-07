@@ -29,7 +29,8 @@
 - **评审 Profile 不再单独配模型**：`validate_profile` 移除「model 必填」（省略时评审用 Provider 当前模型，`call_reviewer` 传 `model=None`）；表单删除模型输入框，Provider 下拉显示「供应商（当前模型）」，列表模型徽标按 Provider 当前模型解析；保存 / 编辑 profile 时顺带清除旧数据遗留的显式 model。
 - **新消息默认 0 条断言**：测试集编辑视图新消息默认不再渲染 1 条「无」类型空断言行，按需点「＋ 断言」添加。
 - **消息框改为 textarea 可纵向拉伸**：消息文本从单行 `<input type="text">` 改为 `<textarea>`（全局 `resize: vertical`），长文本可纵向拉大，消息可含换行。
-- **LLM 规则 slice 上下文可配范围切片**：消息级 LLM 规则选「范围切片记录」后新增范围输入（`rule.slice_range`，{from,to} 0 基闭区间，格式同最终断言范围「2-4 / 3 / 空=全部」）；后端 `Assessor._slice_entries` 按范围切片喂给评审 LLM 的记录并钳制边界（越界裁剪 / 倒序空 / 非法回退全部），未配范围时与 record 等效。
+- **LLM 规则 slice 上下文可配范围切片**：消息级 LLM 规则选「范围切片记录」后新增范围输入（`rule.slice_range`，0 基闭区间，格式同最终断言范围「2-4 / 3 / 空=全部」）；后端 `Assessor._slice_entries` 按范围切片喂给评审 LLM 的记录并钳制边界（越界裁剪 / 倒序空 / 非法回退全部），未配范围时与 record 等效。
+- **切片范围支持多段**：切片范围输入可写多个段（逗号分隔，如 `3-4,10-12`），`rule.slice_range` 扩展为 0 基闭区间**列表**（仍兼容旧版单段 dict 存量数据）；`Assessor._slice_entries` 逐段切片拼接（越界裁剪 / 倒序段跳过 / 形状非法回退全部）；前端 `parseSliceRange` / `sliceRangeToText` 为多段解析与编辑回填（纯函数层，node:test 覆盖）。
 - **状态条消息内容固定高度、过长滚动**：`.run-status` 直接内联当前消息内容（测试集运行进度含完整 stepText），长文本 / 多行消息会把状态条顶高、挤压下方视图；限高（max-height 72px）+ 纵向滚动查看并保留换行（pre-wrap）——常态生效，不限于执行测试集。
 
 ### 🧪 Tests (测试)
@@ -41,6 +42,7 @@
 - 后端模型可选随测更新：`test_validate_profile_ok_and_errors` / `test_call_reviewer_ok_and_statuses` / `test_plugin_reviewer_crud` 覆盖省略 model、`model=None` 调用与无 model 创建（228 不变）。
 - 后端 +1：`test_assessor_message_rule_slice_range` 消息规则 slice_range 切片 / 缺省回退 / 边界钳制（228 → 229）。
 - pure.js 动态测试 +4：buildRule slice_range 分支（slice 空范围 / 区间 / 单步 / 非 slice 忽略，42 → 46 断言组）。
+- pure.js 动态测试 +5：多段切片范围（buildRule slice 多段、parseSliceRange 空 / 多段 / 非法、sliceRangeToText 回填，46 → 51 断言组）。
 - 前端静态检查 +1：`test_frontend_message_editor_defaults_and_slice` 默认 0 断言 / textarea / hidden 修复 / slice 输入标记（61 → 62）。
 - 前端静态检查 +1：`test_frontend_run_status_scroll` 状态条消息限高滚动标记（62 → 63）。
 

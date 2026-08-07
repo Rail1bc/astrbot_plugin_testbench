@@ -25,8 +25,10 @@ import {
   collectEditorRows as collectEditorRowsData,
   collectRules,
   parseScope,
+  parseSliceRange,
   parseTestsetEnvelope,
   rangesFromFlags,
+  sliceRangeToText,
 } from "./pure.js";
 
 const $ = (id) => document.getElementById(id);
@@ -50,9 +52,9 @@ const RULE_TYPES = [
 
 // LLM 评审规则的上下文模式（与后端 reviewer profile 的 context 枚举一致）：
 // reply 仅该步回复；record 为该步及之前全部对话记录；slice 为记录切片——
-// 消息规则可选配 slice_range（行内切片范围输入，2-4/3/空）限定记录区间，
-// 未配范围时与 record 等效；最终断言按 scope 切片后也是记录文本（范围由
-// 行内 scope 输入承担，不再重复配 slice_range）。
+// 消息规则可选配 slice_range（行内切片范围输入，2-4/3/空，多段逗号分隔如
+// 3-4,10-12）限定记录区间，未配范围时与 record 等效；最终断言按 scope 切片
+// 后也是记录文本（范围由行内 scope 输入承担，不再重复配 slice_range）。
 // 导出给 testset_list.js（评审 Profile 管理已迁到列表侧，表单共用本枚举）。
 export const CONTEXT_MODES = [  ["", "（用 Profile 默认）"],
   ["reply", "该步回复"],
@@ -275,16 +277,16 @@ export function createTestsetEditor(env) {
     return sel;
   }
 
-  // 切片范围输入（context = slice 时显示）：复用最终断言 scope 的格式，
-  // 相对当前步记录钳制（2-4 = 第 2 到第 4 步，3 = 仅第 3 步，空 = 全部）
+  // 切片范围输入（context = slice 时显示）：支持多段逗号分隔（2-4 / 3 /
+  // 3-4,10-12），相对当前步记录钳制（空 = 全部）
   function buildSliceInput(rule) {
     const inp = document.createElement("input");
     inp.type = "text";
     inp.className = "ts-msg-rule-slice";
     inp.placeholder = "切片范围";
     inp.title =
-      "切片范围（仅「范围切片记录」上下文）：留空 = 当前步及之前全部，2-4 = 第 2 到第 4 步，3 = 仅第 3 步";
-    if (rule && rule.slice_range) inp.value = scopeToText(rule.slice_range);
+      "切片范围（仅「范围切片记录」上下文）：留空 = 当前步及之前全部，2-4 = 第 2 到第 4 步，3 = 仅第 3 步，多段用逗号分隔如 3-4,10-12";
+    if (rule && rule.slice_range) inp.value = sliceRangeToText(rule.slice_range);
     return inp;
   }
 
@@ -793,9 +795,9 @@ export function createTestsetEditor(env) {
         wrap.querySelector(".ts-msg-rule-context").value === "slice" &&
         sliceEl &&
         sliceEl.value.trim() &&
-        parseScope(sliceEl.value) === null
+        parseSliceRange(sliceEl.value) === null
       ) {
-        return `${label}：切片范围格式无效（如 2-4 表示第 2 到第 4 步，或留空 = 当前步及之前全部）`;
+        return `${label}：切片范围格式无效（如 2-4 表示第 2 到第 4 步，多段用逗号分隔如 3-4,10-12，或留空 = 当前步及之前全部）`;
       }
       return null;
     }
@@ -813,7 +815,8 @@ export function createTestsetEditor(env) {
   }
 
   // 最终断言 scope 解析（pure.js parseScope：空 / "all" → "all"；"2-4" →
-  // {from:1, to:3}；"3" → {from:2, to:2}；非法 → null）。
+  // {from:1, to:3}；"3" → {from:2, to:2}；非法 → null）。消息规则的切片范围
+  // 走 parseSliceRange（支持多段逗号分隔，见 validateRuleRow）。
 
   // 保存 / 导出前的断言值校验：值类规则空值、min_len/max_len 非整数、
   // LLM 规则未选 profile、最终断言 scope 非法都会在保存前被拦截。

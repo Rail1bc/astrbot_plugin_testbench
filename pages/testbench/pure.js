@@ -39,9 +39,10 @@ export function rangesFromFlags(flags) {
 
 // 行内 rule 构造：type 空 → null；需要值的类型值非空才保留（min_len / max_len
 // 须整数）；LLM 规则读 profile/context → {kind: "llm", profile_id, context?}。
-// sliceRange（消息规则的切片范围输入，仅 context=slice 时生效）：合法区间
-// "2-4" / "3" 经 parseScope 解析为 0 基 {from, to} 写入 rule.slice_range，
-// 空 / "all" / 非法输入不写入（回退该步及之前全部记录）
+// sliceRange（消息规则的切片范围输入，仅 context=slice 时生效）：合法输入
+// "2-4" / "3" / "3-4,10-12"（多段逗号分隔）经 parseSliceRange 解析为 0 基
+// {from, to} 区间列表写入 rule.slice_range，空 / "all" / 非法输入不写入
+// （回退该步及之前全部记录）
 export function buildRule(type, value, profileId, context, sliceRange) {
   if (!type) return null;
   if (type === "llm") {
@@ -49,7 +50,7 @@ export function buildRule(type, value, profileId, context, sliceRange) {
     const rule = { kind: "llm", profile_id: profileId };
     if (context) rule.context = context;
     if (context === "slice" && sliceRange) {
-      const sc = parseScope(sliceRange);
+      const sc = parseSliceRange(sliceRange);
       if (sc && sc !== "all") rule.slice_range = sc;
     }
     return rule;
@@ -109,6 +110,49 @@ export function parseScope(text) {
   const end = m[2] ? Number(m[2]) : start;
   if (start < 1 || end < start) return null;
   return { from: start - 1, to: end - 1 };
+}
+
+// 消息规则切片范围输入解析（支持多段，逗号分隔）：空 / "all" → "all"；
+// "2-4" → [{from:1, to:3}]；"3" → [{from:2, to:2}]；"3-4,10-12" →
+// [{from:2,to:3},{from:9,to:11}]；其余 → null（非法，保存前校验报错）。
+// 与 parseScope（最终断言 scope，单段）并存：slice 输入可多段，最终断言
+// scope 保持单段 {from,to} 语义（后端 final_rules 的 scope 只吃单段）
+export function parseSliceRange(text) {
+  const t = String(text == null ? "" : text).trim();
+  if (!t || t === "all") return "all";
+  const parts = t
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (!parts.length) return null;
+  const ranges = [];
+  for (const part of parts) {
+    const m = /^(\d+)(?:-(\d+))?$/.exec(part);
+    if (!m) return null;
+    const start = Number(m[1]);
+    const end = m[2] ? Number(m[2]) : start;
+    if (start < 1 || end < start) return null;
+    ranges.push({ from: start - 1, to: end - 1 });
+  }
+  return ranges;
+}
+
+// 切片范围回填文案（编辑框还原）：[{from,to},...] → "2-4,10-12"；
+// 旧单段 {from,to} 兼容 → "2-4"；空 / 非法 → ""（= 全部）
+export function sliceRangeToText(ranges) {
+  if (!ranges) return "";
+  const items = Array.isArray(ranges) ? ranges : [ranges];
+  return items
+    .map((r) => {
+      if (r && typeof r === "object" && r.from != null && r.to != null) {
+        const s = r.from + 1;
+        const e = r.to + 1;
+        return s === e ? String(s) : `${s}-${e}`;
+      }
+      return "";
+    })
+    .filter(Boolean)
+    .join(",");
 }
 
 // 信封解析（校验 format/version，预留「测试集市场」下载路径：传入 JSON 文本

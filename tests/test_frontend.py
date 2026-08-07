@@ -820,7 +820,8 @@ def test_frontend_message_editor_defaults_and_slice():
     - `.ts-msg-rule-llm` 有 display:flex 覆盖 UA 的 [hidden]——须显式
       `[hidden]` 规则，否则固定规则行也显示评审 Profile 下拉（曾出现）。
     - LLM 规则 context=slice 时提供切片范围输入（.ts-msg-rule-slice），
-      buildRule 解析为 slice_range 0 基 {from,to}（纯函数层另由 node:test 覆盖）。
+      buildRule 经 parseSliceRange 解析为 slice_range 0 基区间列表，支持多段
+      （3-4,10-12）；回填经 sliceRangeToText（纯函数层另由 node:test 覆盖）。
     """
     editor_js = _read_module("testset_editor")
     pure_js = _read_module("pure")
@@ -845,7 +846,8 @@ def test_frontend_message_editor_defaults_and_slice():
     assert "ts-msg-rule-slice" in editor_js, "testset_editor.js 缺少切片范围输入"
     assert ".ts-msg-rule-slice" in css, "style.css 缺少切片范围输入样式"
     assert "slice_range" in pure_js, "buildRule 未支持 slice_range"
-    assert "parseScope(" in pure_js, "buildRule 未复用 parseScope 解析切片范围"
+    assert "parseSliceRange" in pure_js, "pure.js 缺少多段切片范围解析"
+    assert "sliceRangeToText" in pure_js, "pure.js 缺少切片范围回填文案"
 
 
 def test_frontend_run_status_scroll():

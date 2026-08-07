@@ -4821,9 +4821,10 @@ async def test_assessor_step_llm_ok_with_context_modes():
 async def test_assessor_message_rule_slice_range():
     """LLM 规则 context=slice：slice_range 限定评审记录区间；缺省回退全部。
 
-    消息规则在第 3 步，记录为第 1-3 步；slice_range {1,1} 只喂第 2 步给评审
-    LLM；不配 slice_range 时与 record 等效（全部记录）。_slice_entries 边界
-    钳制同 _scope_indices（越界裁剪 / 倒序空 / 非 dict 与缺失回退原样）。
+    消息规则在第 3 步，记录为第 1-3 步；slice_range 区间列表（前端多段输入
+    3-4,10-12 解析产物）只喂对应步给评审 LLM；不配 slice_range 时与 record
+    等效（全部记录）。_slice_entries 边界钳制同 _scope_indices（越界裁剪 /
+    倒序段跳过 / 形状非法回退原样），列表形式与旧单段 dict 都支持。
     """
 
     def build_steps(rule: dict) -> list[dict]:
@@ -4848,7 +4849,7 @@ async def test_assessor_message_rule_slice_range():
             },
         ]
 
-    # 切片 {1,1} → 评审上下文只含第 2 步
+    # 切片 [{1,1}] → 评审上下文只含第 2 步（列表形式，前端多段输入产物）
     provider = FakeLLMProvider("prov_r", responses=['{"score": 90, "level": "好"}'])
     assessor = Assessor(
         FakeContext(providers=[provider]), {"rp_test": _valid_profile()}
@@ -4858,7 +4859,7 @@ async def test_assessor_message_rule_slice_range():
             "kind": "llm",
             "profile_id": "rp_test",
             "context": "slice",
-            "slice_range": {"from": 1, "to": 1},
+            "slice_range": [{"from": 1, "to": 1}],
         }
     )
     await assessor.assess(steps, [], [{"id": "vs_1"}])
@@ -4868,6 +4869,25 @@ async def test_assessor_message_rule_slice_range():
     prompt = provider.calls[0]["prompt"]
     assert "q2" in prompt and "r2" in prompt
     assert "q1" not in prompt and "q3" not in prompt
+
+    # 多段 [{0,0},{2,2}] → 只含第 1 步与第 3 步（q2 排除）
+    provider3 = FakeLLMProvider("prov_r", responses=['{"score": 90, "level": "好"}'])
+    assessor3 = Assessor(
+        FakeContext(providers=[provider3]), {"rp_test": _valid_profile()}
+    )
+    steps3 = build_steps(
+        {
+            "kind": "llm",
+            "profile_id": "rp_test",
+            "context": "slice",
+            "slice_range": [{"from": 0, "to": 0}, {"from": 2, "to": 2}],
+        }
+    )
+    await assessor3.assess(steps3, [], [{"id": "vs_1"}])
+    prompt3 = provider3.calls[0]["prompt"]
+    assert "q1" in prompt3 and "r1" in prompt3
+    assert "q3" in prompt3 and "r3" in prompt3
+    assert "q2" not in prompt3
 
     # 缺省（无 slice_range）→ 回退全部记录（与 record 等效）
     provider2 = FakeLLMProvider("prov_r", responses=['{"score": 90, "level": "好"}'])
@@ -4880,9 +4900,18 @@ async def test_assessor_message_rule_slice_range():
     assert "第 1 步:" in prompt2 and "第 2 步:" in prompt2
     assert "第 3 步:" in prompt2
 
-    # _slice_entries 边界钳制：越界裁剪 / 倒序空 / 非 dict 与缺失回退原样
+    # _slice_entries 边界钳制：越界裁剪 / 倒序段跳过 / 形状非法回退原样；
+    # 列表形式与旧单段 dict 都支持
     entries = ["a", "b", "c"]
-    assert Assessor._slice_entries(entries, {"from": 1, "to": 1}) == ["b"]
+    assert Assessor._slice_entries(entries, [{"from": 1, "to": 1}]) == ["b"]
+    assert Assessor._slice_entries(
+        entries, [{"from": 0, "to": 0}, {"from": 2, "to": 2}]
+    ) == ["a", "c"]
+    assert Assessor._slice_entries(
+        entries, [{"from": 1, "to": 1}, {"from": 2, "to": 2}]
+    ) == ["b", "c"]
+    assert Assessor._slice_entries(entries, [{"from": 3, "to": 1}]) == []
+    assert Assessor._slice_entries(entries, [{"from": 1, "to": 1}, "bad"]) == entries
     assert Assessor._slice_entries(entries, {"from": -3, "to": 10}) == entries
     assert Assessor._slice_entries(entries, {"from": 3, "to": 1}) == []
     assert Assessor._slice_entries(entries, None) == entries

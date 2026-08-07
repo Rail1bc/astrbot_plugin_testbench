@@ -5,8 +5,8 @@
 - **消息规则**：每条已 done 步骤 × 每会话 × 每条规则。机械规则同步评估；
   若某条机械规则未通过，同步骤后续 LLM 规则跳过（短路——成本 / 不确定性
   控制）。verdicts 写入该步骤对应会话的 results。LLM 规则 context=slice 时可
-  配 ``rule.slice_range``（{from, to} 0 基闭区间）限定喂给评审 LLM 的记录
-  区间（未配时与 record 等效，即该步及之前全部记录）。
+  配 ``rule.slice_range``（{from, to} 0 基闭区间列表，支持多段）限定喂给评审
+  LLM 的记录区间（未配时与 record 等效，即该步及之前全部记录）。
 - **final_rules**：测试集级跨轮评估。每条 final_rule × 每会话，按 scope 切片
   步骤后评估整段记录；机械规则评估切片回复的拼接文本，LLM 规则按
   context（reply / record / slice）取上下文（final rule 的范围由 scope 承担，
@@ -265,24 +265,34 @@ class Assessor:
 
     @staticmethod
     def _slice_entries(entries: list, slice_range: object) -> list:
-        """按规则 slice_range（{from, to} 0 基闭区间）切片记录；未配置 / 非法 → 原样。
+        """按规则 slice_range（0 基闭区间列表）切片记录；未配置 / 非法 → 原样。
 
-        边界由本函数钳制（同 `_scope_indices` 语义）：越界裁剪、倒序返回空、
-        非 {from, to} 形状回退全部——消息规则 context=slice 时用
-        ``rule.slice_range`` 限定喂给评审 LLM 的记录区间。
+        消息规则 context=slice 时用 ``rule.slice_range`` 限定喂给评审 LLM 的
+        记录区间——前端多段输入（3-4,10-12）解析为 {from, to} 区间列表，
+        这里逐段钳制后拼接。兼容旧版单个 {from, to} dict（数据迁移前的
+        存量测试集）。边界语义同 `_scope_indices`：越界裁剪、倒序段跳过、
+        形状非法（非 {from,to} 形状）回退全部。
         """
-        if (
-            isinstance(slice_range, dict)
-            and isinstance(slice_range.get("from"), int)
-            and isinstance(slice_range.get("to"), int)
-            and not isinstance(slice_range["from"], bool)
-            and not isinstance(slice_range["to"], bool)
-        ):
-            frm = max(0, slice_range["from"])
-            to = min(len(entries) - 1, slice_range["to"])
-            if frm > to:
-                return []
-            return entries[frm : to + 1]
+        if isinstance(slice_range, dict):
+            slice_range = [slice_range]  # 旧数据单段兼容
+        if isinstance(slice_range, list):
+            n = len(entries)
+            picked: list = []
+            for item in slice_range:
+                if not (
+                    isinstance(item, dict)
+                    and isinstance(item.get("from"), int)
+                    and isinstance(item.get("to"), int)
+                    and not isinstance(item["from"], bool)
+                    and not isinstance(item["to"], bool)
+                ):
+                    return entries
+                frm = max(0, item["from"])
+                to = min(n - 1, item["to"])
+                if frm > to:
+                    continue
+                picked.extend(entries[frm : to + 1])
+            return picked
         return entries
 
     async def _eval_llm_rule(

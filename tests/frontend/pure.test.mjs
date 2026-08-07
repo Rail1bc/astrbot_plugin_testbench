@@ -11,12 +11,14 @@ import {
   collectEditorRows,
   collectRules,
   parseScope,
+  parseSliceRange,
   parseTestsetEnvelope,
   rangesFromFlags,
   ruleFailCount,
   ruleReviewFailCount,
   segmentLabel,
   segmentSummary,
+  sliceRangeToText,
 } from "../../pages/testbench/pure.js";
 
 // ---------- buildRule ----------
@@ -85,21 +87,33 @@ test("buildRule: llm slice 空范围 → 无 slice_range", () => {
   });
 });
 
-test("buildRule: llm slice 区间 → slice_range 0 基", () => {
+test("buildRule: llm slice 区间 → slice_range 0 基列表", () => {
   assert.deepEqual(buildRule("llm", "", "rp_1", "slice", "2-4"), {
     kind: "llm",
     profile_id: "rp_1",
     context: "slice",
-    slice_range: { from: 1, to: 3 },
+    slice_range: [{ from: 1, to: 3 }],
   });
 });
 
-test("buildRule: llm slice 单步 → slice_range", () => {
+test("buildRule: llm slice 单步 → slice_range 列表", () => {
   assert.deepEqual(buildRule("llm", "", "rp_1", "slice", "3"), {
     kind: "llm",
     profile_id: "rp_1",
     context: "slice",
-    slice_range: { from: 2, to: 2 },
+    slice_range: [{ from: 2, to: 2 }],
+  });
+});
+
+test("buildRule: llm slice 多段 → slice_range 区间列表", () => {
+  assert.deepEqual(buildRule("llm", "", "rp_1", "slice", "3-4,10-12"), {
+    kind: "llm",
+    profile_id: "rp_1",
+    context: "slice",
+    slice_range: [
+      { from: 2, to: 3 },
+      { from: 9, to: 11 },
+    ],
   });
 });
 
@@ -218,6 +232,46 @@ test("parseScope: 非法输入 → null", () => {
   assert.equal(parseScope("4-2"), null);
   assert.equal(parseScope("abc"), null);
   assert.equal(parseScope("-1"), null);
+});
+
+// ---------- parseSliceRange / sliceRangeToText ----------
+
+test("parseSliceRange: 空 / all → all", () => {
+  assert.equal(parseSliceRange(""), "all");
+  assert.equal(parseSliceRange(" all "), "all");
+});
+
+test("parseSliceRange: 单段与多段 → 0 基区间列表", () => {
+  assert.deepEqual(parseSliceRange("3"), [{ from: 2, to: 2 }]);
+  assert.deepEqual(parseSliceRange("2-4"), [{ from: 1, to: 3 }]);
+  assert.deepEqual(parseSliceRange("3-4,10-12"), [
+    { from: 2, to: 3 },
+    { from: 9, to: 11 },
+  ]);
+  assert.deepEqual(parseSliceRange("1,5"), [{ from: 0, to: 0 }, { from: 4, to: 4 }]);
+});
+
+test("parseSliceRange: 非法输入 → null", () => {
+  assert.equal(parseSliceRange("0"), null);
+  assert.equal(parseSliceRange("4-2"), null);
+  assert.equal(parseSliceRange("3-4,abc"), null);
+  assert.equal(parseSliceRange(","), null);
+  assert.equal(parseSliceRange("-1"), null);
+});
+
+test("sliceRangeToText: 多段 / 单段 / 空 / 旧单段", () => {
+  assert.equal(
+    sliceRangeToText([
+      { from: 2, to: 3 },
+      { from: 9, to: 11 },
+    ]),
+    "3-4,10-12",
+  );
+  assert.equal(sliceRangeToText([{ from: 1, to: 3 }]), "2-4");
+  assert.equal(sliceRangeToText([{ from: 2, to: 2 }]), "3");
+  assert.equal(sliceRangeToText([]), "");
+  assert.equal(sliceRangeToText(null), "");
+  assert.equal(sliceRangeToText({ from: 1, to: 3 }), "2-4");
 });
 
 // ---------- parseTestsetEnvelope ----------
