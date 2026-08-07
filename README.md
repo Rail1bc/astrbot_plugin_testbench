@@ -11,8 +11,8 @@
 <p><sub>真实管道 &nbsp;&nbsp; 并发投递 &nbsp;&nbsp; 逐会话观察 &nbsp;&nbsp; 自动评审</sub></p>
 
 <p>
-  <a href="https://github.com/Rail1bc/astrbot_plugin_testbench/releases"><img src="https://img.shields.io/badge/版本-v0.4.5-?style=flat-square" alt="最新版本"></a>
-  <img src="https://img.shields.io/badge/Python-3.12%2B-?style=flat-square" alt="Python 3.12 或更高版本">
+  <a href="https://github.com/Rail1bc/astrbot_plugin_testbench/releases"><img src="https://img.shields.io/badge/%E7%89%88%E6%9C%AC-v1.0.0-5f7f79?style=flat-square&labelColor=263a36" alt="最新版本"></a>
+  <img src="https://img.shields.io/badge/Python-3.12%2B-e9f1ef?style=flat-square&labelColor=263a36" alt="Python 3.12 或更高版本">
   <img src="https://img.shields.io/badge/AstrBot-%3E%3D%204.24.1-f3eee4?style=flat-square&labelColor=544c3d" alt="AstrBot 4.24.1 或更高版本">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL--3.0-f2e8e5?style=flat-square&labelColor=5b403a" alt="AGPL-3.0 许可证"></a>
 </p>
