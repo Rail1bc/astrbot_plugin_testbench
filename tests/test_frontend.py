@@ -11,8 +11,9 @@ PLUGIN_DIR = REPO_ROOT  # 插件根目录即仓库根，页面文件在 pages/te
 
 # 页面全部 ES module（入口 app.js + 视图/状态/工具模块；events.js 事件驱动反馈层、
 # testset_run.js 测试集运行编排、testset_editor.js 测试集编辑器、identity_list.js
-# 「身份与群聊」视图为拆分后新增模块；pure.js 为零依赖纯函数层，由 node:test 动态
-# 测试、经本清单做静态防回归检查）
+# 「身份与群聊」视图、testset_reports.js 报告视图（从 testset_editor.js 拆出）为
+# 拆分后新增模块；pure.js 为零依赖纯函数层，由 node:test 动态测试、经本清单做
+# 静态防回归检查）
 _FRONTEND_MODULES = (
     "app",
     "api",
@@ -24,6 +25,7 @@ _FRONTEND_MODULES = (
     "group_list",
     "testset_list",
     "testset_editor",
+    "testset_reports",
     "events",
     "testset_run",
     "identity_list",
@@ -1158,21 +1160,24 @@ def test_frontend_report_editor_toggle():
     """测试集编辑窗口页眉须有「编辑 / 报告」切换。
 
     M3 报告层把最近运行 / 报告迁入测试集视图：index.html 须含 #btn-ts-mode
-    按钮与 #ts-report-body 容器；testset_editor.js 须实现 toggleViewMode
-    （viewMode 在 edit / report 间切换）、syncViewModeUI（编辑/报告体互斥
-    显隐、按钮文案翻转）与 renderReportView（报告页渲染），并绑定按钮点击。
+    按钮与 #ts-report-body 容器；testset_reports.js（Phase 4 从
+    testset_editor.js 拆出）实现 toggleViewMode（viewMode 在 edit / report 间
+    切换）、syncViewModeUI（编辑/报告体互斥显隐、按钮文案翻转）与
+    renderReportView（报告页渲染）；testset_editor.js 经 createReportView
+    工厂绑定按钮点击并按当前视图刷新报告页。
     """
     html = _read_html()
     editor_js = _read_module("testset_editor")
+    reports_js = _read_module("testset_reports")
     assert 'id="btn-ts-mode"' in html, "index.html 缺少编辑/报告切换按钮"
     assert 'id="ts-report-body"' in html, "index.html 缺少报告视图容器"
-    assert "function toggleViewMode(" in editor_js, "缺少视图切换函数"
-    assert 'viewMode === "report"' in editor_js, "缺少报告模式判定"
-    assert "function renderReportView(" in editor_js, "缺少报告视图渲染"
-    assert "syncViewModeUI()" in editor_js, "缺少视图显隐同步"
-    assert '$("btn-ts-mode").addEventListener("click", () => toggleViewMode())' in (
-        editor_js
-    ), "未绑定「编辑/报告」切换按钮"
+    assert "function toggleViewMode(" in reports_js, "缺少视图切换函数"
+    assert 'viewMode === "report"' in reports_js, "缺少报告模式判定"
+    assert "function renderReportView(" in reports_js, "缺少报告视图渲染"
+    assert "syncViewModeUI()" in reports_js, "缺少视图显隐同步"
+    assert "createReportView(" in editor_js, "编辑器未接入报告视图工厂"
+    assert "reportView.toggleViewMode()" in editor_js, "未绑定「编辑/报告」切换按钮"
+    assert "reportView.isReportMode()" in editor_js, "渲染时未按当前视图刷新报告页"
 
 
 def test_frontend_report_enabled_checkbox():
@@ -1201,7 +1206,7 @@ def test_frontend_sidebar_recent_runs_removed():
 
     index.html 不得含 recent-runs 块；testset_list.js 不得再导入
     listTestsetRuns / 渲染 renderRecentRuns（listTestsetRuns API 保留，
-    由报告视图经 testset_editor.js 使用）。
+    由报告视图经 testset_reports.js 使用）。
     """
     html = _read_html()
     list_js = _read_module("testset_list")
@@ -1228,25 +1233,25 @@ def test_frontend_report_api():
 def test_frontend_report_list_actions():
     """报告视图须实现报告条目渲染与查看 / 导出 / 删除操作。
 
-    testset_editor.js 报告页经 listReports 拉取报告、buildReportItem 渲染
+    testset_reports.js 报告页经 listReports 拉取报告、buildReportItem 渲染
     条目（含 metrics_summary 指标聚合总览）、openReportModal 复用
     buildResultsTable / renderFinalVerdicts 展示详情、exportReport 导出 JSON、
     deleteReport 确认后走 deleteReports；最近运行区经 listTestsetRuns +
     getDeps().viewTestsetRun 找回进度。
     """
-    editor_js = _read_module("testset_editor")
-    assert "listReports(" in editor_js, "报告页未拉取报告列表"
-    assert "listTestsetRuns(ts.id)" in editor_js, "最近运行未按测试集过滤"
-    assert "function buildReportItem(" in editor_js, "缺少报告条目渲染"
-    assert "function openReportModal(" in editor_js, "缺少报告详情弹窗"
-    assert "function exportReport(" in editor_js, "缺少报告导出"
-    assert "function deleteReport(" in editor_js, "缺少报告删除"
-    assert "buildResultsTable" in editor_js, "报告详情未复用结果表格"
-    assert "renderFinalVerdicts" in editor_js, "报告详情未复用最终断言表"
-    assert "metrics_summary" in editor_js, "报告条目未展示指标聚合"
-    assert "deleteReport(report.id)" in editor_js, "报告条目删除未传 report.id"
-    assert "deleteReports([id])" in editor_js, "删除报告未调 deleteReports"
-    assert "getDeps().viewTestsetRun(r.run_id)" in editor_js, (
+    reports_js = _read_module("testset_reports")
+    assert "listReports(" in reports_js, "报告页未拉取报告列表"
+    assert "listTestsetRuns(ts.id)" in reports_js, "最近运行未按测试集过滤"
+    assert "function buildReportItem(" in reports_js, "缺少报告条目渲染"
+    assert "function openReportModal(" in reports_js, "缺少报告详情弹窗"
+    assert "function exportReport(" in reports_js, "缺少报告导出"
+    assert "function deleteReport(" in reports_js, "缺少报告删除"
+    assert "buildResultsTable" in reports_js, "报告详情未复用结果表格"
+    assert "renderFinalVerdicts" in reports_js, "报告详情未复用最终断言表"
+    assert "metrics_summary" in reports_js, "报告条目未展示指标聚合"
+    assert "deleteReport(report.id)" in reports_js, "报告条目删除未传 report.id"
+    assert "deleteReports([id])" in reports_js, "删除报告未调 deleteReports"
+    assert "getDeps().viewTestsetRun(r.run_id)" in reports_js, (
         "最近运行查看未走 viewTestsetRun 找回"
     )
 
