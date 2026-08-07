@@ -5,7 +5,7 @@
 <!-- markdownlint-disable MD041 -->
 # ChangeLog
 
-## [Unreleased]
+## [v0.4.5] - 2026-08-07
 
 ### 🐛 Bug Fixes (修复)
 
