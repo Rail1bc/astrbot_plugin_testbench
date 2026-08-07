@@ -128,18 +128,23 @@ flowchart LR
 
 ## 开发者
 
-> **开发流程**：本地不跑测试，修改直接提交推送到 `dev` 分支，由 GitHub Actions 自动把关——push 到 dev 触发 `pytest.yml`（320 个测试函数 + 前端 JS 检查：node --check 语法检查与 node:test 纯函数动态测试）与 `ruff-format.yml`；dev 验证通过后合并到 `main`，metadata.yaml 变更即触发 release.yml 自动发版。以下本地命令仅在主动排查时使用。
+> **CI 自动把关**：`pytest.yml`（320 个测试函数 + 前端 JS 检查：node --check 语法检查与 node:test 纯函数动态测试）与 `ruff-format.yml` 在每次推送 / PR 时自动运行。
+>
+> - **维护者流程**：本地不跑测试，修改直接提交推送到 `dev` 分支，由 GitHub Actions 自动把关；dev 验证通过后合并到 `main`，metadata.yaml 变更即触发 release.yml 自动发版。
+> - **贡献者流程**：fork 本仓库，在 fork 的开发分支上修改并推送到自己的 fork，再向本仓库 `dev` 分支发起 Pull Request——CI 会在 PR 上自动运行测试与格式检查，通过后由维护者合并。
+
+以下本地命令仅在主动排查时使用（克隆仓库后直接在插件根目录运行）：
 
 ```bash
-# 单元测试（测试随插件仓库维护，位于 data/plugins/astrbot_plugin_testbench/tests/）
-.venv/Scripts/python.exe -m pytest data/plugins/astrbot_plugin_testbench/tests/ -q
+# 单元测试（测试随插件仓库维护在 tests/）
+python -m pytest tests/ -q
 
 # 代码质量检查
-.venv/Scripts/python.exe -m ruff check data/plugins/astrbot_plugin_testbench/tests/
-.venv/Scripts/python.exe -m ruff format --check data/plugins/astrbot_plugin_testbench/tests/
+python -m ruff check tests/
+python -m ruff format --check tests/
 ```
 
-Windows 开发者可直接运行 `run_ruff.bat` 进行格式化与质量检查。
+维护者在本机 AstrBot 部署环境排查时，命令中的路径取决于插件安装位置（venv 与 `data/plugins/astrbot_plugin_testbench/tests/`）。Windows 开发者可直接运行 `run_ruff.bat` 进行格式化与质量检查。
 
 ## 项目
 
