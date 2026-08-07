@@ -5,7 +5,7 @@
 一个为 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 设计的虚拟会话并发测试插件。
 
 > [!NOTE]
-> 当前版本 v0.4.1，支持测试组模型、并行会话查看、逐会话独立刷新、群发重叠发送（agent 处理中可再次群发）、面板在途消息实时状态、群发会话实时统计与历史 JSON 编辑 / 重新生成；并支持群聊消息类型与自动@、测试身份与虚拟群聊、群消息流视图与唤醒状态反馈。
+> 当前版本 v0.4.2，支持测试组模型、并行会话查看、逐会话独立刷新、群发重叠发送（agent 处理中可再次群发）、面板在途消息实时状态、群发会话实时统计与历史 JSON 编辑 / 重新生成；并支持群聊消息类型与自动@、测试身份与虚拟群聊、群消息流视图与唤醒状态反馈。
 
 ## ✨ 功能特性
 
@@ -52,13 +52,13 @@ data/plugins/astrbot_plugin_testbench/
 ├─ metadata.yaml         # 插件元数据信息
 ├─ CHANGELOG.md          # 更新日志
 ├─ README.md             # 插件说明文档
-├─ pages/testbench/      # 插件页面（前端：app/api/align/chat/state/utils/modal/group_list/testset_list/testset_editor/identity_list/events/testset_run.js + index.html/style.css）
+├─ pages/testbench/      # 插件页面（前端：app/api/align/chat/state/utils/modal/group_list/testset_list/testset_editor/identity_list/events/testset_run/pure.js + index.html/style.css）
 └─ .github/              # GitHub 工作流与协作模板
 ```
 
 ## 🔧 开发与测试
 
-> **开发流程**：本地不跑测试，修改直接提交推送到 `dev` 分支，由 GitHub Actions 自动把关——push 到 dev 触发 `pytest.yml`（279 个测试函数 + 前端 JS 语法检查）与 `ruff-format.yml`；dev 验证通过后合并到 `main`，metadata.yaml 变更即触发 release.yml 自动发版。以下本地命令仅在主动排查时使用。
+> **开发流程**：本地不跑测试，修改直接提交推送到 `dev` 分支，由 GitHub Actions 自动把关——push 到 dev 触发 `pytest.yml`（280 个测试函数 + 前端 JS 检查：node --check 语法检查与 node:test 纯函数动态测试）与 `ruff-format.yml`；dev 验证通过后合并到 `main`，metadata.yaml 变更即触发 release.yml 自动发版。以下本地命令仅在主动排查时使用。
 
 ```bash
 # 单元测试（测试随插件仓库维护，位于 data/plugins/astrbot_plugin_testbench/tests/）

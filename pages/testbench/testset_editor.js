@@ -21,12 +21,23 @@ import { openModal, showModal } from "./modal.js";
 import { state } from "./state.js";
 import { escapeHtml } from "./utils.js";
 import { buildResultsTable, renderFinalVerdicts } from "./testset_run.js";
+import {
+  EXPORT_FORMAT,
+  EXPORT_VERSION,
+  RULE_VALUE_TYPES,
+  buildRule,
+  collectEditorRows as collectEditorRowsData,
+  collectRules,
+  parseScope,
+  parseTestsetEnvelope,
+  rangesFromFlags,
+} from "./pure.js";
 
 const $ = (id) => document.getElementById(id);
 
 // 断言类型下拉选项（value 与后端 assertions.py 的规则 type 对应）——行渲染
-// 与收集的唯一来源，未来新增测试行为只改这里 + renderMsgRow/collectEditorRows
-// + 后端 _normalize_messages。
+// 的唯一来源，未来新增测试行为只改这里 + renderMsgRow/collectEditorRows
+// + pure.js 的 RULE_VALUE_TYPES + 后端 _normalize_messages。
 const RULE_TYPES = [
   ["", "无"],
   ["contains", "包含"],
@@ -41,33 +52,20 @@ const RULE_TYPES = [
   ["llm", "LLM 评审"],
 ];
 
-// 需要「断言值」输入的规则类型（json / non_empty 不需要）
-const RULE_VALUE_TYPES = new Set([
-  "contains",
-  "not_contains",
-  "regex",
-  "min_len",
-  "max_len",
-  "prefix",
-  "suffix",
-]);
-
 // LLM 评审规则的上下文模式（与后端 reviewer profile 的 context 枚举一致）：
 // reply 仅该步回复；record 为该步及之前全部对话记录；slice 与 record 同为
 // 记录切片（对消息规则等效，最终断言按 scope 切片后也是记录文本）。
 // 导出给 testset_list.js（评审 Profile 管理已迁到列表侧，表单共用本枚举）。
-export const CONTEXT_MODES = [
-  ["", "（用 Profile 默认）"],
+export const CONTEXT_MODES = [  ["", "（用 Profile 默认）"],
   ["reply", "该步回复"],
   ["record", "该步及之前记录"],
   ["slice", "范围切片记录"],
 ];
 
-// 导出 / 导入信封：format/version 为未来「测试集市场」（网络下载）预留兼容面。
-// v2：消息断言改为 rules 列表 + is_command，携带身份配置（single → identity
-// 快照；pool → 身份池），导入不创建身份 / 群聊记录（内联快照直接可用）。
-const EXPORT_FORMAT = "astrbot-testbench-testset";
-const EXPORT_VERSION = 2;
+// 导出 / 导入信封：format/version（EXPORT_FORMAT / EXPORT_VERSION，定义在
+// pure.js）为未来「测试集市场」（网络下载）预留兼容面。v2：消息断言改为 rules
+// 列表 + is_command，携带身份配置（single → identity 快照；pool → 身份池），
+// 导入不创建身份 / 群聊记录（内联快照直接可用）。
 
 // 测试集运行 / 报告状态文案（报告视图最近运行条目与报告条目共用）
 const RUN_STATUS_TEXT = {
@@ -669,15 +667,18 @@ export function createTestsetEditor(env) {
     return wrap;
   }
 
-  // 收集最终断言列表：空类型 / 无效规则行丢弃；scope 非法 → "all"（保存前校验已拦截）
+  // 收集最终断言列表：空类型 / 无效规则行丢弃；scope 非法 → "all"（保存前校验已拦截）。
+  // 规则构造在 pure.js 的 buildRule（纯函数，LLM 行读 profile/context 下拉）
   function collectFinalRules() {
     const rules = [];
     for (const wrap of $("ts-final-rules").querySelectorAll(".ts-final-rule")) {
       const type = wrap.querySelector(".ts-msg-rule-type").value;
+      const llmBox = wrap.querySelector(".ts-msg-rule-llm");
       const rule = buildRule(
         type,
         wrap.querySelector(".ts-msg-rule-value").value,
-        wrap.querySelector(".ts-msg-rule-llm"),
+        llmBox.querySelector(".ts-msg-rule-profile").value,
+        llmBox.querySelector(".ts-msg-rule-context").value,
       );
       if (!rule) continue;
       const scope = parseScope(wrap.querySelector(".ts-final-rule-scope").value);
@@ -698,23 +699,9 @@ export function createTestsetEditor(env) {
     $("ts-dirty").hidden = false;
   }
 
-  // 连续 true 标志合并为区间（单条 = [i,i]）：勾选行实时预览与保存收集共用
-  function rangesFromFlags(flags) {
-    const ranges = [];
-    let start = -1;
-    flags.forEach((c, i) => {
-      if (c && start < 0) start = i;
-      else if (!c && start >= 0) {
-        ranges.push([start, i - 1]);
-        start = -1;
-      }
-    });
-    if (start >= 0) ranges.push([start, flags.length - 1]);
-    return ranges;
-  }
-
   // 连续勾选的行合并为批量段（单条勾选 = [i,i]），实时预览。
-  // 空文本行不会保存（collectEditorRows 丢弃），分段索引须基于保留后的行，与保存一致
+  // 空文本行不会保存（collectEditorRows 丢弃），分段索引须基于保留后的行，与保存一致。
+  // 区间合并逻辑在 pure.js 的 rangesFromFlags。
   function checkedSegments() {
     const flags = [];
     for (const row of $("ts-messages").querySelectorAll(".ts-msg-row")) {
@@ -745,66 +732,36 @@ export function createTestsetEditor(env) {
     updateSegments();
   }
 
-  // 收集编辑器行：空文本行视为删除，批量段索引基于保留后的消息序列；
-  // 每条消息收集断言规则列表（空规则 → []）、命令标记、可选身份（见
-  // collectSender）与自动@
+  // 收集编辑器行：DOM 读取薄包装——逐行把输入读成纯数据后交给 pure.js 的
+  // collectEditorRows 构造消息列表与批量段（纯逻辑集中一处、可被 node:test
+  // 动态测试）。空文本行丢弃、批量段索引基于保留后的行；每条消息带规则列表
+  // （collectRules 纯函数收集）、命令标记、可选身份（collectSender）与自动@
   function collectEditorRows() {
-    const messages = [];
-    const batchFlags = [];
+    const rows = [];
     for (const row of $("ts-messages").querySelectorAll(".ts-msg-row")) {
-      const text = row.querySelector(".ts-msg-text").value.trim();
-      if (!text) continue;
-      const rules = collectRules(row.querySelector(".ts-msg-rules"));
-      const sender = collectSender(row.querySelector(".ts-msg-sender"));
-      const cmdCb = row.querySelector(".ts-msg-command input");
-      const atCb = row.querySelector(".ts-msg-auto-at input");
-      const message = { text, rules };
-      if (cmdCb.checked) message.is_command = true;
-      if (sender.sender_id !== undefined) Object.assign(message, sender);
-      message.auto_at = atCb.checked;
-      messages.push(message);
-      batchFlags.push(row.querySelector(".ts-msg-batch input").checked);
-    }
-    return { messages, batchRanges: rangesFromFlags(batchFlags) };
-  }
-
-  // 行内多断言收集：空类型 / 值类规则空值 / 未选 profile 的 LLM 规则经
-  // buildRule 归为 null 丢弃
-  function collectRules(rulesBox) {
-    const rules = [];
-    for (const wrap of rulesBox.querySelectorAll(".ts-msg-rule")) {
-      const rule = buildRule(
-        wrap.querySelector(".ts-msg-rule-type").value,
-        wrap.querySelector(".ts-msg-rule-value").value,
-        wrap.querySelector(".ts-msg-rule-llm"),
-      );
-      if (rule) rules.push(rule);
-    }
-    return rules;
-  }
-
-  // 行内 rule 构造：空类型 → null；需要值的类型值非空才保留；
-  // LLM 规则读 profile/context 下拉 → {kind: "llm", profile_id, context?}
-  function buildRule(type, value, llmBox) {
-    if (!type) return null;
-    if (type === "llm") {
-      const profileId = llmBox.querySelector(".ts-msg-rule-profile").value;
-      if (!profileId) return null;
-      const rule = { kind: "llm", profile_id: profileId };
-      const ctx = llmBox.querySelector(".ts-msg-rule-context").value;
-      if (ctx) rule.context = ctx;
-      return rule;
-    }
-    if (RULE_VALUE_TYPES.has(type)) {
-      const v = value.trim();
-      if (!v) return null;
-      if (type === "min_len" || type === "max_len") {
-        const n = Number(v);
-        return Number.isInteger(n) ? { type, value: n } : null;
+      const ruleInputs = [];
+      for (const wrap of row.querySelectorAll(".ts-msg-rule")) {
+        const llmBox = wrap.querySelector(".ts-msg-rule-llm");
+        ruleInputs.push({
+          type: wrap.querySelector(".ts-msg-rule-type").value,
+          value: wrap.querySelector(".ts-msg-rule-value").value,
+          profileId: llmBox.querySelector(".ts-msg-rule-profile").value,
+          context: llmBox.querySelector(".ts-msg-rule-context").value,
+        });
       }
-      return { type, value: v };
+      const text = row.querySelector(".ts-msg-text").value;
+      const rules = collectRules(ruleInputs);
+      const sender = collectSender(row.querySelector(".ts-msg-sender"));
+      rows.push({
+        text,
+        rules,
+        sender,
+        isCommand: row.querySelector(".ts-msg-command input").checked,
+        autoAt: row.querySelector(".ts-msg-auto-at input").checked,
+        batch: row.querySelector(".ts-msg-batch input").checked,
+      });
     }
-    return { type };
+    return collectEditorRowsData(rows);
   }
 
   // 断言类型的中文名（错误提示用；RULE_TYPES 是唯一来源）
@@ -837,18 +794,8 @@ export function createTestsetEditor(env) {
     return null;
   }
 
-  // 最终断言 scope 输入解析：空 / "all" → "all"；"2-4" → {from:1, to:3}；
-  // "3" → {from:2, to:2}；其余 → null（非法，保存前校验报错）
-  function parseScope(text) {
-    const t = text.trim();
-    if (!t || t === "all") return "all";
-    const m = /^(\d+)(?:-(\d+))?$/.exec(t);
-    if (!m) return null;
-    const start = Number(m[1]);
-    const end = m[2] ? Number(m[2]) : start;
-    if (start < 1 || end < start) return null;
-    return { from: start - 1, to: end - 1 };
-  }
+  // 最终断言 scope 解析（pure.js parseScope：空 / "all" → "all"；"2-4" →
+  // {from:1, to:3}；"3" → {from:2, to:2}；非法 → null）。
 
   // 保存 / 导出前的断言值校验：值类规则空值、min_len/max_len 非整数、
   // LLM 规则未选 profile、最终断言 scope 非法都会在保存前被拦截。
@@ -989,103 +936,8 @@ export function createTestsetEditor(env) {
     $("ts-import-file").click();
   }
 
-  // 信封解析（校验 format/version，预留「测试集市场」下载路径：传入 JSON 文本
-  // 即可）。v1 兼容：消息单条 rule → rules 列表；v2 增加 is_command / rules 与
-  // 身份配置（identity 快照 / pool 身份池），导入不创建身份 / 群聊记录。
-  function parseTestsetEnvelope(text) {
-    let data;
-    try {
-      data = JSON.parse(text);
-    } catch (err) {
-      throw new Error("文件不是合法 JSON: " + err.message);
-    }
-    if (!data || data.format !== EXPORT_FORMAT) {
-      throw new Error("不是有效的测试集文件（format 不匹配）");
-    }
-    if (typeof data.version !== "number" || data.version > EXPORT_VERSION) {
-      throw new Error("不支持的测试集格式版本: " + String(data.version));
-    }
-    const name =
-      typeof data.name === "string" && data.name.trim()
-        ? data.name.trim()
-        : "导入的测试集";
-    if (!Array.isArray(data.messages)) {
-      throw new Error("测试集文件缺少 messages 数组");
-    }
-    const messages = [];
-    for (const m of data.messages) {
-      const text = m && typeof m.text === "string" ? m.text.trim() : "";
-      if (!text) continue;
-      // v2 直接 rules；v1 单条 rule 归并为单元素列表
-      const rules = [];
-      if (m && Array.isArray(m.rules)) {
-        for (const r of m.rules) {
-          if (r && typeof r === "object") rules.push({ ...r });
-        }
-      } else if (m && m.rule != null) {
-        rules.push({ ...m.rule });
-      }
-      const message = { text, rules };
-      if (m && m.is_command === true) message.is_command = true;
-      // 可选 sender / auto_at（向后兼容：缺省字段的旧信封照常导入，auto_at
-      // 缺省视为开启——渲染时按 `!== false` 勾选）
-      if (m && typeof m.sender_id === "string" && m.sender_id) {
-        message.sender_id = m.sender_id;
-      }
-      if (m && typeof m.sender_name === "string" && m.sender_name) {
-        message.sender_name = m.sender_name;
-      }
-      if (m && typeof m.auto_at === "boolean") {
-        message.auto_at = m.auto_at;
-      }
-      messages.push(message);
-    }
-    let batchRanges = [];
-    if (Array.isArray(data.batch_ranges)) {
-      batchRanges = data.batch_ranges
-        .filter(
-          (r) =>
-            Array.isArray(r) &&
-            r.length === 2 &&
-            typeof r[0] === "number" &&
-            typeof r[1] === "number" &&
-            Number.isInteger(r[0]) &&
-            Number.isInteger(r[1]) &&
-            !(r[0] > r[1]),
-        )
-        .map(([s, e]) => [s, e]);
-    }
-    // 身份配置：v2 按 identity / pool 字段；缺省（含 v1）→ single 默认身份
-    const result = {
-      name,
-      messages,
-      batch_ranges: batchRanges,
-      final_rules: [],
-      identity_mode: data.pool ? "pool" : "single",
-      identity_id: null,
-      chat_group_id: null,
-    };
-    // 最终断言（跨轮）：v2 携带 final_rules；逐项浅拷贝规则与 scope
-    if (Array.isArray(data.final_rules)) {
-      for (const fr of data.final_rules) {
-        if (!fr || typeof fr !== "object" || !fr.rule || typeof fr.rule !== "object") {
-          continue;
-        }
-        const item = { rule: { ...fr.rule } };
-        if (fr.scope !== undefined) item.scope = fr.scope;
-        result.final_rules.push(item);
-      }
-    }
-    if (result.identity_mode === "pool") {
-      if (data.pool && typeof data.pool === "object") {
-        result.pool_snapshot = data.pool;
-      }
-    } else if (data.identity && typeof data.identity === "object") {
-      result.identity_snapshot = data.identity;
-      if (data.identity.id) result.identity_id = data.identity.id;
-    }
-    return result;
-  }
+  // 信封解析（parseTestsetEnvelope 在 pure.js：校验 format/version，v1 兼容
+  // 单条 rule → rules，v2 处理 rules / is_command / 身份配置与最终断言）。
 
   // ---------- 报告视图（页眉「编辑 / 报告」切换） ----------
 

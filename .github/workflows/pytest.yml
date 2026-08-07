@@ -35,7 +35,7 @@ jobs:
           python -m pytest tests/ -q --tb=short
 
   js-check:
-    name: 前端 JS 语法检查
+    name: 前端 JS 语法与纯函数测试
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -44,14 +44,18 @@ jobs:
       - name: 检出代码
         uses: actions/checkout@v7
 
-      - name: 检查 JS 语法（node --check）
+      - name: 检查 JS 语法（node --check + node:test 动态测试）
         run: |
           set -euo pipefail
           # ES module import 需 .mjs 后缀才被 node 识别；与本地验证方式一致。
           # 前端已拆分为多模块：入口 app.js + 事件反馈（events）/ 测试集运行（testset_run）
           # / 测试集编辑器（testset_editor）/ 身份与群聊（identity_list）
-          # + api/align/chat/state/utils/modal/group_list/testset_list。
-          for f in app api align chat state utils modal group_list testset_list testset_editor events testset_run identity_list; do
+          # + api/align/chat/state/utils/modal/group_list/testset_list + pure。
+          for f in app api align chat state utils modal group_list testset_list testset_editor events testset_run identity_list pure; do
             cp "pages/testbench/$f.js" "$RUNNER_TEMP/$f.mjs"
             node --check "$RUNNER_TEMP/$f.mjs"
           done
+          # Phase 2：pure.js 纯函数动态测试（node:test 零依赖，仓库根 package.json
+          # 声明 type: module）。目录参数形式在 Node ≥21 有回归（nodejs/node#64555，
+          # 把目录当模块加载），故用 glob 形式。
+          node --test "tests/frontend/*.test.mjs"

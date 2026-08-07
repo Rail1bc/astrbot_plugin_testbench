@@ -5,7 +5,11 @@
 <!-- markdownlint-disable MD041 -->
 # ChangeLog
 
-## [Unreleased]
+## [v0.4.2] - 2026-08-07
+
+### 🧹 Chores / Refactoring (重构与工程化)
+
+- **前端纯函数抽取到零依赖模块 `pure.js`，新增 node:test 动态测试（Phase 2）**：把 `testset_editor.js` / `testset_run.js` 的纯逻辑（`collectEditorRows` / `parseScope` / `parseTestsetEnvelope` / `buildRule` / `collectRules` / `rangesFromFlags`、verdict 计数 `ruleFailCount` / `ruleReviewFailCount`、段文案 `segmentLabel` / `segmentSummary` 与配套常量 `RULE_VALUE_TYPES` / `EXPORT_FORMAT` / `EXPORT_VERSION`）抽到 `pages/testbench/pure.js`——不引用 DOM / state / 其它模块，页面模块经 `import` 复用同一份实现（防两处漂移），并新增 `tests/frontend/pure.test.mjs` 用 Node 内置 `node:test`（零依赖）做行为测试；`pytest.yml` 的 js-check job 追加 `node --test` 命令，仓库根新增 `package.json` 声明 `type: module`（node 可直接加载页面 ES module，无 npm 依赖）。
 
 ---
 
