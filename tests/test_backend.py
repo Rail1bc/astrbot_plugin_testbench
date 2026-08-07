@@ -602,12 +602,14 @@ class FakeContext:
         platform_mgr: FakePlatformManager | None = None,
         providers: list[FakeProvider] | None = None,
         conf_list: list[dict] | None = None,
+        conf: dict | None = None,
     ) -> None:
         self._queue = queue or asyncio.Queue()
         self._providers = providers or []
         self.astrbot_config_mgr = SimpleNamespace(
             ucr=ucr or FakeUCR(),
             get_conf_list=lambda: list(conf_list or []),
+            get_conf=lambda _umo: conf,  # 默认 None（无配置档案）
         )
         self.conversation_manager = conv_mgr or FakeConvManager()
         self.platform_manager = platform_mgr
@@ -5121,7 +5123,9 @@ async def test_resolve_persona_system_prompt_defensive():
 async def test_resolve_persona_system_prompt_from_conf():
     """回退解析从配置档案解析人格：prompt + 开场对话合入快照系统提示词。"""
     queue = asyncio.Queue()
-    plugin = main_mod.VirtualSessionPlugin(FakeContext(queue))
+    plugin = main_mod.VirtualSessionPlugin(
+        FakeContext(queue, conf={"provider_settings": {"default_personality": "p_x"}})
+    )
     plugin.context.persona_manager = FakePersonaManager(
         persona={
             "prompt": "你是寒露",
@@ -5135,10 +5139,12 @@ async def test_resolve_persona_system_prompt_from_conf():
     out = await plugin._resolve_persona_system_prompt(ev, req)
     assert out.startswith("# Persona Instructions\n\n你是寒露\n")
     assert "user: 你好" in out
-    # 会话级 persona_id 与 umo 都传给解析（镜像 _ensure_persona_and_skills）
+    # 会话级 persona_id、umo 与档案 provider_settings 都传给解析
+    # （镜像 _ensure_persona_and_skills 的入参）
     call = plugin.context.persona_manager.calls[0]
     assert call["umo"] == "webchat:FriendMessage:vs_1"
     assert call["conversation_persona_id"] == "p_hanlu"
+    assert call["provider_settings"] == {"default_personality": "p_x"}
 
 
 @pytest.mark.asyncio
