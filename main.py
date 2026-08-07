@@ -170,27 +170,59 @@ class VirtualSessionPlugin(
         快照系统提示词恒为空，评审材料看不到人格设定。这里从会话配置档案
         解析人格，把提示词与开场对话补进快照，使评审 LLM 仍能看到被测 agent
         的人格设定。解析失败 / 无人格 → 空串（评审层显示未捕获占位）。
+
+        关键决策点打 INFO 日志（`[testbench]` 前缀），供排查「未捕获」：
+        是否执行回退、配置档案的 default_personality / 会话级 persona、
+        命中的人格及其内容规模。
         """
+        umo = event.unified_msg_origin
         pm = getattr(self.context, "persona_manager", None)
         if pm is None or not hasattr(pm, "resolve_selected_persona"):
+            self.logger.info(
+                "[testbench] 人格回退解析跳过：context 无 persona_manager",
+            )
             return ""
         try:
             provider_settings: dict = {}
             conf_mgr = getattr(self.context, "astrbot_config_mgr", None)
             if conf_mgr is not None and hasattr(conf_mgr, "get_conf"):
-                cfg = conf_mgr.get_conf(event.unified_msg_origin)
+                cfg = conf_mgr.get_conf(umo)
                 if cfg:
                     provider_settings = cfg.get("provider_settings", {}) or {}
             conversation = getattr(req, "conversation", None)
-            _, persona, _, _ = await pm.resolve_selected_persona(
-                umo=event.unified_msg_origin,
-                conversation_persona_id=getattr(conversation, "persona_id", None),
+            conv_persona_id = getattr(conversation, "persona_id", None)
+            _, persona, force_id, _ = await pm.resolve_selected_persona(
+                umo=umo,
+                conversation_persona_id=conv_persona_id,
                 platform_name=event.get_platform_name(),
                 provider_settings=provider_settings,
             )
+            if not persona:
+                self.logger.info(
+                    "[testbench] 人格回退解析未命中人格：umo=%s "
+                    "default_personality=%r 会话级 persona=%r force=%r",
+                    umo,
+                    provider_settings.get("default_personality"),
+                    conv_persona_id,
+                    force_id,
+                )
+                return ""
+            persona_id = persona.get("name") or "?"
+            prompt = persona.get("prompt") or ""
+            dialogs = persona.get("_begin_dialogs_processed") or []
+            text = _format_persona_snapshot(persona)
+            self.logger.info(
+                "[testbench] 人格回退解析命中：umo=%s persona=%r "
+                "prompt=%d 字符 开场对话=%d 条 快照补入 %d 字符",
+                umo,
+                persona_id,
+                len(prompt),
+                len(dialogs),
+                len(text),
+            )
+            return text
         except Exception:
-            self.logger.exception("解析被测 agent 人格设定失败，评审材料回退未捕获占位")
+            self.logger.exception(
+                "[testbench] 解析被测 agent 人格设定失败，评审材料回退未捕获占位",
+            )
             return ""
-        if not persona:
-            return ""
-        return _format_persona_snapshot(persona)
