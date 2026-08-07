@@ -24,7 +24,7 @@
 
 - [ ] 😊 如果 PR 中有新加入的功能，已经通过 Issue / 邮件等方式和作者讨论过。/ If there are new features added in the PR, I have discussed it with the authors through issues/emails, etc.
 - [ ] 👀 我的更改经过了良好的测试，**并已在上方提供了“运行截图”或“测试日志”**。/ My changes have been well-tested, **and "Screenshots" or "Test Logs" have been provided above**.
-- [ ] 🤓 我确保没有引入新依赖库，或者引入了新依赖库的同时将其添加到了 `requirements.txt` 文件中。/ I have ensured that no new dependencies are introduced, OR if new dependencies are introduced, they have been added to `requirements.txt`.
+- [ ] 🤓 我确保没有引入新的第三方依赖（插件无第三方依赖，只依赖 AstrBot 公共 API）。/ I have ensured that no new third-party dependencies are introduced (the plugin has no third-party dependencies, relying only on AstrBot's public API).
 - [ ] 😮 我的更改没有引入恶意代码。/ My changes do not introduce malicious code.
 
 ## ❤️ CONTRIBUTING

@@ -1,7 +1,7 @@
 name: astrbot_plugin_testbench # 插件唯一识别名，以 astrbot_plugin_ 前缀开头
 display_name: 会话测试台 # 用于展示的名字
-desc: 支持并发测试：一键创建多个虚拟会话，一条消息同时发送给所有会话，模拟真实对话，测试插件、提示词与模型的性能与稳定性。 # 插件简短描述
-version: v0.4.5 # 插件版本号
+desc: 轻松对比调提示词：一条消息并发发送给多个虚拟会话，直观看到不同提示词 / 插件配置 / 模型下的回复差异，告别凭感觉调试；进阶可用测试集做极端场景稳定性压测与机械 + LLM 自动评审。 # 插件简短描述
+version: v1.0.0 # 插件版本号
 author: Rail1bc # 作者
 repo: https://github.com/Rail1bc/astrbot_plugin_testbench # 插件的仓库地址
 astrbot_version: ">=4.24.1" # 插件适配的 AstrBot 版本范围（subscribeSSE 自 v4.24.1 起可用）
