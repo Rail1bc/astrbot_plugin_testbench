@@ -5,7 +5,11 @@
 <!-- markdownlint-disable MD041 -->
 # ChangeLog
 
-## [Unreleased]
+## [v1.0.1] - 2026-08-07
+
+### 🧹 Chores / Refactoring (重构与工程化)
+
+- **新增插件图标 logo.png**：AstrBot 插件管理页自动识别插件根目录的 `logo.png` 并展示。
 
 ### 📝 文档与工程化（Docs & Chores）
 
