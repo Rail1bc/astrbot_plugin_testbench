@@ -1,10 +1,11 @@
 """LLM 评审 profile 数据模型与持久化。
 
-Reviewer profile 定义一次 LLM 评审：Provider / 模型（**测试集级显式配置**，
-避免用被测模型自评）、用户编写的审查提示词（支持占位符）、输出契约
-（metrics 声明——类型必须配置声明，不能运行时推断，报告聚合依赖它）。
+Reviewer profile 定义一次 LLM 评审：Provider（**测试集级显式配置**，避免用
+被测模型自评）、用户编写的审查提示词（支持占位符）、输出契约（metrics
+声明——类型必须配置声明，不能运行时推断，报告聚合依赖它）。``model``
+可选：省略时评审用 Provider 当前模型（评审时 `call_reviewer` 传 None）。
 
-    {"id": "rp_<uuid8>", "name", "note"?, "provider_id", "model",
+    {"id": "rp_<uuid8>", "name", "note"?, "provider_id", "model"?,
      "system_prompt", "context": "reply|record|slice",
      "metrics": [{"key", "type", "enum_values"?, "pass_threshold"?,
                   "pass_categories"?}], "created_at"}

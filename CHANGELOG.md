@@ -20,12 +20,19 @@
 - **报告视图加渲染序号守卫**：`renderReportView` 两个 await 之间切换测试集 / 视图时丢弃乱序迟到响应，不再渲染错对象的运行 / 报告。
 - **「＋ 新建测试集」未保存修改先确认**：`openNewTestset` 有脏编辑时弹 danger 确认（此前 `createTestset` 后 `clearDirty` 把未保存编辑静默丢弃）。
 - **segmentLabel 缺 steps 不崩溃**：运行记录缺 `steps` 字段时回退「第 N 步」文案。
+- **弹窗保存失败不再关闭、丢失表单内容**：`modal.js` 的 ok 回调先执行 `onOk`，失败时弹窗保持打开、`#modal-error` 内联显示错误（此前新建评审 Profile 不合规时弹窗先关、已填内容全部丢失）；打开新弹窗前清除上次错误提示。
+
+### 🔄 Changed (行为变更)
+
+- **评审 Profile 不再单独配模型**：`validate_profile` 移除「model 必填」（省略时评审用 Provider 当前模型，`call_reviewer` 传 `model=None`）；表单删除模型输入框，Provider 下拉显示「供应商（当前模型）」，列表模型徽标按 Provider 当前模型解析；保存 / 编辑 profile 时顺带清除旧数据遗留的显式 model。
 
 ### 🧪 Tests (测试)
 
 - 后端 +5：运行器流写入失败仍完成、`_normalize_messages` 非 dict 项、`conf_tool_info` 嵌套错型、`_scope_indices` 边界钳制、非 dict 请求体 400（223 → 228）。
 - pure.js 动态测试 +7：buildRule 未知类型回退、信封缺 messages / 版本非 number / 非字符串 text / 畸形 final_rules、ruleFailCount 空 verdicts 回退、segmentLabel 缺 steps（35 → 42 断言组）。
 - 前端静态检查 +1：`test_frontend_defensive_fixes` 防御性改动静态标记（59 → 60）。
+- 前端静态检查 +1：`test_frontend_modal_error_keeps_content` 弹窗 onOk 失败保留表单内容（60 → 61）。
+- 后端模型可选随测更新：`test_validate_profile_ok_and_errors` / `test_call_reviewer_ok_and_statuses` / `test_plugin_reviewer_crud` 覆盖省略 model、`model=None` 调用与无 model 创建（228 不变）。
 
 ---
 

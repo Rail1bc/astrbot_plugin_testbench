@@ -4529,10 +4529,13 @@ def _valid_profile() -> dict:
 
 def test_validate_profile_ok_and_errors():
     assert validate_profile(_valid_profile()) == []
+    # model 可选：省略即用 Provider 当前模型（评审 Profile 只配 Provider）
+    nomodel = _valid_profile()
+    del nomodel["model"]
+    assert validate_profile(nomodel) == []
     errors = validate_profile({})
     assert "name 必填" in errors
     assert "provider_id 必填" in errors
-    assert "model 必填" in errors
     assert "system_prompt 必填" in errors
     assert "metrics 至少需要一个指标" in errors
 
@@ -4628,6 +4631,13 @@ async def test_call_reviewer_ok_and_statuses():
     assert raw == '{"score": 88, "level": "好"}'
     # 提示词展开：system_prompt 里 {{metrics}} 被替换为契约 JSON 描述
     assert "score" in provider.calls[0]["system_prompt"]
+
+    # 无 model 的 profile → text_chat model=None（评审用 Provider 当前模型）
+    nomodel = _valid_profile()
+    nomodel["model"] = None
+    nm_provider = FakeLLMProvider("prov_r", responses=['{"score": 90, "level": "好"}'])
+    await call_reviewer(FakeContext(providers=[nm_provider]), nomodel, "x")
+    assert nm_provider.calls[0]["model"] is None
 
     # 未找到评审 Provider → error（无输出，raw 为空串）
     metrics, error, status, raw = await call_reviewer(FakeContext(), profile, "x")
@@ -5168,6 +5178,13 @@ async def test_plugin_reviewer_crud(tmp_path):
     assert profile["id"].startswith("rp_")
     assert profile["context"] == "reply"  # 缺省
 
+    # 不配 model（只配 Provider）→ 200，model 落 None（评审用 Provider 当前模型）
+    resp_nm = await call_handler(
+        plugin.create_reviewer, {k: v for k, v in payload.items() if k != "model"}
+    )
+    assert resp_nm.status_code == 200
+    assert json.loads(resp_nm.body)["model"] is None
+
     # 支持多个 profile：再创建 → 200（消息规则 / 最终断言按 profile_id 引用）
     resp2 = await call_handler(
         plugin.create_reviewer, {**payload, "name": "二审", "model": "review-2"}
@@ -5194,14 +5211,14 @@ async def test_plugin_reviewer_crud(tmp_path):
     )
     assert resp6.status_code == 400
 
-    # 列表（两个 profile）+ 按需删除（部分删除保留其余）
+    # 列表（三个 profile）+ 按需删除（部分删除保留其余）
     listing = await plugin.list_reviewers()
     reviewers = json.loads(listing.body)["reviewers"]
-    assert len(reviewers) == 2
+    assert len(reviewers) == 3
     resp7 = await call_handler(plugin.delete_reviewers, {"ids": [profile["id"]]})
     assert json.loads(resp7.body)["deleted"] == 1
     listing2 = await plugin.list_reviewers()
-    assert len(json.loads(listing2.body)["reviewers"]) == 1
+    assert len(json.loads(listing2.body)["reviewers"]) == 2
     resp8 = await call_handler(plugin.delete_reviewers, {"ids": []})
     assert resp8.status_code == 400
 

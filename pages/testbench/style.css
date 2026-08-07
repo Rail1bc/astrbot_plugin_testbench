@@ -2216,3 +2216,17 @@ code {
   gap: 8px;
   flex-shrink: 0;
 }
+
+/* 弹窗内联错误（onOk 校验 / 后端 4xx 时弹窗不关闭、保留表单内容，此处提示；
+   位于 body 与 actions 之间、不受 body 内部滚动影响，始终可见） */
+.modal-error {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  color: var(--danger);
+  font-size: 12px;
+  line-height: 1.5;
+  word-break: break-word;
+}

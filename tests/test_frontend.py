@@ -1006,11 +1006,11 @@ def test_frontend_reviewer_profile_form():
     """评审 Profile 管理：列表 tab + 新建/编辑/删除表单（支持多个）。
 
     testset_list.js 须经 listReviewers 拉取 profile、renderReviewerList 渲染
-    列表（未配置提示 + 新建入口）、openProfileForm 表单（provider / 模型 /
-    提示词 / 输出契约指标编辑器 buildMetricsEditor / collectMetrics），保存走
-    createReviewer / updateReviewer、删除走 deleteReviewers；编辑器保留行内
-    profile 下拉重建 refreshAllProfileSelects；state.js 须有 reviewers；
-    app.js 的 loadOptions 须预载 reviewers。
+    列表（未配置提示 + 新建入口）、openProfileForm 表单（Provider（供应商 /
+    模型，不单独配模型）/ 提示词 / 输出契约指标编辑器 buildMetricsEditor /
+    collectMetrics），保存走 createReviewer / updateReviewer、删除走
+    deleteReviewers；编辑器保留行内 profile 下拉重建 refreshAllProfileSelects；
+    state.js 须有 reviewers；app.js 的 loadOptions 须预载 reviewers。
     """
     list_js = _read_module("testset_list")
     editor_js = _read_module("testset_editor")
@@ -1061,7 +1061,7 @@ def test_frontend_reviewer_profile_metrics_preview():
 def test_frontend_profile_dialog_height_and_scroll():
     """新建/编辑评审 Profile 弹窗须限高内部滚动。
 
-    弹窗内容（Provider/模型/提示词/指标）曾整体超出视口高度、页面放不下：
+    弹窗内容（Provider/提示词/指标）曾整体超出视口高度、页面放不下：
     .modal 须限高（max-height + flex 列布局）、.modal-body 内部滚动
     （overflow-y: auto + flex 子项可收缩）、.modal-actions 固定在底部
     （flex-shrink: 0）；系统提示词 textarea 覆盖 .json-editor 的 360px
@@ -1096,6 +1096,11 @@ def test_frontend_reviewer_provider_list():
         "loadOptions 未把 Provider 列表写入 state.providers"
     )
     assert "state.providers" in list_js, "Profile 表单未读 state.providers"
+    # Provider 即「供应商 / 模型」：下拉须显示 current_model（不再单独配模型字段）
+    assert "p.current_model" in list_js, "Provider 下拉未显示当前模型"
+    assert "（${escapeHtml(p.current_model)}）" in list_js, "Provider 下拉未拼接模型名"
+    assert "providerCurrentModel(" in list_js, "缺少 Provider 当前模型解析"
+    assert "模型名不能为空" not in list_js, "表单仍保留独立模型必填校验"
 
 
 def test_frontend_reviewer_rail_location():
@@ -1327,3 +1332,23 @@ def test_frontend_defensive_fixes():
         "「＋ 新建测试组」未改为直接建 0 会话空组"
     )
     assert "showRunStatus" in gl_js, "新建测试组后缺少状态提示"
+
+
+def test_frontend_modal_error_keeps_content():
+    """onOk 校验 / 请求失败时弹窗不关闭、表单内容保留（防回归）。
+
+    曾出现：新建评审 Profile 不合规时，确定按钮先关闭弹窗再执行 onOk，
+    onOk 抛错（前端校验或后端 400）时已填内容全部丢失、错误只在新弹窗里
+    提示。修复后失败在弹窗内联 #modal-error 区提示、内容原样保留，用户
+    修正后可直接再次保存。
+    """
+    modal_js = _read_module("modal")
+    html = _read_html()
+    assert 'id="modal-error"' in html, "index.html 缺少弹窗内联错误区"
+    assert "showModalError" in modal_js, "modal.js 缺少内联错误提示函数"
+    assert "clearModalError" in modal_js, "modal.js 缺少错误区清理函数"
+    # 失败路径先提示错误再 return（弹窗保持打开），成功路径才 hideModal——
+    # 静态断言错误分支不经过关闭弹窗的代码
+    assert "showModalError(err.message || String(err));\n    return;" in modal_js, (
+        "onOk 失败路径未保留弹窗（应先内联提示错误再 return，而非关闭弹窗）"
+    )

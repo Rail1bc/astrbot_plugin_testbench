@@ -13,9 +13,12 @@
 profile 输出契约声明（指标类型必须配置声明、不能运行时推断——报告模板要算
 avg/min/max 就必须知道哪个字段是数字）：
 
-    {"provider_id", "model", "system_prompt", "context": "reply|record|slice",
+    {"provider_id", "model"?, "system_prompt", "context": "reply|record|slice",
      "metrics": [{"key", "type": "number|enum|text",
                   "enum_values"?, "pass_threshold"?, "pass_categories"?}]}
+
+``model`` 可省略（评审 Profile 只配 Provider 即可，省略时调用评审 LLM 传
+``model=None`` 使用 Provider 当前模型）；旧数据保留的显式 model 仍生效。
 
 system_prompt 支持占位符 ``{{metrics}}``（自动展开为逐字段取值要求 + 示例的
 简明输出契约描述，无需用户在提示词里手工维护）；也支持
@@ -46,8 +49,7 @@ def validate_profile(profile: dict) -> list[str]:
         or not profile["provider_id"].strip()
     ):
         errors.append("provider_id 必填")
-    if not isinstance(profile.get("model"), str) or not profile["model"].strip():
-        errors.append("model 必填")
+    # model 可选：省略时评审用 Provider 当前模型（`call_reviewer` 传 None）
     if (
         not isinstance(profile.get("system_prompt"), str)
         or not profile["system_prompt"].strip()

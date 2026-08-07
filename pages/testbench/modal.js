@@ -5,6 +5,18 @@ const $ = (id) => document.getElementById(id);
 
 let modalCallback = null;
 
+function showModalError(msg) {
+  const el = $("modal-error");
+  el.textContent = msg;
+  el.hidden = false;
+}
+
+function clearModalError() {
+  const el = $("modal-error");
+  el.hidden = true;
+  el.textContent = "";
+}
+
 export function openModal({
   title,
   content,
@@ -18,6 +30,7 @@ export function openModal({
 } = {}) {
   const body = $("modal-body");
   body.innerHTML = "";
+  clearModalError();
   if (title) {
     const h = document.createElement("div");
     h.className = "modal-title";
@@ -55,15 +68,21 @@ export function hideModal() {
 
 $("modal-ok").addEventListener("click", async () => {
   const cb = modalCallback;
-  hideModal();
-  if (!cb || !cb.onOk) return;
+  if (!cb || !cb.onOk) {
+    hideModal();
+    return;
+  }
+  clearModalError();
   try {
     await cb.onOk();
   } catch (err) {
-    // 原实现把失败提示写到群发栏（showRunStatus），这里改用弹窗自身提示，
-    // 避免 modal 模块反向依赖 app.js 的发送区
-    showModal("操作失败: " + err.message);
+    // onOk 校验 / 请求失败：弹窗不关闭、保留表单内容，错误内联提示——
+    // 用户修正后可直接再次保存，不再因弹窗关闭丢失编辑进度（曾出现：
+    // 新建评审 Profile 不合规弹错后，已填内容全部丢失）。
+    showModalError(err.message || String(err));
+    return;
   }
+  hideModal();
 });
 
 $("modal-cancel").addEventListener("click", () => {
