@@ -198,7 +198,7 @@ astrbot_plugin_testbench/
 **评审材料是结构化「实际输入 + 输出」**：单轮（reply）与多轮（record / slice）都用中文标签块明确标注身份与分界——`【输入 · user（发送者名）】` / `【输出 · agent（virtual_bot）】`，多轮每轮带「第 N 步:」前缀、轮间空行分隔（不用 XML 标签：框架 / 插件可能向输入注入 `<system_reminder>` 等 XML 标记，中文标签块避免词法冲突）。输入是**实际喂给被测 LLM 的输入**而非测试集原始文本——捕获链路见下。
 
 - **verdict 契约**（eval/reviewer.py）：`{rule_index, status: "ok"|"error"|"invalid", pass: bool|None, metrics: [{key, type, value}], detail: str|None, raw: str|None, context_text: str|None, profile_id: str|None, agent_system_prompt: str|None}`——`raw` 为评审 LLM 原始返回文本（error 无输出时为空串）、`context_text` 为评审时喂给 LLM 的上下文（供前端详情弹窗查看评审依据，也是**报告评审重试**的 LLM 输入）、`profile_id` 为评审所用 profile（供重试按 id 解析当前 profile）、`agent_system_prompt` 为被测 agent 的装饰后系统提示词（ok / error / invalid 分支都存储，作信息保留——评审重试用存储的 `context_text`，其中已含按开关注入的被测提示词，故自包含，不再重展开占位符）。`mechanical_verdict`（机械规则：status ok、pass 即评估结果、metrics 为 bool 指标，raw/context_text/profile_id 恒 None）、`llm_verdict`（LLM 规则：调用成功并解析 → status ok + 按契约类型化 metrics + 派生 pass；解析失败 / 契约不符 → status invalid；调用异常 → status error）。**评审失败（status error/invalid，pass 为 null）≠ 评审不通过（pass=false）**：前者是评审过程本身出问题，后者是规则判为不通过——前端总结与表格行尾分别计数（「断言 ✗ N」/「评审失败 N」），旧格式 `assertion` 字段回退兼容。`retry_llm_verdict(context, profile, verdict)` 用 verdict 里存储的 `context_text` 重跑一条评审（未存上下文 → 返回 error 不重跑；重跑失败即新 verdict 的 status，不在 error 报出），`agent_system_prompt` 从旧 verdict 读取透传并写入新 verdict。
-- **LLM 规则数据形状**：`{kind: "llm", profile_id: <id>, context?: "reply"|"record"|"slice", slice_range?: [{from, to}, ...], inject_system_prompt?: bool}`——context 省略回落 profile 的 context，再回落 "reply"（只评估该步）；"record" 取该步及之前全部（实际输入, 回复）记录；"slice" 对消息规则可配 `slice_range`（{from, to} 0 基闭区间**列表**，前端多段输入 3-4,10-12 解析而来，也兼容旧单段 dict）限定喂给评审 LLM 的记录段，未配时同 record；`inject_system_prompt`（规则级「注入提示词」开关，缺省开启，显式 false 才落盘）控制是否在评审输入开头注入被测 agent 系统提示词。上下文由 `eval/assessor.py` 的纯函数构造：`build_input_text(llm_input, fallback)` 取实际输入（prompt + extra parts 拼接，无快照回退原始文本）、`format_turn(...)` 生成单轮中文标签块、`format_record(entries)` 生成多轮文本（每轮「第 N 步:」前缀 + 空行分隔）、`inject_system_prompt_block(context_text, sp)` 在开关开启且捕获到系统提示词时于开头注入 `【被测 Agent 系统提示词】` 标签块，`_record_entries` 收集（实际输入, 回复, 发送者名, agent 名）四元组——发送者名回退链 `sender_name` → `sender_id` → `测试台`，agent 名恒 `virtual_bot`（BOT_SELF_ID）。profile 缺失 → status=error verdict（`找不到评审 profile`），前端在保存时拦截未选 profile 的 LLM 规则（带行号提示）。
+- **LLM 规则数据形状**：`{kind: "llm", profile_id: <id>, context?: "reply"|"record"|"slice", slice_range?: [{from, to}, ...], inject_system_prompt?: bool}`——context 省略回落 profile 的 context，再回落 "reply"（只评估该步）；"record" 取该步及之前全部（实际输入, 回复）记录；"slice" 对消息规则可配 `slice_range`（{from, to} 0 基闭区间**列表**，前端多段输入 3-4,10-12 解析而来，也兼容旧单段 dict）限定喂给评审 LLM 的记录段，未配时同 record；`inject_system_prompt`（规则级「注入提示词」开关，缺省开启，显式 false 才落盘）控制是否在评审输入开头注入被测 agent 系统提示词。上下文由 `eval/assessor.py` 的纯函数构造：`build_input_text(llm_input, fallback)` 取实际输入（prompt + extra parts 拼接，无快照回退原始文本）、`format_turn(...)` 生成单轮中文标签块、`format_record(entries)` 生成多轮文本（每轮「第 N 步:」前缀 + 空行分隔）、`inject_system_prompt_block(context_text, sp)` 在开关开启时于开头注入**前后闭合**的 `【以下是被测 Agent 系统提示词】…【以上是被测 Agent 系统提示词】` 块（未捕获 / 为空显示占位文案），`_record_entries` 收集（实际输入, 回复, 发送者名, agent 名）四元组——发送者名回退链 `sender_name` → `sender_id` → `测试台`，agent 名恒 `virtual_bot`（BOT_SELF_ID）。**快照 system_prompt 为空时回退解析人格**：`req.system_prompt` 只承载人格的 `prompt` 字段；**开场对话（begin_dialogs）型人格**的身份文本注入 `req.contexts` 对话历史、不写 system_prompt，这类会话快照恒为空——回退解析实现在**共享模块 `eval/persona.py`**（`format_persona_snapshot` 格式化人格提示词 + 开场对话、`resolve_agent_system_prompt` 从会话配置档案经 `persona_manager.resolve_selected_persona` 解析人格，传入会话 umo、会话级 persona_id、档案 provider_settings，镜像框架装饰路径），两处入口复用：①`on_llm` hook 捕获为空时经 `_resolve_persona_system_prompt`（main.py 薄包装，会话级 persona_id 读 `req.conversation`）补进快照；②**评审阶段 Assessor** 在步骤结果无 `llm_input` 快照 / 快照系统提示词为空时也回退（`_fallback_agent_system_prompt`，会话级 persona_id 经 `conversation_persona_id` 从对话存储防御式回查、失败回落档案 default_personality，结果按 umo 记忆）——评审材料不依赖捕获 hook 是否触发。日志统一走根 `astrbot` logger（`[testbench]` 前缀）：插件专用 logger 支持按插件调级，INFO 日志可能被静默过滤，根 logger 排查「未捕获」更可靠。解析失败 / 无人格回退空串（评审占位兜底）。profile 缺失 → status=error verdict（`找不到评审 profile`），前端在保存时拦截未选 profile 的 LLM 规则（带行号提示）。
 - **实际输入捕获链路**：main.py 的 `on_llm` hook（AstrBot 原生 LLM 阶段 hook，调用前触发，拥有装饰后的 `req`）用模块级纯函数 `_snapshot_llm_input(req)` 快照 `{"prompt", "extra_parts": [str...], "system_prompt"}`——`extra_user_content_parts` 里的 TextPart/ThinkPart 逐一抽取文本，**必须渲染为纯字符串**（存 ContentPart 引用会破坏 SSE / 报告的 JSON 序列化）；快照写入事件 extra（`TESTBENCH_LLM_INPUT_EXTRA_KEY`），`VirtualMessageEvent.result_summary()` 随结果返回 `llm_input` 字段，经 runner 落进步骤结果，评审阶段据此构造材料——未捕获（无 llm_input）时回退测试集原始文本。
 - **final_rules 数据形状**：`[{rule: <Rule dict>, scope: "all"|{from, to}}]`——创建 / 更新时 `api/testsets.py _validate_final_rules` 严格校验（非 list / 项缺 rule / scope 形状非法 → 400），store `_normalize_final_rules` 宽松清洗（非法整项丢弃、scope 回退 "all"）；scope 边界由评估层 `_scope_indices` 钳制到 [0, n-1]，机械规则评估 scope 内各会话回复拼接文本、LLM 规则按 context 取切片上下文。
 - **评审时机**：全部步骤完成后由 `TestsetRunner._review_phase` 统一触发（消息级 verdicts 由 Assessor 原地写入各已 done 步骤的 results，final_verdicts 返回存 run 级 `run["final_verdicts"]`）；评审期间 `run["reviewing"]=True`、status 保持 running（会话锁防取消 / 重复运行），终态解锁；评审编排异常（非单条规则失败）→ run error「评审失败」。profile 在**评审时点**读取快照（`_profiles()`，配置事后修改仍生效）。
@@ -306,7 +306,7 @@ astrbot_plugin_testbench/
 ## 测试与验证
 
 > **开发流程（2026-08-05 起）**：本地**不跑**测试，修改直接提交推送到 `dev` 分支，
-> 由 GitHub Actions 自动把关——push 到 dev 触发 `pytest.yml`（295 个测试函数 +
+> 由 GitHub Actions 自动把关——push 到 dev 触发 `pytest.yml`（300 个测试函数 +
 > 前端 JS 检查 `js-check`：node --check 十五个页面脚本 + node:test 纯函数动态
 > 测试）+ `ruff-format.yml`；
 > dev 验证通过后合并到 `main`，metadata.yaml 变更即触发 release.yml 自动发版。
@@ -314,7 +314,7 @@ astrbot_plugin_testbench/
 
 测试随插件仓库维护（`tests/`，可与主仓库无关地推送、供协作者运行）。
 
-- `tests/test_backend.py`：后端单元测试（231 个），需要 astrbot（PyPI 包，插件运行时依赖）。以 **namespace package** 加载插件：`sys.path.insert(0, str(REPO_ROOT.parent))` 后 `import astrbot_plugin_testbench.*`——插件模块用相对导入（`from .group_store import ...`），必须按包加载，这与 AstrBot 在 data/plugins 下加载插件的方式一致。未安装 astrbot 时整组跳过（`pytest.importorskip`）。
+- `tests/test_backend.py`：后端单元测试（236 个），需要 astrbot（PyPI 包，插件运行时依赖）。以 **namespace package** 加载插件：`sys.path.insert(0, str(REPO_ROOT.parent))` 后 `import astrbot_plugin_testbench.*`——插件模块用相对导入（`from .group_store import ...`），必须按包加载，这与 AstrBot 在 data/plugins 下加载插件的方式一致。未安装 astrbot 时整组跳过（`pytest.importorskip`）。
 - `tests/test_frontend.py`：前端脚本静态检查（64 个），零依赖，任何环境可运行。
 - `tests/frontend/pure.test.mjs`：**pure.js 纯函数动态测试**（node:test，54 个断言组），零依赖；`node --test` 直接加载页面模块 `pages/testbench/pure.js`（仓库根 package.json 声明 `"type": "module"`）。
 
@@ -340,7 +340,7 @@ done
 > 回归（nodejs/node#64555，把目录当模块加载报 MODULE_NOT_FOUND），须用 glob
 > 形式 `node --test "tests/frontend/*.test.mjs"`。
 
-测试设施（tests/test_backend.py 内定义）：`FakeContext`（可注入 queue/ucr/conv_mgr/platform_mgr）、`FakeUCR`、`FakeConvManager`、`FakePlatformManager`/`FakePlatformInst`、`call_handler`/`make_plugin_request`（绑定 PluginRequest 调 handler）、`_add_history`（造对话历史）。
+测试设施（tests/test_backend.py 内定义）：`FakeContext`（可注入 queue/ucr/conv_mgr/platform_mgr）、`FakeUCR`、`FakeConvManager`、`FakePlatformManager`/`FakePlatformInst`、`FakePersonaManager`（resolve_selected_persona 返回可配置 persona，供人格回退解析测试）、`call_handler`/`make_plugin_request`（绑定 PluginRequest 调 handler）、`_add_history`（造对话历史）。
 
 ## 常见陷阱（本插件踩过的坑）
 

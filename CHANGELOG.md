@@ -35,6 +35,7 @@
 - **`{{agent_system_prompt}}` 占位符弃用，被测 agent 系统提示词改由规则级开关注入**：占位符展开依赖评审 Provider 把 system_prompt 真正传给评审 LLM——部分 Provider 忽略 / 改写 system_prompt，内容到不了评审 LLM；改为 LLM 断言**规则级**「注入提示词」开关（`rule.inject_system_prompt`，缺省开启，显式 false 才落盘）把被测 agent 的装饰后系统提示词注入评审输入（prompt）开头（`【被测 Agent 系统提示词】` 标签块，`Assessor.inject_system_prompt_block`）——prompt 是所有 Provider 必传的，对该问题天然免疫；`call_reviewer` 不再接收 / 展开占位符，残留字面量清成空串；verdict 的 `agent_system_prompt` 字段保留作信息（评审重试用存储的 `context_text`，已含注入内容，自包含）。
 - **未捕获到被测 agent 系统提示词时注入块仍存在**：开启注入（缺省）时评审输入恒以 `【被测 Agent 系统提示词】` 标签块开头——捕获到内容则注入全文，未捕获 / 为空则显示占位文案「（未捕获到被测 agent 系统提示词）」，报告评审详情可直观确认注入链路状态，不再与未开启注入的表现无异（此前无快照时该块整个消失，排查困难）。
 - **注入块改前后闭合标签 + 空系统提示词时回退解析人格**：注入块由单侧标签 `【被测 Agent 系统提示词】` 改为前后闭合的 `【以下是被测 Agent 系统提示词】…【以上是被测 Agent 系统提示词】`，长提示词也能清晰区分块边界（沿用中文标签块，避免与注入的 XML 标记冲突）；同时 `on_llm` 捕获到 `req.system_prompt` 为空时（**开场对话（begin_dialogs）型人格**把身份文本注入 `req.contexts` 对话历史而非 system_prompt，这类会话的快照系统提示词恒为空）回退从会话配置档案解析人格（`persona_manager.resolve_selected_persona`，经会话 umo + 会话级 persona_id + 档案 provider_settings，镜像框架装饰路径），把人格提示词与开场对话补进快照，评审 LLM 仍能看到被测 agent 的人格设定；解析失败 / 无人格回退未捕获占位；回退解析关键决策点打 `[testbench]` 前缀 INFO 日志（是否执行 / default_personality / 会话级 persona / 命中人格及内容规模），供排查「未捕获」。
+- **人格回退解析抽到 eval/persona.py，评审阶段也回退（不依赖捕获 hook）**：回退解析实现（`format_persona_snapshot` / `conversation_persona_id` / `resolve_agent_system_prompt`）从 main.py 抽到共享模块 `eval/persona.py`，`on_llm` 捕获时回退改为薄包装；`Assessor` 在步骤结果无 `llm_input` 快照 / 快照系统提示词为空时（捕获 hook 未触发或 begin_dialogs 型会话）评审阶段也调用同一份实现从会话配置档案解析人格补进评审材料——修复「未捕获」不依赖捕获链路，且评审输入恒带被测 agent 人格；评审阶段从对话存储回查会话级 persona_id（`conversation_persona_id`，防御式，失败回落档案 default_personality），结果按 umo 记忆（同一次运行内多次命中只解析一次）；日志改走根 `astrbot` logger——插件的专用 logger 支持按插件调级，INFO 日志可能被静默过滤，根 logger 与 AstrBot 自身模块记法一致、排查更可靠。
 
 ### 🧪 Tests (测试)
 
@@ -50,6 +51,7 @@
 - 前端静态检查 +1：`test_frontend_run_status_scroll` 状态条消息限高滚动标记（62 → 63）。
 - 后端 +2：`test_inject_system_prompt_block` 注入块纯函数 + `test_assessor_inject_system_prompt_rule_level` 规则级注入开关（缺省注入 / 显式 false 不注入 / 无 llm_input 快照注入占位块）（229 → 231）。
 - 后端 +4：`test_format_persona_snapshot` 人格快照纯函数、`test_resolve_persona_system_prompt_defensive` 回退解析防御式（无 persona_manager / 解析异常 / 无人格 → 空串）、`test_resolve_persona_system_prompt_from_conf` 从配置档案解析（prompt + 开场对话合入、会话级 persona_id 与 umo 透传）、`test_plugin_on_llm_persona_fallback` 空 system_prompt 时 on_llm 回退补人格（231 → 235）。
+- 后端 +1：`test_assessor_persona_fallback` 评审阶段回退解析人格（结果无 llm_input 快照时从配置档案补上、会话级 persona 回查失败回落档案、同 umo 结果 memo 只解析一次）（235 → 236）。
 - 前端静态检查 +1：`test_frontend_llm_rule_inject_system_prompt` 注入开关静态标记（editor_js 的 `.ts-msg-rule-inject` 复选框 / collectRules 透传 / 占位符废弃文案 / css 样式，63 → 64）。
 - pure.js 动态测试 +3：buildRule 注入开关分支（缺省与 true → 不带 `inject_system_prompt`、显式 false → 字段、collectRules 透传 injectSystemPrompt）（51 → 54 断言组）。
 

@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING
 
 from ..core.virtual_event import BOT_SELF_ID
 from .mechanical import evaluate_rule
+from .persona import conversation_persona_id, resolve_agent_system_prompt
 from .reviewer import (
     call_reviewer,
     llm_verdict,
@@ -110,6 +111,31 @@ class Assessor:
     def __init__(self, context: Context, profiles: dict[str, dict]) -> None:
         self.context = context
         self.profiles = profiles
+        # 评审时回退解析人格的结果按 umo 记忆（同一次运行内多次命中只解析一次）
+        self._persona_memo: dict[str, str | None] = {}
+
+    async def _fallback_agent_system_prompt(self, result: dict) -> str | None:
+        """评审阶段回退解析被测 agent 人格（捕获 hook 未留下快照时）。
+
+        与 main.py 的 on_llm 捕获时回退共用 eval/persona.py 的实现：捕获链路
+        未触发 / 快照系统提示词为空时，仍从会话配置档案解析人格补进评审输入，
+        使评审材料不依赖捕获 hook。无 umo / 解析不到 → None（注入块显示占位）。
+        """
+        umo = result.get("umo")
+        if not umo:
+            return None
+        if umo in self._persona_memo:
+            return self._persona_memo[umo] or None
+        conv_persona_id = await conversation_persona_id(self.context, umo)
+        platform_name = str(umo).split(":", 1)[0] if isinstance(umo, str) else ""
+        text = await resolve_agent_system_prompt(
+            self.context,
+            umo=umo,
+            conv_persona_id=conv_persona_id,
+            platform_name=platform_name,
+        )
+        self._persona_memo[umo] = text or None
+        return self._persona_memo[umo]
 
     async def assess(
         self, steps: list[dict], final_rules: list[dict], sessions: list[dict]
@@ -137,6 +163,8 @@ class Assessor:
             reply = result.get("reply") or ""
             entries = self._record_entries(steps, si, result)
             agent_system_prompt = _session_agent_system_prompt(result)
+            if agent_system_prompt is None:
+                agent_system_prompt = await self._fallback_agent_system_prompt(result)
             if entries:
                 input_text = entries[-1][0]
                 user_name = entries[-1][2]
@@ -261,6 +289,8 @@ class Assessor:
                         )
                     )
                     sp = _session_agent_system_prompt(r)
+                    if sp is None:
+                        sp = await self._fallback_agent_system_prompt(r)
                     if sp:
                         system_prompts.append(sp)
                 if not scoped:

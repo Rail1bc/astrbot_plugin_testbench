@@ -30,6 +30,7 @@ import astrbot_plugin_testbench.core.testset_runner as tsr_mod  # noqa: E402
 import astrbot_plugin_testbench.core.virtual_event as ve_mod  # noqa: E402
 import astrbot_plugin_testbench.eval.assessor as assr_mod  # noqa: E402
 import astrbot_plugin_testbench.eval.mechanical as asrt_mod  # noqa: E402
+import astrbot_plugin_testbench.eval.persona as psn_mod  # noqa: E402
 import astrbot_plugin_testbench.eval.reporting as rpt_mod  # noqa: E402
 import astrbot_plugin_testbench.eval.reviewer as rev_mod  # noqa: E402
 import astrbot_plugin_testbench.history_ops as hops_mod  # noqa: E402
@@ -451,6 +452,7 @@ class FakeConvManager:
             cid=f"new_cid_{self._seq}",
             title=title or "",
             history=json.dumps(content or [], ensure_ascii=False),
+            persona_id=persona_id,
         )
         self._convs.setdefault(unified_msg_origin, []).append(conv)
         return conv.cid
@@ -5081,7 +5083,7 @@ async def test_plugin_on_llm_snapshots_actual_input():
 
 def test_format_persona_snapshot():
     """人格快照文本：prompt + 开场对话；两者都空 → 空串。"""
-    assert main_mod._format_persona_snapshot({}) == ""
+    assert psn_mod.format_persona_snapshot({}) == ""
     persona = {
         "prompt": "你是寒露",
         "_begin_dialogs_processed": [
@@ -5089,11 +5091,11 @@ def test_format_persona_snapshot():
             {"role": "assistant", "content": "寒露在呢", "_no_save": True},
         ],
     }
-    out = main_mod._format_persona_snapshot(persona)
+    out = psn_mod.format_persona_snapshot(persona)
     assert out.startswith("# Persona Instructions\n\n你是寒露\n")
     assert "# 开场对话（begin_dialogs）\n\nuser: 你好\nassistant: 寒露在呢" in out
     # 只有开场对话（begin_dialogs 型人格）→ 只出开场对话段
-    out2 = main_mod._format_persona_snapshot(
+    out2 = psn_mod.format_persona_snapshot(
         {"prompt": "", "_begin_dialogs_processed": [{"role": "user", "content": "hi"}]}
     )
     assert "Persona Instructions" not in out2
@@ -5180,6 +5182,73 @@ async def test_plugin_on_llm_persona_fallback():
     await plugin.on_llm(ev, req2)
     snap2 = ev.get_extra(ve_mod.TESTBENCH_LLM_INPUT_EXTRA_KEY)
     assert snap2["system_prompt"] == "真实 SP"
+
+
+@pytest.mark.asyncio
+async def test_assessor_persona_fallback():
+    """评审阶段回退解析人格：捕获 hook 未留下快照时，Assessor 从配置档案补上。
+
+    结果无 llm_input 快照（捕获链路未触发）→ 评审输入仍以注入块带上被测
+    agent 人格；会话级 persona_id 经对话存储回查（`conversation_persona_id`，
+    镜像框架装饰路径入参；无会话时回落档案 default_personality）；同 umo
+    的多个结果只解析一次（memo）。
+    """
+    provider = FakeLLMProvider(
+        "prov_r",
+        responses=['{"score": 90, "level": "好"}', '{"score": 85, "level": "好"}'],
+    )
+    context = FakeContext(
+        providers=[provider],
+        conf={"provider_settings": {"default_personality": "p_hanlu"}},
+    )
+    context.persona_manager = FakePersonaManager(
+        persona={
+            "prompt": "你是寒露",
+            "_begin_dialogs_processed": [{"role": "user", "content": "你好"}],
+        }
+    )
+    # vs_1 有会话级人格（对话存储回查命中）；vs_2 无会话 → 回落档案
+    await context.conversation_manager.new_conversation(
+        "webchat:FriendMessage:vs_1", persona_id="p_hanlu"
+    )
+    assessor = Assessor(context, {"rp_test": _valid_profile()})
+    steps = [
+        {
+            "status": "done",
+            "text": "问",
+            "rules": [{"kind": "llm", "profile_id": "rp_test", "context": "record"}],
+            "results": [
+                {
+                    "session_id": "vs_1",
+                    "reply": "回答",
+                    "status": "ok",
+                    "umo": "webchat:FriendMessage:vs_1",
+                },
+                {
+                    "session_id": "vs_2",
+                    "reply": "回答2",
+                    "status": "ok",
+                    "umo": "webchat:FriendMessage:vs_2",
+                },
+            ],
+        }
+    ]
+    await assessor.assess(steps, [], [])
+    prompt = provider.calls[0]["prompt"]
+    assert prompt.startswith(
+        "【以下是被测 Agent 系统提示词】\n# Persona Instructions\n\n你是寒露\n"
+    )
+    assert "【以上是被测 Agent 系统提示词】" in prompt
+    # 解析入参：会话级 persona_id 回查命中（vs_1）/ 回落档案（vs_2），
+    # 档案 provider_settings 透传；不同 umo 各解析一次（memo 按 umo 记忆）
+    call1 = context.persona_manager.calls[0]
+    assert call1["umo"] == "webchat:FriendMessage:vs_1"
+    assert call1["conversation_persona_id"] == "p_hanlu"
+    assert call1["provider_settings"] == {"default_personality": "p_hanlu"}
+    call2 = context.persona_manager.calls[1]
+    assert call2["umo"] == "webchat:FriendMessage:vs_2"
+    assert call2["conversation_persona_id"] is None
+    assert len(context.persona_manager.calls) == 2
 
 
 def test_build_input_text():
