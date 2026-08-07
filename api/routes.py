@@ -192,4 +192,10 @@ _ROUTES: tuple[tuple[str, str, list[str], str], ...] = (
         ["POST"],
         "重试报告的 LLM 评审（scope=failed|all 批量或 targets 单条，返回更新后的报告）",
     ),
+    (
+        "/reports/<report_id>/llm-report",
+        "generate_llm_report",
+        ["POST"],
+        "按测试集 report_llm 配置生成 LLM 报告（markdown，落 data.llm_report）",
+    ),
 )

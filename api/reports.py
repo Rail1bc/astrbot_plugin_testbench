@@ -4,14 +4,22 @@
 不受内存运行记录清理约束。报告数据为运行终态快照（含 metrics_summary
 默认模板聚合），列出 / 删除均按 report id 或 testset id 操作；「评审重试」
 按报告内 verdict 存储的 profile_id + context_text 重新调用评审 LLM，
-整体替换报告 data（同一份报告，verdicts 与聚合被刷新）。
+整体替换报告 data（同一份报告，verdicts 与聚合被刷新）；「LLM 报告」按
+测试集级 report_llm 配置调用 Provider 生成 markdown 报告并落 data.llm_report。
 """
 
 from __future__ import annotations
 
+import json
+import time
+
 from astrbot.api.web import error_response, json_response
 
-from ..eval.reporting import build_metrics_summary
+from ..eval.reporting import (
+    build_assertion_stats,
+    build_duration_stats,
+    build_metrics_summary,
+)
 from ..eval.reviewer import retry_llm_verdict
 from .common import json_dict
 
@@ -155,7 +163,53 @@ class ReportsAPI:
             verdict.update(new_verdict)
             updated += 1
         data["metrics_summary"] = build_metrics_summary(data)
+        data["assertions"] = build_assertion_stats(data)
+        data["durations"] = build_duration_stats(data)
         await self.report_store.write(self.report_store.update_report, report_id, data)
         return json_response(
             {"updated": updated, "failed": failed, "errors": errors, "report": data}
         )
+
+    async def generate_llm_report(self, report_id: str):
+        """为报告生成 LLM 报告，返回更新后的报告数据（data.llm_report 落库）。
+
+        报告 LLM 是**测试集级持久化配置**（report_llm：Provider + 生成提示词，
+        缺省模型用 Provider 当前模型，与评审 profile 一致）。报告数据整体作为
+        prompt 传给 Provider（JSON 转义，确保中文可读）；成功 →
+        ``data.llm_report = {status:"ok", text, provider_id, model, generated_at}``
+        并 ``update_report`` 持久化（重新生成覆盖旧产物）；失败 → error_response
+        （不落库，报告保持原样）。
+        """
+        report = self.report_store.get_report(report_id)
+        if report is None:
+            return error_response("报告不存在", status_code=404)
+        data = report["data"]
+        if not isinstance(data, dict):
+            return error_response("报告数据损坏", status_code=400)
+        testset = None
+        if self.testset_store is not None:
+            testset = self.testset_store.get_testset(data.get("testset_id"))
+        report_llm = (testset or {}).get("report_llm")
+        if not isinstance(report_llm, dict) or not report_llm.get("provider_id"):
+            return error_response("该测试集未配置报告 LLM", status_code=400)
+        provider = self.context.get_provider_by_id(report_llm["provider_id"])
+        if provider is None:
+            return error_response("找不到报告 Provider", status_code=400)
+        try:
+            resp = await provider.text_chat(
+                prompt=json.dumps(data, ensure_ascii=False, indent=2),
+                system_prompt=report_llm.get("system_prompt") or None,
+                model=report_llm.get("model") or None,
+            )
+        except Exception as e:  # noqa: BLE001
+            return error_response(f"报告生成失败: {e}", status_code=400)
+        text = getattr(resp, "completion_text", None) or ""
+        data["llm_report"] = {
+            "status": "ok",
+            "text": text,
+            "provider_id": report_llm["provider_id"],
+            "model": report_llm.get("model"),
+            "generated_at": int(time.time()),
+        }
+        await self.report_store.write(self.report_store.update_report, report_id, data)
+        return json_response(data)

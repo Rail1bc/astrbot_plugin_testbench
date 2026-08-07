@@ -24,6 +24,12 @@
 - **固定规则不再显示评审 Profile 选择器**：`.ts-msg-rule-llm` 声明了 `display: flex`，覆盖 `[hidden]` 属性 UA 默认的 `display: none`——导致非 LLM 类型（如「包含」等固定规则）也显示 profile / 上下文下拉；补 `.ts-msg-rule-llm[hidden] { display: none; }` 显式隐藏（沿用 `.groups-card[hidden]` 等既有修复 pattern）。
 - **同根因 `display:flex` 覆盖 `[hidden]` 的 3 处遗漏（对抗性审计发现，顺带修复）**：`.ts-report-body`（「编辑 / 报告」切换时报告体不隐藏，切回编辑视图后报告内容仍显示在表单下方）、`.cg-members`（未选群聊时成员编辑区仍占位）、`.panel-pending`（无在途消息时消息条空占一行）——各补 `[hidden] { display: none; }`。
 
+### ✨ New Features (新功能)
+
+- **断言组合算子 any / not（testset-redesign v2 收尾①）**：消息规则支持**任意组（至少一条通过）**与**取反**——`rules` 列表元素 = 叶（机械或 LLM）| `{op:"any", rules:[叶...]}`（任一子规则通过即组通过）| `{op:"not", rule:叶}`（取反），顶层隐式 all（全部 entry 通过才整步通过）；评估由 `Assessor._eval_entry` 递归（机械子叶恒评估、LLM 子叶在组已被决定为通过后短路跳过；**每 entry 一条 verdict**，组 verdict 的 `metrics` 为全部子叶拼接、`detail` 说明「任意（至少一条通过）：X/Y 子规则通过」；not 取反子 verdict 的 pass，子 pass None（评审失败）不取反）；顶层短路语义不变（机械未过 → 后续 LLM 跳过）。**final_rules 不支持组合**（保持单叶）。前端规则区新增「＋ 任意组」按钮（组行 `.ts-msg-rule-group`，组内子行隐式 all、不嵌套）与叶行「取反」checkbox（`.ts-msg-rule-not`，机械与 LLM 叶都提供）；pure.js 新增 `buildAnyGroupRule` / `buildRule` 的 `not` 参数 / `collectRules` 识别 `kind:"group"`；store / API 不做规则键白名单，组合节点天然透传。
+- **报告按 3 类组织（testset-redesign v2 收尾②）**：报告详情弹窗改为「**统计 / 详情 / LLM 报告**」3 tab——**统计**为纯聚合不展开会话（`metrics_summary` 指标聚合行 + 新增「断言：通过 X / 失败 Y（共 Z）」`data.assertions` 与「耗时：平均 / 最小 / 最大 / p50 / p95（N 条）」`data.durations` + 评审失败数；后端 `build_assertion_stats` 只数 pass 非 None 的 verdict、`build_duration_stats` 收集全部 done 步骤 × 会话的数字耗时）；**详情**为完整执行数据（逐步骤×会话×verdict 明细 + 导出原始数据）；**LLM 报告**按测试集配置的 `report_llm` 一键生成。
+- **LLM 生成报告（testset-redesign v2 收尾③）**：测试集新增**报告 LLM 配置 `report_llm`**（`{provider_id, system_prompt?, model?}`——缺省模型用 Provider 当前模型，与评审 profile 一致；编辑视图报告开关下方配置，保存随测试集持久化）；报告条目按钮「生成 / 重新生成 LLM 报告」调新端点 `POST /reports/<report_id>/llm-report`（报告完整 JSON 作为 prompt 发给报告 LLM，成功落 `data.llm_report = {status, text, provider_id, model, generated_at}` 并持久化，重新生成覆盖）；报告详情弹窗 LLM 报告 tab 用新增的**markdown 受限子集渲染器**（`pages/testbench/render_markdown.js`：`parseMarkdown` / `parseInline` 零 DOM 依赖纯函数 + `renderMarkdownBlocks(blocks, doc)` 渲染——文本一律经 `textContent` / `createTextNode` 落（LLM 输出是数据不是代码，绝不拼 innerHTML），链接 `safeHref` 仅放行 http(s)/mailto、其余置 "#"，防 XSS）。
+
 ### 🔄 Changed (行为变更)
 
 - **评审 Profile 不再单独配模型**：`validate_profile` 移除「model 必填」（省略时评审用 Provider 当前模型，`call_reviewer` 传 `model=None`）；表单删除模型输入框，Provider 下拉显示「供应商（当前模型）」，列表模型徽标按 Provider 当前模型解析；保存 / 编辑 profile 时顺带清除旧数据遗留的显式 model。
@@ -54,6 +60,10 @@
 - 后端 +1：`test_assessor_persona_fallback` 评审阶段回退解析人格（结果无 llm_input 快照时从配置档案补上、会话级 persona 回查失败回落档案、同 umo 结果 memo 只解析一次）（235 → 236）。
 - 前端静态检查 +1：`test_frontend_llm_rule_inject_system_prompt` 注入开关静态标记（editor_js 的 `.ts-msg-rule-inject` 复选框 / collectRules 透传 / 占位符废弃文案 / css 样式，63 → 64）。
 - pure.js 动态测试 +3：buildRule 注入开关分支（缺省与 true → 不带 `inject_system_prompt`、显式 false → 字段、collectRules 透传 injectSystemPrompt）（51 → 54 断言组）。
+- 后端 +15（236 → 251）：组合算子 any/not 递归评估（全过 / 部分过 / 全不过 / not 取反 / not 内 LLM / any 内 LLM 短路 / 顶层短路不回归 / 空组与未知形状容错 / 组 verdict 契约）、store 透传组合节点、报告断言统计 `build_assertion_stats` / 耗时统计 `build_duration_stats`（error/invalid 与短路跳过不计入、全 done 步骤）、report_llm 存储清洗 / API 校验 / LLM 报告生成端点（成功产物落 `data.llm_report` 并持久化、重新生成覆盖、未配置 400 / Provider 缺失 400 / 报告不存在 404 / 数据损坏 400 / 调用异常 400 不落库）。
+- pure.js 动态测试 +7：buildRule not 包裹（机械 / LLM 叶）、not=false / 空类型不包裹、buildAnyGroupRule 空子输入 → null、组节点收集、collectRules 识别 kind="group"（组内 not 子叶保留）、空组与无效组内行丢弃（54 → 61 断言组）。
+- 新增 `tests/frontend/render_markdown.test.mjs`（node:test，13 断言组）：parseInline 纯文本 / 粗斜体 / 行内代码 / 链接混排、parseMarkdown 标题 / 代码块 / 分隔线 / 无序有序列表 / 表格 / 单行 | 降级段落 / 空行与非法输入容错、renderMarkdownBlocks 块结构 / 表格 thead+tbody / **HTML 注入文本按文本渲染（不产生注入元素）** / 链接协议白名单（javascript: 置 "#"）——`node --test` 总数 61 → 74。
+- 前端静态检查 +5（64 → 69）：`test_frontend_combo_rule_ui`（「＋ 任意组」/ 组行 / 取反 checkbox / buildAnyGroupRule / op 节点形状）、`test_frontend_report_three_tabs`（统计 / 详情 / LLM 报告 3 tab 与断言 / 耗时统计行）、`test_frontend_render_markdown_module`（模块存在 / 导出纯函数 / 零依赖 / 不拼 innerHTML / safeHref）、`test_frontend_report_llm_form`（编辑器 report_llm 表单与保存 payload、api.js 封装）、`test_frontend_report_llm_button_and_pane`（生成按钮按配置显隐、LLM 报告 tab 渲染器接入）。
 
 ---
 

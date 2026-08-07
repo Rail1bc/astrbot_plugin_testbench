@@ -137,6 +137,17 @@ class TestsetsAPI:
             out.append({"rule": rule, "scope": scope})
         return out
 
+    @staticmethod
+    def _validate_report_llm(report_llm: Any) -> bool:
+        """校验报告 LLM 配置：提供时须为 dict 且 provider_id 非空字符串。"""
+        if report_llm is None:
+            return True
+        return (
+            isinstance(report_llm, dict)
+            and isinstance(report_llm.get("provider_id"), str)
+            and bool(report_llm["provider_id"].strip())
+        )
+
     def _clean_id_ref(self, value: Any) -> str | None:
         """清洗可选 id 引用：非空字符串保留（去空白），其余归一为 None。"""
         if isinstance(value, str) and value.strip():
@@ -231,6 +242,11 @@ class TestsetsAPI:
         report_enabled = payload.get("report_enabled")
         if report_enabled is not None and not isinstance(report_enabled, bool):
             return error_response("report_enabled 必须是布尔值", status_code=400)
+        report_llm = payload.get("report_llm")
+        if not self._validate_report_llm(report_llm):
+            return error_response(
+                "report_llm 须为含 provider_id 的配置对象", status_code=400
+            )
         identity_mode, identity_id, chat_group_id, identity_snapshot, pool_snapshot = (
             self._resolve_identity_snapshot(payload)
         )
@@ -246,6 +262,7 @@ class TestsetsAPI:
             identity_snapshot=identity_snapshot,
             pool_snapshot=pool_snapshot,
             report_enabled=report_enabled or False,
+            report_llm=report_llm,
         )
         return json_response(testset)
 
@@ -273,6 +290,11 @@ class TestsetsAPI:
         report_enabled = payload.get("report_enabled")
         if report_enabled is not None and not isinstance(report_enabled, bool):
             return error_response("report_enabled 必须是布尔值", status_code=400)
+        report_llm = payload.get("report_llm")
+        if not self._validate_report_llm(report_llm):
+            return error_response(
+                "report_llm 须为含 provider_id 的配置对象", status_code=400
+            )
         identity_mode, identity_id, chat_group_id, identity_snapshot, pool_snapshot = (
             self._resolve_identity_snapshot(payload)
         )
@@ -289,6 +311,7 @@ class TestsetsAPI:
             identity_snapshot=identity_snapshot,
             pool_snapshot=pool_snapshot,
             report_enabled=report_enabled or False,
+            report_llm=report_llm,
         )
         if testset is None:
             return error_response("未找到该测试集", status_code=404)

@@ -111,6 +111,7 @@ export function createTestsetEditor(env) {
       : "";
     $("ts-dirty").hidden = true;
     $("ts-report-enabled").checked = !!(ts && ts.report_enabled);
+    initReportLlmConfig(ts);
     const rowsEl = $("ts-messages");
     rowsEl.innerHTML = "";
     if (!ts) {
@@ -223,7 +224,7 @@ export function createTestsetEditor(env) {
     for (const rule of initialRules) {
       rulesBox.appendChild(buildRuleRow(rule));
     }
-    rulesBox.appendChild(buildAddRuleBtn(rulesBox));
+    rulesBox.appendChild(buildRuleAddBar(rulesBox));
 
     inp.addEventListener("input", markDirty);
     cb.addEventListener("change", () => {
@@ -325,32 +326,96 @@ export function createTestsetEditor(env) {
     return box;
   }
 
-  // 单条断言编辑行：类型下拉 / 值输入（值类规则才显示）/ LLM 字段区 /
-  // 删除。类型切换「LLM 评审」时值输入替换为 profile + context 下拉
+  // 「取反」开关（消息断言叶行，顶层与任意组内都提供）：表达 json / non_empty
+  // 等无否定类型的取反——包裹 {op: "not", rule: <叶>}，后端对 error 等 pass 为
+  // null 的 verdict 不取反（评审失败单列，不掩盖组合结果）
+  function buildNotCheckbox(checked) {
+    const label = document.createElement("label");
+    label.className = "ts-msg-rule-not";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = !!checked;
+    cb.title = "取反：断言通过 → 不通过、未通过 → 通过（评审失败不取反）";
+    label.append(cb, document.createTextNode("取反"));
+    cb.addEventListener("change", markDirty);
+    return label;
+  }
+
+  // 任意组容器：标签 + 删除 + 子规则区（缩进）。组内不嵌套任意组（极小化——
+  // 子行只加叶）；加载到嵌套组合数据时递归渲染兜底
+  function buildGroupRow(group) {
+    const box = document.createElement("div");
+    box.className = "ts-msg-rule-group";
+
+    const head = document.createElement("div");
+    head.className = "ts-msg-rule-group-head";
+    const tag = document.createElement("span");
+    tag.textContent = "任意组（至少一条通过）";
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "icon-btn ts-msg-rule-group-del";
+    del.textContent = "✕";
+    del.title = "删除该任意组";
+    del.addEventListener("click", () => {
+      box.remove();
+      markDirty();
+    });
+    head.append(tag, del);
+
+    const body = document.createElement("div");
+    body.className = "ts-msg-rule-group-body";
+    for (const child of group && Array.isArray(group.rules) ? group.rules : []) {
+      const row = buildRuleRow(child);
+      if (row) body.appendChild(row);
+    }
+    const add = document.createElement("button");
+    add.type = "button";
+    add.className = "ts-msg-add-rule";
+    add.textContent = "＋ 断言";
+    add.title = "在任意组内添加一条断言（组内任一断言通过即通过）";
+    add.addEventListener("click", () => {
+      body.insertBefore(buildRuleRow(null), add);
+      markDirty();
+    });
+    body.appendChild(add);
+
+    box.append(head, body);
+    return box;
+  }
+
+  // 单条断言编辑行：取反开关 / 类型下拉 / 值输入（值类规则才显示）/ LLM
+  // 字段区 / 删除。类型切换「LLM 评审」时值输入替换为 profile + context 下拉。
+  // 组合节点：op === "any" → 任意组容器（buildGroupRow 递归渲染子行）；
+  // op === "not" → 叶行 + 取反勾选（拆包展示，收集时重新包裹）
   function buildRuleRow(rule) {
+    if (rule && rule.op === "any") return buildGroupRow(rule);
+    const not = !!(rule && rule.op === "not");
+    const inner = not && rule && rule.rule ? rule.rule : rule;
+
     const wrap = document.createElement("div");
     wrap.className = "ts-msg-rule";
 
-    const sel = buildRuleTypeSelect(rule);
+    const notCb = buildNotCheckbox(not);
+    const sel = buildRuleTypeSelect(inner);
 
     const val = document.createElement("input");
     val.type = "text";
     val.className = "ts-msg-rule-value";
     val.placeholder = "断言值";
-    if (rule && RULE_VALUE_TYPES.has(rule.type)) {
-      val.value = Array.isArray(rule.value)
-        ? rule.value.join(", ")
-        : rule.value != null
-          ? String(rule.value)
+    if (inner && RULE_VALUE_TYPES.has(inner.type)) {
+      val.value = Array.isArray(inner.value)
+        ? inner.value.join(", ")
+        : inner.value != null
+          ? String(inner.value)
           : "";
     }
 
-    const llmBox = buildLlmBox(rule, true);
-    for (const inner of llmBox.querySelectorAll("select")) {
-      inner.addEventListener("change", markDirty);
+    const llmBox = buildLlmBox(inner, true);
+    for (const innerSel of llmBox.querySelectorAll("select")) {
+      innerSel.addEventListener("change", markDirty);
     }
-    for (const inner of llmBox.querySelectorAll(".ts-msg-rule-slice")) {
-      inner.addEventListener("input", markDirty);
+    for (const innerInp of llmBox.querySelectorAll(".ts-msg-rule-slice")) {
+      innerInp.addEventListener("input", markDirty);
     }
 
     const del = document.createElement("button");
@@ -374,21 +439,34 @@ export function createTestsetEditor(env) {
     val.addEventListener("input", markDirty);
     refreshValueVisible();
 
-    wrap.append(sel, val, llmBox, del);
+    wrap.append(notCb, sel, val, llmBox, del);
     return wrap;
   }
 
-  function buildAddRuleBtn(rulesBox) {
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "ts-msg-add-rule";
-    btn.textContent = "＋ 断言";
-    btn.title = "添加一条断言（多条按全部通过判定）";
-    btn.addEventListener("click", () => {
-      rulesBox.insertBefore(buildRuleRow(null), btn);
+  // 规则区底部按钮栏：「＋ 断言」与「＋ 任意组」并排（组内任一条通过即通过）
+  function buildRuleAddBar(rulesBox) {
+    const bar = document.createElement("div");
+    bar.className = "ts-msg-rule-addbar";
+    const add = document.createElement("button");
+    add.type = "button";
+    add.className = "ts-msg-add-rule";
+    add.textContent = "＋ 断言";
+    add.title = "添加一条断言（多条按全部通过判定）";
+    add.addEventListener("click", () => {
+      rulesBox.insertBefore(buildRuleRow(null), bar);
       markDirty();
     });
-    return btn;
+    const addGroup = document.createElement("button");
+    addGroup.type = "button";
+    addGroup.className = "ts-msg-add-rule ts-msg-add-group";
+    addGroup.textContent = "＋ 任意组";
+    addGroup.title = "添加一个任意组：组内断言为「或」关系，任一通过即通过";
+    addGroup.addEventListener("click", () => {
+      rulesBox.insertBefore(buildRuleRow({ op: "any", rules: [] }), bar);
+      markDirty();
+    });
+    bar.append(add, addGroup);
+    return bar;
   }
 
   // 当前选中群聊（或测试集携带快照）的池成员身份列表（pool 模式行内发送身份
@@ -597,6 +675,46 @@ export function createTestsetEditor(env) {
     };
   }
 
+  // 报告 LLM 配置（测试集级持久化）：Provider 下拉复用评审 profile 同款
+  // 「供应商（当前模型）」构建；Provider 已删除 → 保留占位选项防静默丢绑定。
+  // 缺省不单独配模型（与评审 profile 一致用 Provider 当前模型）。
+  function initReportLlmConfig(ts) {
+    const cfg =
+      ts && ts.report_llm && typeof ts.report_llm === "object" ? ts.report_llm : null;
+    const sel = $("ts-report-llm-provider");
+    sel.innerHTML =
+      `<option value="">选择 Provider…</option>` +
+      state.providers
+        .map(
+          (p) =>
+            `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name || p.id)}${
+              p.current_model ? `（${escapeHtml(p.current_model)}）` : ""
+            }</option>`,
+        )
+        .join("");
+    if (cfg && cfg.provider_id) {
+      if (!state.providers.some((p) => p.id === cfg.provider_id)) {
+        const opt = document.createElement("option");
+        opt.value = cfg.provider_id;
+        opt.textContent = `${cfg.provider_id}（Provider 已删除）`;
+        sel.appendChild(opt);
+      }
+      sel.value = cfg.provider_id;
+    }
+    $("ts-report-llm-prompt").value = (cfg && cfg.system_prompt) || "";
+  }
+
+  // 收集报告 LLM 配置 → 保存 payload 的 report_llm 字段；未选 Provider → null
+  // （后端清洗时置 None，与「未配置」一致）
+  function collectReportLlmConfig() {
+    const providerId = $("ts-report-llm-provider").value;
+    if (!providerId) return null;
+    return {
+      provider_id: providerId,
+      system_prompt: $("ts-report-llm-prompt").value,
+    };
+  }
+
   // 重建全部 profile 下拉选项（保持当前选中值；选中 profile 已被删除 → 回落空）。
   // 评审 Profile 的增删改管理在 testset_list.js，变更后经本函数刷新消息规则行
   // 与最终断言行内已渲染的下拉（testset_list.js 的 refreshReviewers 调用）
@@ -759,26 +877,50 @@ export function createTestsetEditor(env) {
     updateSegments();
   }
 
+  // 单条叶行收集：读类型/值/profile/context/切片/注入开关与「取反」勾选，
+  // 交给 pure.js 的 buildRule 构造（not 包裹 / 无效行丢弃在纯函数侧）
+  function collectLeafInput(wrap) {
+    const llmBox = wrap.querySelector(".ts-msg-rule-llm");
+    const sliceEl = llmBox.querySelector(".ts-msg-rule-slice");
+    const notEl = wrap.querySelector(".ts-msg-rule-not input");
+    return {
+      type: wrap.querySelector(".ts-msg-rule-type").value,
+      value: wrap.querySelector(".ts-msg-rule-value").value,
+      profileId: llmBox.querySelector(".ts-msg-rule-profile").value,
+      context: llmBox.querySelector(".ts-msg-rule-context").value,
+      sliceRange: sliceEl ? sliceEl.value : "",
+      injectSystemPrompt: llmBox.querySelector(".ts-msg-rule-inject input").checked,
+      not: notEl ? notEl.checked : false,
+    };
+  }
+
+  // 规则区收集：按 DOM 顺序遍历叶行与任意组容器（组内递归收集子叶），
+  // 按钮栏等非规则元素跳过；任意组输入经 collectRules 的 group 分支构造
+  function collectRuleInputsFromBox(box) {
+    const inputs = [];
+    for (const child of box.children) {
+      if (child.classList.contains("ts-msg-rule")) {
+        inputs.push(collectLeafInput(child));
+      } else if (child.classList.contains("ts-msg-rule-group")) {
+        const body = child.querySelector(".ts-msg-rule-group-body");
+        inputs.push({
+          kind: "group",
+          children: body ? collectRuleInputsFromBox(body) : [],
+        });
+      }
+    }
+    return inputs;
+  }
+
   // 收集编辑器行：DOM 读取薄包装——逐行把输入读成纯数据后交给 pure.js 的
   // collectEditorRows 构造消息列表与批量段（纯逻辑集中一处、可被 node:test
   // 动态测试）。空文本行丢弃、批量段索引基于保留后的行；每条消息带规则列表
-  // （collectRules 纯函数收集）、命令标记、可选身份（collectSender）与自动@
+  // （collectRules 纯函数收集，组合节点经 collectRuleInputsFromBox 递归）、
+  // 命令标记、可选身份（collectSender）与自动@
   function collectEditorRows() {
     const rows = [];
     for (const row of $("ts-messages").querySelectorAll(".ts-msg-row")) {
-      const ruleInputs = [];
-      for (const wrap of row.querySelectorAll(".ts-msg-rule")) {
-        const llmBox = wrap.querySelector(".ts-msg-rule-llm");
-        const sliceEl = llmBox.querySelector(".ts-msg-rule-slice");
-        ruleInputs.push({
-          type: wrap.querySelector(".ts-msg-rule-type").value,
-          value: wrap.querySelector(".ts-msg-rule-value").value,
-          profileId: llmBox.querySelector(".ts-msg-rule-profile").value,
-          context: llmBox.querySelector(".ts-msg-rule-context").value,
-          sliceRange: sliceEl ? sliceEl.value : "",
-          injectSystemPrompt: llmBox.querySelector(".ts-msg-rule-inject input").checked,
-        });
-      }
+      const ruleInputs = collectRuleInputsFromBox(row.querySelector(".ts-msg-rules"));
       const text = row.querySelector(".ts-msg-text").value;
       const rules = collectRules(ruleInputs);
       const sender = collectSender(row.querySelector(".ts-msg-sender"));
@@ -885,6 +1027,7 @@ export function createTestsetEditor(env) {
         batch_ranges: batchRanges,
         final_rules: finalRules,
         report_enabled: $("ts-report-enabled").checked,
+        report_llm: collectReportLlmConfig(),
         ...identity,
       });
       // 保存成功即清脏：否则 refreshTestsets 的 `if (!dirty)` 会跳过编辑器重绘，
@@ -1012,6 +1155,9 @@ export function createTestsetEditor(env) {
   $("btn-ts-mode").addEventListener("click", () => reportView.toggleViewMode());
   // 报告产出开关（测试集配置）：变更即脏
   $("ts-report-enabled").addEventListener("change", markDirty);
+  // 报告 LLM 配置（测试集配置）：变更即脏
+  $("ts-report-llm-provider").addEventListener("change", markDirty);
+  $("ts-report-llm-prompt").addEventListener("input", markDirty);
   // 身份配置变更：切换模式 / 单身份 / 身份池 → 刷新下拉显隐与行内发送身份
   $("ts-identity-mode").addEventListener("change", () => {
     refreshIdentityFields();

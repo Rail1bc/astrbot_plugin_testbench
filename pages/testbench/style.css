@@ -1017,6 +1017,64 @@ code {
   flex-shrink: 0;
 }
 
+/* 「取反」开关（消息断言叶行）：紧凑复选框，不换行 */
+.ts-msg-rule-not {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}
+
+.ts-msg-rule-not input {
+  margin: 0;
+  cursor: pointer;
+}
+
+/* 任意组容器：虚线边框 + 子规则区缩进，与平铺断言区分 */
+.ts-msg-rule-group {
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  padding: 4px 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ts-msg-rule-group-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.ts-msg-rule-group-head span {
+  flex: 1;
+}
+
+.ts-msg-rule-group-del {
+  flex-shrink: 0;
+}
+
+.ts-msg-rule-group-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-left: 12px;
+}
+
+/* 规则区底部按钮栏：「＋ 断言」与「＋ 任意组」并排 */
+.ts-msg-rule-addbar {
+  display: flex;
+  gap: 8px;
+  align-self: flex-start;
+}
+
 /* LLM 评审规则行：类型选择 LLM 时显示 profile + context 下拉（替代值输入）。
    本容器有 display: flex，会覆盖 UA 的 [hidden] 规则——非 LLM 类型 / 非 slice
    上下文须显式隐藏（曾导致固定规则行也显示评审 Profile 下拉） */
@@ -1259,6 +1317,31 @@ code {
   flex-shrink: 0;
 }
 
+/* 报告 LLM 配置（报告开关下方）：Provider 下拉 + 生成提示词 */
+.ts-report-llm {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.ts-report-llm-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ts-report-llm select {
+  width: auto;
+  flex-shrink: 0;
+}
+
+.ts-report-llm textarea {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+}
+
 /* ---------- 报告视图（页眉「编辑 / 报告」切换：最近运行 + 持久化报告） ---------- */
 
 /* 滚动区 + 分区 + 条目 */
@@ -1275,6 +1358,73 @@ code {
 /* display: flex 覆盖 UA 的 [hidden]——「编辑 / 报告」切换时报告体须显式隐藏 */
 .ts-report-body[hidden] {
   display: none;
+}
+
+/* LLM 报告 markdown 渲染（render_markdown.js 产物）：文本一律 textContent 渲染 */
+.md-render {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  line-height: 1.6;
+  word-break: break-word;
+}
+
+.md-render h1,
+.md-render h2,
+.md-render h3 {
+  margin: 4px 0 0;
+  line-height: 1.4;
+}
+
+.md-render p {
+  margin: 0;
+}
+
+.md-render ul,
+.md-render ol {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.md-render pre {
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-secondary);
+  overflow-x: auto;
+  white-space: pre-wrap;
+}
+
+.md-render table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+.md-render th,
+.md-render td {
+  border: 1px solid var(--border);
+  padding: 3px 8px;
+  text-align: left;
+}
+
+.md-render code {
+  background: var(--bg-secondary);
+  padding: 0 4px;
+  border-radius: 4px;
+  font-size: 11px;
+}
+
+.md-render pre code {
+  background: none;
+  padding: 0;
+}
+
+.md-render hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 4px 0;
 }
 
 .ts-report-section {

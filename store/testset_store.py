@@ -75,6 +75,7 @@ class TestsetStore(AsyncWriteMixin):
                     testset.setdefault("identity_snapshot", None)
                     testset.setdefault("pool_snapshot", None)
                     testset.setdefault("report_enabled", False)
+                    testset.setdefault("report_llm", None)
                     # 旧数据迁移：单条 rule → rules 列表；残留 rule 键清理（防随
                     # 全量写 JSON 永久残留，同 group_store 对旧 auto_at 的处理）
                     for message in testset.get("messages") or []:
@@ -225,6 +226,28 @@ class TestsetStore(AsyncWriteMixin):
             out["members"] = [m for m in members if isinstance(m, dict)]
         return out or None
 
+    @staticmethod
+    def _normalize_report_llm(report_llm: Any) -> dict | None:
+        """清洗报告 LLM 配置 {provider_id, system_prompt?, model?}。
+
+        非 dict → None（未配置）；provider_id 须为非空字符串，否则整项 None；
+        system_prompt 字符串缺省 ""（无提示词）；model 可选非空字符串保留——
+        缺省时生成报告用 Provider 当前模型（与评审 profile 一致，前端不单独配
+        模型）。
+        """
+        if not isinstance(report_llm, dict):
+            return None
+        provider_id = report_llm.get("provider_id")
+        if not isinstance(provider_id, str) or not provider_id.strip():
+            return None
+        out = {"provider_id": provider_id.strip()}
+        system_prompt = report_llm.get("system_prompt")
+        out["system_prompt"] = system_prompt if isinstance(system_prompt, str) else ""
+        model = report_llm.get("model")
+        if isinstance(model, str) and model.strip():
+            out["model"] = model.strip()
+        return out
+
     # ---------- 查询 ----------
 
     def list_testsets(self) -> list[dict]:
@@ -251,6 +274,7 @@ class TestsetStore(AsyncWriteMixin):
         identity_snapshot: Any = None,
         pool_snapshot: Any = None,
         report_enabled: Any = False,
+        report_llm: Any = None,
     ) -> dict:
         normalized = self._normalize_messages(messages)
         testset = {
@@ -268,6 +292,7 @@ class TestsetStore(AsyncWriteMixin):
             ),
             "pool_snapshot": self._clean_pool_snapshot(pool_snapshot),
             "report_enabled": bool(report_enabled),
+            "report_llm": self._normalize_report_llm(report_llm),
         }
         self._testsets.append(testset)
         self._save()
@@ -287,6 +312,7 @@ class TestsetStore(AsyncWriteMixin):
         identity_snapshot: Any = None,
         pool_snapshot: Any = None,
         report_enabled: Any = False,
+        report_llm: Any = None,
     ) -> dict | None:
         testset = self.get_testset(testset_id)
         if testset is None:
@@ -306,6 +332,7 @@ class TestsetStore(AsyncWriteMixin):
         )
         testset["pool_snapshot"] = self._clean_pool_snapshot(pool_snapshot)
         testset["report_enabled"] = bool(report_enabled)
+        testset["report_llm"] = self._normalize_report_llm(report_llm)
         self._save()
         return testset
 

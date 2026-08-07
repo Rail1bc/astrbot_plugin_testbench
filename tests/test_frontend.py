@@ -30,6 +30,7 @@ _FRONTEND_MODULES = (
     "testset_run",
     "identity_list",
     "pure",
+    "render_markdown",
 )
 
 
@@ -1025,7 +1026,7 @@ def test_frontend_llm_rule_row():
     assert 'className = "ts-msg-rule-llm"' in editor_js, "缺少 LLM 字段区容器"
     assert 'sel.value === "llm"' in editor_js, "类型切换未按 llm 显示 LLM 字段区"
     # 规则构造（buildRule）在 pure.js，编辑器把 LLM 行的 profile/context 下拉读入
-    assert 'const rule = { kind: "llm", profile_id: profileId }' in pure_js, (
+    assert '{ kind: "llm", profile_id: profileId }' in pure_js, (
         "LLM 规则未收集为 {kind: 'llm', profile_id}"
     )
     assert 'llmBox.querySelector(".ts-msg-rule-profile")' in editor_js, (
@@ -1087,6 +1088,29 @@ def test_frontend_final_rules_editor():
     )
     css = (PLUGIN_DIR / "pages" / "testbench" / "style.css").read_text(encoding="utf-8")
     assert ".ts-final-rule" in css, "style.css 缺少最终断言行样式"
+
+
+def test_frontend_combo_rule_ui():
+    """规则区须支持任意组（any）与叶行取反（not）组合算子。
+
+    任意组为嵌套容器（组内子行隐式 all）：testset_editor.js 须有「＋ 任意组」
+    入口与 .ts-msg-rule-group 组容器（组内「＋ 断言」按钮），叶行须有
+    .ts-msg-rule-not 取反复选框；pure.js 的 buildAnyGroupRule 构造
+    {op: "any", rules}、buildRule 的 not 参数包裹 {op: "not", rule}，
+    collectRules 识别 kind === "group" 的输入。
+    """
+    editor_js = _read_module("testset_editor")
+    pure_js = _read_module("pure")
+    css = (PLUGIN_DIR / "pages" / "testbench" / "style.css").read_text(encoding="utf-8")
+    assert "＋ 任意组" in editor_js, "缺少「＋ 任意组」入口"
+    assert '"ts-msg-rule-group"' in editor_js, "缺少任意组容器类"
+    assert '"ts-msg-rule-not"' in editor_js, "缺少叶行取反复选框类"
+    assert "buildAnyGroupRule(" in pure_js, "pure.js 缺少任意组构造"
+    assert 'op: "any"' in pure_js, "pure.js 未构造 {op: 'any', rules}"
+    assert 'op: "not"' in pure_js, "pure.js 未构造 {op: 'not', rule}"
+    assert 'r.kind === "group"' in pure_js, "collectRules 未识别任意组输入"
+    assert ".ts-msg-rule-group" in css, "style.css 缺少任意组容器样式"
+    assert ".ts-msg-rule-not" in css, "style.css 缺少取反复选框样式"
 
 
 def test_frontend_reviewer_profile_form():
@@ -1345,6 +1369,100 @@ def test_frontend_report_list_actions():
     assert "deleteReports([id])" in reports_js, "删除报告未调 deleteReports"
     assert "getDeps().viewTestsetRun(r.run_id)" in reports_js, (
         "最近运行查看未走 viewTestsetRun 找回"
+    )
+
+
+def test_frontend_report_three_tabs():
+    """报告详情弹窗按 3 类组织（统计 / 详情 / LLM 报告），统计不展开会话。
+
+    统计 tab 用 buildReportOverview 纯聚合（metrics_summary 聚合行 + 断言
+    通过/失败总数 + 耗时 min/max/avg/p50/p95 + 评审失败），详情 tab 完整
+    执行数据（buildResultsTable / renderFinalVerdicts）+「导出原始数据」，
+    LLM 报告 tab 本阶段为占位（阶段 3 填充）。
+    """
+    reports_js = _read_module("testset_reports")
+    assert "统计" in reports_js and "详情" in reports_js and "LLM 报告" in reports_js, (
+        "报告详情弹窗缺少 3 个 tab"
+    )
+    assert "switchReportTab(" in reports_js, "缺少报告 tab 切换"
+    assert "data.assertions" in reports_js, "统计未读断言聚合（assertions）"
+    assert "data.durations" in reports_js, "统计未读耗时聚合（durations）"
+    assert "断言：通过" in reports_js, "缺少断言统计行文案"
+    assert "耗时：平均" in reports_js, "缺少耗时统计行文案"
+    assert "导出原始数据" in reports_js, "详情 tab 缺少导出原始数据入口"
+    assert "buildLlmReportPane(" in reports_js, "缺少 LLM 报告 tab 面板"
+
+
+def test_frontend_render_markdown_module():
+    """markdown 受限子集渲染器模块存在、导出纯函数、零依赖、文本转义防 XSS。
+
+    render_markdown.js 是 LLM 报告渲染器（阶段 3 新增）：parseMarkdown /
+    parseInline 零 DOM 依赖纯函数（node:test 直接加载测试），renderMarkdownBlocks
+    以调用方提供的 doc 渲染，文本一律经 textContent / createTextNode 落（LLM
+    输出是数据不是代码，进 DOM 前不拼 innerHTML），链接 href 仅放行 http(s)/
+    mailto（其余置 "#"）。行为由 tests/frontend/render_markdown.test.mjs 覆盖，
+    这里做结构性防回归。
+    """
+    import re
+
+    md_js = _read_module("render_markdown")
+    assert "export function parseMarkdown(" in md_js, "缺少 parseMarkdown 导出"
+    assert "export function parseInline(" in md_js, "缺少 parseInline 导出"
+    assert "export function renderMarkdownBlocks(" in md_js, (
+        "缺少 renderMarkdownBlocks 导出"
+    )
+    assert not re.search(r"^\s*import\b", md_js, re.MULTILINE), (
+        "render_markdown.js 不得 import 其它模块（保持零依赖可被 node:test 直接加载）"
+    )
+    assert "innerHTML" not in md_js, (
+        "渲染器不得拼 innerHTML（转义须由 textContent 保证）"
+    )
+    assert "safeHref" in md_js, "缺少链接协议白名单 safeHref"
+    # 报告视图从该模块 import 并渲染 LLM 报告文本
+    reports_js = _read_module("testset_reports")
+    assert 'from "./render_markdown.js"' in reports_js, "报告视图未 import 渲染器"
+
+
+def test_frontend_report_llm_form():
+    """测试集编辑器报告 LLM 配置表单（Provider 下拉 + 生成提示词）+ api 封装。
+
+    report_llm 是测试集级持久化配置：编辑视图报告开关下方有 Provider 下拉 /
+    提示词输入（initReportLlmConfig 初始化、collectReportLlmConfig 收集），
+    保存 payload 携带 report_llm；api.js 提供 generateLlmReport 端点封装。
+    """
+    editor_js = _read_module("testset_editor")
+    html = (PLUGIN_DIR / "pages" / "testbench" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    assert "ts-report-llm-provider" in html, "编辑视图缺少报告 LLM Provider 下拉"
+    assert "ts-report-llm-prompt" in html, "编辑视图缺少报告 LLM 提示词输入"
+    assert "initReportLlmConfig(" in editor_js, "缺少报告 LLM 配置初始化"
+    assert "collectReportLlmConfig()" in editor_js, "缺少报告 LLM 配置收集"
+    assert "report_llm: collectReportLlmConfig()" in editor_js, (
+        "保存 payload 未携带 report_llm"
+    )
+    assert "ts-report-llm-provider" in editor_js, "编辑器未绑定报告 LLM 下拉"
+    assert "ts-report-llm-prompt" in editor_js, "编辑器未绑定报告 LLM 提示词"
+    api_js = _read_module("api")
+    assert "generateLlmReport(" in api_js, "api.js 缺少 generateLlmReport 封装"
+    assert "llm-report" in api_js, "api.js 生成端点路径缺失"
+
+
+def test_frontend_report_llm_button_and_pane():
+    """报告条目「生成 LLM 报告」按钮与详情弹窗 LLM 报告 tab（阶段 3 落地）。
+
+    报告条目按钮仅在测试集配置了 report_llm（provider_id）时显示（未配置不
+    显示，避免死按钮）；生成 / 重新生成走 generateLlmReportAction；详情弹窗
+    LLM 报告 tab 用 renderMarkdownBlocks 渲染 markdown（无产物时给引导提示）。
+    """
+    reports_js = _read_module("testset_reports")
+    assert "生成 LLM 报告" in reports_js, "报告条目缺少生成 LLM 报告按钮"
+    assert "重新生成 LLM 报告" in reports_js, "缺少重新生成 LLM 报告文案"
+    assert "generateLlmReportAction(" in reports_js, "缺少生成 LLM 报告动作"
+    assert "renderMarkdownBlocks(" in reports_js, "LLM 报告 tab 未用渲染器渲染"
+    assert "未生成 LLM 报告" in reports_js, "缺少未生成 LLM 报告引导提示"
+    assert "ts.report_llm && ts.report_llm.provider_id" in reports_js, (
+        "生成按钮未按 report_llm 配置显隐"
     )
 
 
