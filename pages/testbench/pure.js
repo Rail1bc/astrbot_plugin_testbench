@@ -44,37 +44,66 @@ export function rangesFromFlags(flags) {
 // {from, to} 区间列表写入 rule.slice_range，空 / "all" / 非法输入不写入
 // （回退该步及之前全部记录）。injectSystemPrompt（LLM 规则级「注入被测
 // Agent 系统提示词」开关，缺省开启）：显式 false 才写入
-// rule.inject_system_prompt（缺省时后端按开启处理，字段保持干净）
-export function buildRule(type, value, profileId, context, sliceRange, injectSystemPrompt) {
+// rule.inject_system_prompt（缺省时后端按开启处理，字段保持干净）。
+// not（「取反」开关，仅叶）：true 时包裹 {op: "not", rule: <叶>}——表达
+// json / non_empty 等无否定类型的取反；LLM 叶同样可取反（后端对 error 等
+// pass 为 null 的 verdict 不取反，只取反确定的 bool）
+export function buildRule(
+  type,
+  value,
+  profileId,
+  context,
+  sliceRange,
+  injectSystemPrompt,
+  not,
+) {
+  let rule;
   if (!type) return null;
   if (type === "llm") {
     if (!profileId) return null;
-    const rule = { kind: "llm", profile_id: profileId };
+    rule = { kind: "llm", profile_id: profileId };
     if (context) rule.context = context;
     if (context === "slice" && sliceRange) {
       const sc = parseSliceRange(sliceRange);
       if (sc && sc !== "all") rule.slice_range = sc;
     }
     if (injectSystemPrompt === false) rule.inject_system_prompt = false;
-    return rule;
-  }
-  if (RULE_VALUE_TYPES.has(type)) {
+  } else if (RULE_VALUE_TYPES.has(type)) {
     const v = String(value == null ? "" : value).trim();
     if (!v) return null;
     if (type === "min_len" || type === "max_len") {
       const n = Number(v);
-      return Number.isInteger(n) ? { type, value: n } : null;
+      rule = Number.isInteger(n) ? { type, value: n } : null;
+    } else {
+      rule = { type, value: v };
     }
-    return { type, value: v };
+  } else {
+    rule = { type };
   }
-  return { type };
+  if (!rule) return null;
+  return not ? { op: "not", rule } : rule;
+}
+
+// 任意组构造：children 为该组的子规则输入列表（隐式 all，任一子规则通过
+// 即通过）→ {op: "any", rules}；全部子行无效 → null（收集时丢弃空组）。
+// 组内不嵌套任意组——编辑器组行内只加叶行，故 children 走 collectRules
+// （其 group 分支理论上不会在组内出现，保持兼容）
+export function buildAnyGroupRule(childInputs) {
+  const rules = collectRules(childInputs);
+  return rules.length ? { op: "any", rules } : null;
 }
 
 // 行内多断言收集：ruleInputs 为 [{type, value, profileId, context, sliceRange?,
-// injectSystemPrompt?}]，buildRule 归为 null 的整行丢弃
+// injectSystemPrompt?, not?}]，buildRule 归为 null 的整行丢弃；kind === "group"
+// 的输入（任意组行，children 为子规则输入列表）经 buildAnyGroupRule 收集
 export function collectRules(ruleInputs) {
   const rules = [];
   for (const r of ruleInputs || []) {
+    if (r && r.kind === "group") {
+      const group = buildAnyGroupRule(r.children);
+      if (group) rules.push(group);
+      continue;
+    }
     const rule = buildRule(
       r.type,
       r.value,
@@ -82,6 +111,7 @@ export function collectRules(ruleInputs) {
       r.context,
       r.sliceRange,
       r.injectSystemPrompt,
+      r.not,
     );
     if (rule) rules.push(rule);
   }

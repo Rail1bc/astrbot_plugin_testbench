@@ -7,6 +7,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  buildAnyGroupRule,
   buildRule,
   collectEditorRows,
   collectRules,
@@ -176,6 +177,82 @@ test("collectRules: 丢弃 buildRule 归 null 的行", () => {
     { type: "contains", value: "x" },
     { kind: "llm", profile_id: "rp_1", context: "reply" },
   ]);
+});
+
+// ---------- 组合算子（any / not） ----------
+
+test("buildRule: not=true 包裹机械叶", () => {
+  assert.deepEqual(buildRule("contains", "x", "", "", "", undefined, true), {
+    op: "not",
+    rule: { type: "contains", value: "x" },
+  });
+});
+
+test("buildRule: not=true 包裹 LLM 叶", () => {
+  assert.deepEqual(buildRule("llm", "", "rp_1", "reply", "", undefined, true), {
+    op: "not",
+    rule: { kind: "llm", profile_id: "rp_1", context: "reply" },
+  });
+});
+
+test("buildRule: not=false / 空类型不包裹", () => {
+  assert.deepEqual(buildRule("contains", "x", "", "", "", undefined, false), {
+    type: "contains",
+    value: "x",
+  });
+  assert.equal(buildRule("", "x", "", "", "", undefined, true), null);
+});
+
+test("buildAnyGroupRule: 空子输入 → null（空组丢弃）", () => {
+  assert.equal(buildAnyGroupRule([]), null);
+  assert.equal(buildAnyGroupRule([{ type: "", value: "", profileId: "", context: "" }]), null);
+});
+
+test("buildAnyGroupRule: 收集子规则 → {op: 'any', rules}", () => {
+  assert.deepEqual(
+    buildAnyGroupRule([
+      { type: "contains", value: "a", profileId: "", context: "" },
+      { type: "json", value: "", profileId: "", context: "" },
+    ]),
+    { op: "any", rules: [{ type: "contains", value: "a" }, { type: "json" }] },
+  );
+});
+
+test("collectRules: kind='group' → 任意组节点（组内 not 子叶保留）", () => {
+  assert.deepEqual(
+    collectRules([
+      { type: "contains", value: "x", profileId: "", context: "" },
+      {
+        kind: "group",
+        children: [
+          { type: "contains", value: "a", profileId: "", context: "", not: true },
+          { type: "non_empty", value: "", profileId: "", context: "" },
+        ],
+      },
+      { type: "regex", value: "  ", profileId: "", context: "" },
+    ]),
+    [
+      { type: "contains", value: "x" },
+      {
+        op: "any",
+        rules: [
+          { op: "not", rule: { type: "contains", value: "a" } },
+          { type: "non_empty" },
+        ],
+      },
+    ],
+  );
+});
+
+test("collectRules: 空组与无效组内行丢弃", () => {
+  assert.deepEqual(
+    collectRules([
+      { kind: "group", children: [] },
+      { kind: "group", children: [{ type: "", value: "", profileId: "", context: "" }] },
+      { kind: "group", children: [{ type: "llm", value: "", profileId: "", context: "reply" }] },
+    ]),
+    [],
+  );
 });
 
 // ---------- rangesFromFlags ----------
