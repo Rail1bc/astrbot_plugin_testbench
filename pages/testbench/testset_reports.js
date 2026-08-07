@@ -8,12 +8,14 @@
 // 持有陈旧引用。
 import {
   deleteReports,
+  generateLlmReport,
   listReports,
   listTestsetRuns,
   retryReviews,
 } from "./api.js";
 import { openModal, showModal } from "./modal.js";
 import { escapeHtml } from "./utils.js";
+import { parseMarkdown, renderMarkdownBlocks } from "./render_markdown.js";
 import { buildResultsTable, renderFinalVerdicts } from "./testset_run.js";
 
 const $ = (id) => document.getElementById(id);
@@ -213,6 +215,18 @@ export function createReportView(deps) {
     exportBtn.className = "btn small";
     exportBtn.textContent = "导出";
     exportBtn.addEventListener("click", () => exportReport(report));
+    actions.append(view, exportBtn);
+    // 「生成 LLM 报告」：仅该测试集配置了报告 LLM（report_llm）时显示，未配置
+    // 不显示（避免死按钮）
+    const ts = currentSelected();
+    if (ts && ts.report_llm && ts.report_llm.provider_id) {
+      const llmBtn = document.createElement("button");
+      llmBtn.className = "btn small";
+      llmBtn.textContent = data.llm_report ? "重新生成 LLM 报告" : "生成 LLM 报告";
+      llmBtn.title = "按测试集配置的报告 LLM 生成 markdown 总结报告";
+      llmBtn.addEventListener("click", () => generateLlmReportAction(report));
+      actions.appendChild(llmBtn);
+    }
     const stats = retryableReportStats(data);
     if (stats.total) {
       const retryFail = document.createElement("button");
@@ -226,9 +240,7 @@ export function createReportView(deps) {
       retryAll.textContent = "重试全部";
       retryAll.title = "重跑报告的全部 LLM 评审";
       retryAll.addEventListener("click", () => confirmRetryReviews(report, "all"));
-      actions.append(view, exportBtn, retryFail, retryAll);
-    } else {
-      actions.append(view, exportBtn);
+      actions.append(retryFail, retryAll);
     }
     const del = document.createElement("button");
     del.className = "btn small danger";
@@ -256,8 +268,11 @@ export function createReportView(deps) {
     });
   }
 
-  // 报告总览：metrics_summary 逐指标聚合行（number 平均/极值、enum 分类计数、
-  // bool 通过率）+ 评审失败数；无聚合指标 → 提示
+  // 报告总览（统计 tab）：纯聚合，不展开单独会话的断言。metrics_summary 逐指标
+  // 聚合行（number 平均/极值、enum 分类计数、bool 通过率）+ 断言通过/失败总数 +
+  // 耗时 min/max/avg/p50/p95 + 评审失败数；无聚合指标 → 提示。
+  // 断言 / 耗时统计为报告 3 类组织的「统计」数据源（build_report_data 产物），
+  // 旧报告缺字段时跳过对应行（兼容）。
   function buildReportOverview(data) {
     const sum = data.metrics_summary || {};
     const metrics = sum.metrics || {};
@@ -277,6 +292,18 @@ export function createReportView(deps) {
         lines.push(`${key}: 通过 ${m.pass}/${m.total}（${(m.rate * 100).toFixed(1)}%）`);
       }
     }
+    const asserts = data.assertions;
+    if (asserts && asserts.total) {
+      lines.push(
+        `断言：通过 ${asserts.passed} / 失败 ${asserts.failed}（共 ${asserts.total} 条）`,
+      );
+    }
+    const dur = data.durations;
+    if (dur && dur.count) {
+      lines.push(
+        `耗时：平均 ${dur.avg} / 最小 ${dur.min} / 最大 ${dur.max} / p50 ${dur.p50} / p95 ${dur.p95}（${dur.count} 条）`,
+      );
+    }
     if (sum.review_failures) lines.push(`评审失败 ${sum.review_failures} 条`);
     if (!lines.length) {
       const hint = document.createElement("span");
@@ -294,9 +321,59 @@ export function createReportView(deps) {
     return wrap;
   }
 
-  // 报告详情弹窗：总览 + 结果表格 + 最终断言表（与运行结果弹窗共用
-  // buildResultsTable / renderFinalVerdicts，数据即持久化报告快照）。
-  // retryCtx 传给表格：verdict 详情弹窗可单条重试评审，成功后回调刷新报告视图
+  // 生成 / 重新生成 LLM 报告：调生成端点后重渲染报告视图并提示
+  function generateLlmReportAction(report) {
+    showRunStatus("warn", "正在生成 LLM 报告…");
+    void generateLlmReport(report.id).then(
+      () => {
+        void renderReportView();
+        showRunStatus("ok", "LLM 报告已生成");
+      },
+      (err) => {
+        showRunStatus(
+          "error",
+          err && err.message ? `LLM 报告生成失败：${err.message}` : "LLM 报告生成失败",
+        );
+      },
+    );
+  }
+
+  // LLM 报告 tab 面板：data.llm_report 存在 → markdown 渲染（textContent 转义）
+  // + 重新生成；未生成 → 提示（配置报告 LLM 后经报告条目按钮生成）
+  function buildLlmReportPane(data, report) {
+    const wrap = document.createElement("div");
+    wrap.className = "ts-report-meta";
+    const llm = data.llm_report;
+    if (llm && typeof llm.text === "string" && llm.text) {
+      const head = document.createElement("div");
+      head.className = "metrics-summary";
+      const providerName = llm.provider_id || "";
+      const modelText = llm.model ? ` / ${llm.model}` : "";
+      head.textContent = `由 ${providerName}${modelText} 生成于 ${getDeps().formatTime(llm.generated_at)}`;
+      wrap.appendChild(head);
+      wrap.appendChild(renderMarkdownBlocks(parseMarkdown(llm.text), document));
+      const ts = currentSelected();
+      if (ts && ts.report_llm && ts.report_llm.provider_id) {
+        const regen = document.createElement("button");
+        regen.className = "btn small";
+        regen.textContent = "重新生成";
+        regen.addEventListener("click", () => generateLlmReportAction(report));
+        wrap.appendChild(regen);
+      }
+      return wrap;
+    }
+    const hint = document.createElement("span");
+    hint.className = "hint";
+    hint.textContent = "未生成 LLM 报告。测试集配置报告 LLM 后，在报告条目点击「生成 LLM 报告」。";
+    wrap.appendChild(hint);
+    return wrap;
+  }
+
+  // 报告详情弹窗：按「统计 / 详情 / LLM 报告」3 类组织（用户拍板）。统计 tab
+  // 纯聚合不展开会话；详情 tab 为完整执行数据（逐步骤×会话×verdict 明细，与
+  // 运行结果弹窗共用 buildResultsTable / renderFinalVerdicts，数据即持久化报告
+  // 快照）+ 导出原始数据；LLM 报告 tab 阶段 3 填充。retryCtx 传给表格：
+  // verdict 详情弹窗可单条重试评审，成功后回调刷新报告视图
   function openReportModal(report) {
     const data = report.data || {};
     const retryCtx = {
@@ -307,10 +384,63 @@ export function createReportView(deps) {
     const content = document.createElement("div");
     content.className = "form-col";
     content.style.gap = "8px";
-    content.appendChild(buildReportOverview(data));
-    content.appendChild(buildResultsTable(data, retryCtx));
+
+    const tabBar = document.createElement("div");
+    tabBar.className = "tab-bar";
+
+    // 统计：纯聚合（buildReportOverview），不展开单独会话的具体断言
+    const statsPane = document.createElement("div");
+    statsPane.dataset.pane = "stats";
+    statsPane.appendChild(buildReportOverview(data));
+    // 详情：完整执行数据（逐步骤×会话×规则明细）+ 导出原始数据
+    const detailPane = document.createElement("div");
+    detailPane.dataset.pane = "detail";
+    detailPane.appendChild(buildResultsTable(data, retryCtx));
     const finalTable = renderFinalVerdicts(data, retryCtx);
-    if (finalTable) content.appendChild(finalTable);
+    if (finalTable) detailPane.appendChild(finalTable);
+    const exportBtn = document.createElement("button");
+    exportBtn.className = "btn small";
+    exportBtn.textContent = "导出原始数据";
+    exportBtn.title = "导出该报告完整 JSON（逐步骤×会话×verdict 明细与统计）";
+    exportBtn.addEventListener("click", () => exportReport(report));
+    detailPane.appendChild(exportBtn);
+    // LLM 报告：data.llm_report → markdown 渲染 + 重新生成；未生成 → 提示
+    const llmPane = document.createElement("div");
+    llmPane.dataset.pane = "llm";
+    llmPane.appendChild(buildLlmReportPane(data, report));
+
+    const tabs = [
+      ["stats", "统计"],
+      ["detail", "详情"],
+      ["llm", "LLM 报告"],
+    ];
+    for (const [key, label] of tabs) {
+      const btn = document.createElement("button");
+      btn.className = "tab-btn";
+      btn.textContent = label;
+      btn.dataset.tab = key;
+      btn.addEventListener("click", () => switchReportTab(key));
+      tabBar.appendChild(btn);
+    }
+    content.appendChild(tabBar);
+    content.appendChild(statsPane);
+    content.appendChild(detailPane);
+    content.appendChild(llmPane);
+
+    function switchReportTab(tab) {
+      tabBar.querySelectorAll(".tab-btn").forEach((b) => {
+        b.classList.toggle("active", b.dataset.tab === tab);
+      });
+      for (const [key, pane] of [
+        ["stats", statsPane],
+        ["detail", detailPane],
+        ["llm", llmPane],
+      ]) {
+        pane.hidden = key !== tab;
+      }
+    }
+    switchReportTab("stats");
+
     openModal({
       title: `报告 · ${data.testset_name || ""}`,
       content,
