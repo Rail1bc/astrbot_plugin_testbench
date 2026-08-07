@@ -1,3 +1,5 @@
+/* ---------- 主题变量与基础 ---------- */
+
 :root {
   --bg: #f5f6f8;
   --card-bg: #ffffff;
@@ -110,6 +112,8 @@ body.sidebar-collapsed .sidebar {
   display: none;
 }
 
+/* ---------- 工作区布局（状态条 / 三互斥视图 / 面板区） ---------- */
+
 .workspace {
   flex: 1;
   display: flex;
@@ -155,6 +159,8 @@ body.sidebar-collapsed .sidebar {
   min-height: 0;
   display: flex;
 }
+
+/* ---------- 通用组件：页面头部 / 卡片 / 表单 / 按钮 / 徽标 / 提示 ---------- */
 
 .page-header h1 {
   margin: 0 0 4px;
@@ -688,6 +694,8 @@ code {
   opacity: 0.5;
 }
 
+/* ---------- 测试集条目与结果展示（侧栏条目 / 最近运行 / 状态 chip / 结果表格 / verdict） ---------- */
+
 /* 左侧测试集列表：纯命名条目（选中后右侧编辑窗口管理） */
 .testset-nav-item {
   border: 1px solid var(--border);
@@ -861,7 +869,9 @@ code {
   font-size: 12px;
 }
 
-/* 测试集编辑窗口（右侧视图）：头部 + 消息行 + 批量段摘要 */
+/* ---------- 测试集编辑窗口（右侧视图） ---------- */
+
+/* 头部 + 消息行 + 批量段摘要 */
 .testset-editor {
   flex: 1;
   min-height: 0;
@@ -1218,7 +1228,9 @@ code {
   flex-shrink: 0;
 }
 
-/* 报告视图（页眉「报告」切换）：滚动区 + 分区 + 条目 */
+/* ---------- 报告视图（页眉「编辑 / 报告」切换：最近运行 + 持久化报告） ---------- */
+
+/* 滚动区 + 分区 + 条目 */
 .ts-report-body {
   flex: 1;
   min-height: 0;
@@ -1290,7 +1302,9 @@ code {
   color: var(--text-secondary);
 }
 
-/* 群聊编辑视图（右侧「身份与群聊」视图的工作区）：头部 + 成员区 + 搜索添加区 */
+/* ---------- 群聊编辑视图（右侧「身份与群聊」工作区） ---------- */
+
+/* 头部 + 成员区 + 搜索添加区 */
 .chat-group-editor {
   flex: 1;
   min-height: 0;

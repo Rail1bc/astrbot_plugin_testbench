@@ -5,6 +5,14 @@
 <!-- markdownlint-disable MD041 -->
 # ChangeLog
 
+## [v0.4.4] - 2026-08-07
+
+### 🧹 Chores / Refactoring (重构与工程化)
+
+- **巨型文件拆分（Phase 4）**：`testset_editor.js`（1456 行）的报告视图拆到新模块 `pages/testbench/testset_reports.js`（348 行）——`createReportView(deps)` 工厂持有「编辑 / 报告」视图切换状态（viewMode）、最近运行 / 持久化报告列表 / 指标聚合总览 / 详情弹窗 / 导出 / 删除 / 评审重试全部随迁，编辑器只保留 `#btn-ts-mode` 切换按钮绑定与 `renderTestsetEditor` 末尾按当前视图刷新报告页的入口（`reportView.syncViewModeUI()` / `reportView.isReportMode()`）；`getDeps` 经闭包包装取最新绑定（`setDeps` 会重赋值编辑器闭包变量）。`testset_editor.js` 降到 998 行。配套：前端 ES module 清单（`_FRONTEND_MODULES` 与 CI js-check 循环）加入 `testset_reports`，`test_frontend_report_editor_toggle` / `test_frontend_report_list_actions` 断言重定向到新模块。
+
+---
+
 ## [v0.4.3] - 2026-08-07
 
 ### ⚡ Performance (性能优化)

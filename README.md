@@ -5,7 +5,7 @@
 一个为 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 设计的虚拟会话并发测试插件。
 
 > [!NOTE]
-> 当前版本 v0.4.3，支持测试组模型、并行会话查看、逐会话独立刷新、群发重叠发送（agent 处理中可再次群发）、面板在途消息实时状态、群发会话实时统计与历史 JSON 编辑 / 重新生成；并支持群聊消息类型与自动@、测试身份与虚拟群聊、群消息流视图与唤醒状态反馈。
+> 当前版本 v0.4.4，支持测试组模型、并行会话查看、逐会话独立刷新、群发重叠发送（agent 处理中可再次群发）、面板在途消息实时状态、群发会话实时统计与历史 JSON 编辑 / 重新生成；并支持群聊消息类型与自动@、测试身份与虚拟群聊、群消息流视图与唤醒状态反馈。
 
 ## ✨ 功能特性
 
@@ -52,7 +52,7 @@ data/plugins/astrbot_plugin_testbench/
 ├─ metadata.yaml         # 插件元数据信息
 ├─ CHANGELOG.md          # 更新日志
 ├─ README.md             # 插件说明文档
-├─ pages/testbench/      # 插件页面（前端：app/api/align/chat/state/utils/modal/group_list/testset_list/testset_editor/identity_list/events/testset_run/pure.js + index.html/style.css）
+├─ pages/testbench/      # 插件页面（前端：app/api/align/chat/state/utils/modal/group_list/testset_list/testset_editor/testset_reports/identity_list/events/testset_run/pure.js + index.html/style.css）
 └─ .github/              # GitHub 工作流与协作模板
 ```
 
