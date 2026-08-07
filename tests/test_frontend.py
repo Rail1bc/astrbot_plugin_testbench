@@ -811,6 +811,62 @@ def test_frontend_rules_editor():
     assert ".ts-msg-rule-value" in css, "style.css 缺少断言值输入样式"
 
 
+def test_frontend_message_editor_defaults_and_slice():
+    """测试集编辑视图 UI 优化：默认 0 断言 / 消息框纵向拉伸 / 固定规则隐藏
+    profile / slice 上下文范围配置。
+
+    - 新消息默认无断言行（renderMsgRow 回退空列表，不再渲染一条「无」类型行）。
+    - 消息文本为 textarea（可纵向拉伸，长文本输入），style.css 限高。
+    - `.ts-msg-rule-llm` 有 display:flex 覆盖 UA 的 [hidden]——须显式
+      `[hidden]` 规则，否则固定规则行也显示评审 Profile 下拉（曾出现）。
+    - LLM 规则 context=slice 时提供切片范围输入（.ts-msg-rule-slice），
+      buildRule 解析为 slice_range 0 基 {from,to}（纯函数层另由 node:test 覆盖）。
+    """
+    editor_js = _read_module("testset_editor")
+    pure_js = _read_module("pure")
+    assert "[null]" not in editor_js, "新消息仍默认渲染一条空断言行（应默认 0 断言）"
+    assert 'document.createElement("textarea")' in editor_js, "消息文本未用 textarea"
+    assert 'className = "ts-msg-text"' in editor_js, "消息框未保留 .ts-msg-text 类"
+    css = (PLUGIN_DIR / "pages" / "testbench" / "style.css").read_text(encoding="utf-8")
+    assert ".ts-msg-rule-llm[hidden]" in css, (
+        "style.css 未显式隐藏非 LLM 类型的 .ts-msg-rule-llm（display:flex 覆盖 [hidden]）"
+    )
+    # 同根因的 display:flex 覆盖 [hidden] 遗漏（对抗性审计发现，顺带修复）：
+    # .ts-report-body（编辑/报告切换失效）/ .cg-members（未选群聊仍占位）/ .panel-pending（空条不隐藏）
+    for sel in (
+        ".ts-report-body[hidden]",
+        ".cg-members[hidden]",
+        ".panel-pending[hidden]",
+    ):
+        assert sel in css, f"style.css 缺少 {sel}（display:flex 覆盖 [hidden]）"
+    assert "min-height: 34px" in css and "max-height: 180px" in css, (
+        "style.css 未给消息框限高（text 消息可纵向拉伸）"
+    )
+    assert "ts-msg-rule-slice" in editor_js, "testset_editor.js 缺少切片范围输入"
+    assert ".ts-msg-rule-slice" in css, "style.css 缺少切片范围输入样式"
+    assert "slice_range" in pure_js, "buildRule 未支持 slice_range"
+    assert "parseScope(" in pure_js, "buildRule 未复用 parseScope 解析切片范围"
+
+
+def test_frontend_run_status_scroll():
+    """状态条消息内容固定高度、过长滚动（常态，不限于执行测试集）。
+
+    运行状态条（.run-status）直接内联当前消息内容——测试集运行进度含完整
+    stepText，长文本 / 多行消息会把状态条顶高、挤压下方视图。须限高 +
+    纵向滚动查看并保留换行（pre-wrap），任何来源的状态消息都受此约束。
+    """
+    css = (PLUGIN_DIR / "pages" / "testbench" / "style.css").read_text(encoding="utf-8")
+    assert "max-height: 72px" in css, (
+        "style.css 未给 .run-status 限高（长消息挤压视图）"
+    )
+    assert "overflow-y: auto" in css, (
+        "style.css 未给 .run-status 滚动（过长内容无法查看）"
+    )
+    assert "white-space: pre-wrap" in css, (
+        "style.css 未保留状态消息换行（多行消息折叠）"
+    )
+
+
 def test_frontend_testset_identity_config():
     """测试集编辑窗口须含身份配置（single 单一身份 / pool 身份池）。
 

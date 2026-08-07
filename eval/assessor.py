@@ -4,10 +4,13 @@
 
 - **消息规则**：每条已 done 步骤 × 每会话 × 每条规则。机械规则同步评估；
   若某条机械规则未通过，同步骤后续 LLM 规则跳过（短路——成本 / 不确定性
-  控制）。verdicts 写入该步骤对应会话的 results。
+  控制）。verdicts 写入该步骤对应会话的 results。LLM 规则 context=slice 时可
+  配 ``rule.slice_range``（{from, to} 0 基闭区间）限定喂给评审 LLM 的记录
+  区间（未配时与 record 等效，即该步及之前全部记录）。
 - **final_rules**：测试集级跨轮评估。每条 final_rule × 每会话，按 scope 切片
   步骤后评估整段记录；机械规则评估切片回复的拼接文本，LLM 规则按
-  context（reply / record / slice）取上下文。产物存 run 级 final_verdicts。
+  context（reply / record / slice）取上下文（final rule 的范围由 scope 承担，
+  不再配 slice_range）。产物存 run 级 final_verdicts。
 
 verdict 结构见 eval/reviewer.py：ok / error / invalid + 类型化 metrics + 派生 pass。
 """
@@ -111,7 +114,6 @@ class Assessor:
         for result in step.get("results") or []:
             reply = result.get("reply") or ""
             entries = self._record_entries(steps, si, result)
-            record = format_record(entries)
             agent_system_prompt = _session_agent_system_prompt(result)
             if entries:
                 input_text = entries[-1][0]
@@ -132,7 +134,7 @@ class Assessor:
                                 rule,
                                 input_text,
                                 reply,
-                                record,
+                                entries,
                                 agent_system_prompt,
                                 user_name,
                             )
@@ -248,7 +250,7 @@ class Assessor:
                         rule,
                         scoped[-1][0],
                         scoped[-1][1],
-                        format_record(scoped),
+                        scoped,
                         agent_system_prompt,
                         scoped[-1][2],
                     )
@@ -261,13 +263,35 @@ class Assessor:
 
     # ---------- LLM 规则 ----------
 
+    @staticmethod
+    def _slice_entries(entries: list, slice_range: object) -> list:
+        """按规则 slice_range（{from, to} 0 基闭区间）切片记录；未配置 / 非法 → 原样。
+
+        边界由本函数钳制（同 `_scope_indices` 语义）：越界裁剪、倒序返回空、
+        非 {from, to} 形状回退全部——消息规则 context=slice 时用
+        ``rule.slice_range`` 限定喂给评审 LLM 的记录区间。
+        """
+        if (
+            isinstance(slice_range, dict)
+            and isinstance(slice_range.get("from"), int)
+            and isinstance(slice_range.get("to"), int)
+            and not isinstance(slice_range["from"], bool)
+            and not isinstance(slice_range["to"], bool)
+        ):
+            frm = max(0, slice_range["from"])
+            to = min(len(entries) - 1, slice_range["to"])
+            if frm > to:
+                return []
+            return entries[frm : to + 1]
+        return entries
+
     async def _eval_llm_rule(
         self,
         rule_index: int,
         rule: dict,
         input_text: str,
         reply: str,
-        record: str,
+        entries: list,
         agent_system_prompt: str | None = None,
         user_name: str = "测试台",
     ) -> dict:
@@ -284,7 +308,9 @@ class Assessor:
         if context_mode == "reply":
             context_text = format_turn(input_text, reply, user_name, BOT_SELF_ID)
         else:
-            context_text = record
+            context_text = format_record(
+                self._slice_entries(entries, rule.get("slice_range"))
+            )
         metrics, error, status, raw = await call_reviewer(
             self.context,
             profile,

@@ -49,8 +49,10 @@ const RULE_TYPES = [
 ];
 
 // LLM 评审规则的上下文模式（与后端 reviewer profile 的 context 枚举一致）：
-// reply 仅该步回复；record 为该步及之前全部对话记录；slice 与 record 同为
-// 记录切片（对消息规则等效，最终断言按 scope 切片后也是记录文本）。
+// reply 仅该步回复；record 为该步及之前全部对话记录；slice 为记录切片——
+// 消息规则可选配 slice_range（行内切片范围输入，2-4/3/空）限定记录区间，
+// 未配范围时与 record 等效；最终断言按 scope 切片后也是记录文本（范围由
+// 行内 scope 输入承担，不再重复配 slice_range）。
 // 导出给 testset_list.js（评审 Profile 管理已迁到列表侧，表单共用本枚举）。
 export const CONTEXT_MODES = [  ["", "（用 Profile 默认）"],
   ["reply", "该步回复"],
@@ -150,8 +152,9 @@ export function createTestsetEditor(env) {
     idxEl.className = "ts-msg-idx";
     idxEl.textContent = idx + 1;
 
-    const inp = document.createElement("input");
-    inp.type = "text";
+    // 消息可能为长文本：textarea 支持纵向拉伸（resize: vertical，见 style.css）
+    const inp = document.createElement("textarea");
+    inp.rows = 1;
     inp.className = "ts-msg-text";
     inp.placeholder = "消息文本";
     if (msg) inp.value = msg.text || "";
@@ -209,11 +212,12 @@ export function createTestsetEditor(env) {
 
     line.append(idxEl, inp, cmd, senderSel, autoAt, batch, del);
 
-    // 多断言列表：默认 all（全部子规则须通过）
+    // 多断言列表：默认 all（全部子规则须通过）；新消息默认无断言，
+    // 按需点「＋ 断言」添加
     const rulesBox = document.createElement("div");
     rulesBox.className = "ts-msg-rules";
     const initialRules =
-      msg && Array.isArray(msg.rules) && msg.rules.length ? msg.rules : [null];
+      msg && Array.isArray(msg.rules) && msg.rules.length ? msg.rules : [];
     for (const rule of initialRules) {
       rulesBox.appendChild(buildRuleRow(rule));
     }
@@ -263,7 +267,7 @@ export function createTestsetEditor(env) {
   function buildContextSelect(rule) {
     const sel = document.createElement("select");
     sel.className = "ts-msg-rule-context";
-    sel.title = "评审上下文：仅该步回复 / 该步及之前全部对话记录";
+    sel.title = "评审上下文：仅该步回复 / 该步及之前全部对话记录 / 范围切片记录";
     sel.innerHTML = CONTEXT_MODES.map(
       ([v, label]) => `<option value="${v}">${label}</option>`,
     ).join("");
@@ -271,11 +275,34 @@ export function createTestsetEditor(env) {
     return sel;
   }
 
-  // LLM 规则字段区（profile + context 下拉）；规则行与最终断言行共用
-  function buildLlmBox(rule) {
+  // 切片范围输入（context = slice 时显示）：复用最终断言 scope 的格式，
+  // 相对当前步记录钳制（2-4 = 第 2 到第 4 步，3 = 仅第 3 步，空 = 全部）
+  function buildSliceInput(rule) {
+    const inp = document.createElement("input");
+    inp.type = "text";
+    inp.className = "ts-msg-rule-slice";
+    inp.placeholder = "切片范围";
+    inp.title =
+      "切片范围（仅「范围切片记录」上下文）：留空 = 当前步及之前全部，2-4 = 第 2 到第 4 步，3 = 仅第 3 步";
+    if (rule && rule.slice_range) inp.value = scopeToText(rule.slice_range);
+    return inp;
+  }
+
+  // LLM 规则字段区（profile + context 下拉 + 可选切片范围输入）；规则行与
+  // 最终断言行共用。withSlice 为真时（消息规则）提供切片范围输入——最终断言
+  // 的范围由行内 scope 输入承担，不重复配置
+  function buildLlmBox(rule, withSlice) {
     const box = document.createElement("span");
     box.className = "ts-msg-rule-llm";
-    box.append(buildProfileSelect(rule), buildContextSelect(rule));
+    const ctxSel = buildContextSelect(rule);
+    const sliceInp = withSlice ? buildSliceInput(rule) : null;
+    const refreshSliceVisible = () => {
+      if (sliceInp) sliceInp.hidden = ctxSel.value !== "slice";
+    };
+    ctxSel.addEventListener("change", refreshSliceVisible);
+    refreshSliceVisible();
+    box.append(buildProfileSelect(rule), ctxSel);
+    if (sliceInp) box.append(sliceInp);
     return box;
   }
 
@@ -299,9 +326,12 @@ export function createTestsetEditor(env) {
           : "";
     }
 
-    const llmBox = buildLlmBox(rule);
+    const llmBox = buildLlmBox(rule, true);
     for (const inner of llmBox.querySelectorAll("select")) {
       inner.addEventListener("change", markDirty);
+    }
+    for (const inner of llmBox.querySelectorAll(".ts-msg-rule-slice")) {
+      inner.addEventListener("input", markDirty);
     }
 
     const del = document.createElement("button");
@@ -608,6 +638,9 @@ export function createTestsetEditor(env) {
     for (const inner of llmBox.querySelectorAll("select")) {
       inner.addEventListener("change", markDirty);
     }
+    for (const inner of llmBox.querySelectorAll(".ts-msg-rule-slice")) {
+      inner.addEventListener("input", markDirty);
+    }
     const scope = document.createElement("input");
     scope.type = "text";
     scope.className = "ts-final-rule-scope";
@@ -646,11 +679,13 @@ export function createTestsetEditor(env) {
     for (const wrap of $("ts-final-rules").querySelectorAll(".ts-final-rule")) {
       const type = wrap.querySelector(".ts-msg-rule-type").value;
       const llmBox = wrap.querySelector(".ts-msg-rule-llm");
+      const sliceEl = llmBox.querySelector(".ts-msg-rule-slice");
       const rule = buildRule(
         type,
         wrap.querySelector(".ts-msg-rule-value").value,
         llmBox.querySelector(".ts-msg-rule-profile").value,
         llmBox.querySelector(".ts-msg-rule-context").value,
+        sliceEl ? sliceEl.value : "",
       );
       if (!rule) continue;
       const scope = parseScope(wrap.querySelector(".ts-final-rule-scope").value);
@@ -714,11 +749,13 @@ export function createTestsetEditor(env) {
       const ruleInputs = [];
       for (const wrap of row.querySelectorAll(".ts-msg-rule")) {
         const llmBox = wrap.querySelector(".ts-msg-rule-llm");
+        const sliceEl = llmBox.querySelector(".ts-msg-rule-slice");
         ruleInputs.push({
           type: wrap.querySelector(".ts-msg-rule-type").value,
           value: wrap.querySelector(".ts-msg-rule-value").value,
           profileId: llmBox.querySelector(".ts-msg-rule-profile").value,
           context: llmBox.querySelector(".ts-msg-rule-context").value,
+          sliceRange: sliceEl ? sliceEl.value : "",
         });
       }
       const text = row.querySelector(".ts-msg-text").value;
@@ -751,6 +788,15 @@ export function createTestsetEditor(env) {
     if (type === "llm") {
       const profileId = wrap.querySelector(".ts-msg-rule-profile").value;
       if (!profileId) return `${label}：LLM 评审规则未选择评审 Profile，该规则不会生效`;
+      const sliceEl = wrap.querySelector(".ts-msg-rule-slice");
+      if (
+        wrap.querySelector(".ts-msg-rule-context").value === "slice" &&
+        sliceEl &&
+        sliceEl.value.trim() &&
+        parseScope(sliceEl.value) === null
+      ) {
+        return `${label}：切片范围格式无效（如 2-4 表示第 2 到第 4 步，或留空 = 当前步及之前全部）`;
+      }
       return null;
     }
     if (!RULE_VALUE_TYPES.has(type)) return null;

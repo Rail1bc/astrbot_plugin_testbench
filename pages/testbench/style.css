@@ -965,6 +965,8 @@ code {
 .ts-msg-text {
   flex: 1;
   min-width: 0;
+  min-height: 34px;
+  max-height: 180px;
 }
 
 /* 命令标记：紧凑开关，与批量勾选同风格 */
@@ -1015,12 +1017,18 @@ code {
   flex-shrink: 0;
 }
 
-/* LLM 评审规则行：类型选择 LLM 时显示 profile + context 两个下拉（替代值输入） */
+/* LLM 评审规则行：类型选择 LLM 时显示 profile + context 下拉（替代值输入）。
+   本容器有 display: flex，会覆盖 UA 的 [hidden] 规则——非 LLM 类型 / 非 slice
+   上下文须显式隐藏（曾导致固定规则行也显示评审 Profile 下拉） */
 .ts-msg-rule-llm {
   flex: 1;
   min-width: 0;
   display: flex;
   gap: 6px;
+}
+
+.ts-msg-rule-llm[hidden] {
+  display: none;
 }
 
 .ts-msg-rule-profile {
@@ -1030,6 +1038,11 @@ code {
 
 .ts-msg-rule-context {
   width: 150px;
+  flex-shrink: 0;
+}
+
+.ts-msg-rule-slice {
+  width: 92px;
   flex-shrink: 0;
 }
 
@@ -1241,6 +1254,11 @@ code {
   padding-right: 4px;
 }
 
+/* display: flex 覆盖 UA 的 [hidden]——「编辑 / 报告」切换时报告体须显式隐藏 */
+.ts-report-body[hidden] {
+  display: none;
+}
+
 .ts-report-section {
   display: flex;
   flex-direction: column;
@@ -1344,6 +1362,11 @@ code {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+/* display: flex 覆盖 UA 的 [hidden]——未选群聊时成员编辑区须显式隐藏 */
+.cg-members[hidden] {
+  display: none;
 }
 
 .cg-section-title {
@@ -1589,6 +1612,12 @@ code {
   margin-top: 8px;
   font-size: 13px;
   word-break: break-all;
+  /* 状态条消息内容固定高度、过长滚动：内容直接内联当前消息（测试集进度含完整
+     stepText），长文本 / 多行消息会把状态条顶高挤压下方视图；限高 + 纵向滚动
+     查看，保留换行（pre-wrap）——常态生效，不限于执行测试集 */
+  white-space: pre-wrap;
+  max-height: 72px;
+  overflow-y: auto;
 }
 
 .run-status.ok {
@@ -2073,6 +2102,11 @@ code {
   padding: 4px 12px;
   border-top: 1px solid var(--border);
   font-size: 12px;
+}
+
+/* display: flex 覆盖 UA 的 [hidden]——无在途消息时消息条须显式隐藏 */
+.panel-pending[hidden] {
+  display: none;
 }
 
 .pending-item {

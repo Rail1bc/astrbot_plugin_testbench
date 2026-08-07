@@ -4818,6 +4818,78 @@ async def test_assessor_step_llm_ok_with_context_modes():
 
 
 @pytest.mark.asyncio
+async def test_assessor_message_rule_slice_range():
+    """LLM 规则 context=slice：slice_range 限定评审记录区间；缺省回退全部。
+
+    消息规则在第 3 步，记录为第 1-3 步；slice_range {1,1} 只喂第 2 步给评审
+    LLM；不配 slice_range 时与 record 等效（全部记录）。_slice_entries 边界
+    钳制同 _scope_indices（越界裁剪 / 倒序空 / 非 dict 与缺失回退原样）。
+    """
+
+    def build_steps(rule: dict) -> list[dict]:
+        return [
+            {
+                "status": "done",
+                "text": "q1",
+                "rules": [],
+                "results": [{"session_id": "vs_1", "reply": "r1", "status": "ok"}],
+            },
+            {
+                "status": "done",
+                "text": "q2",
+                "rules": [],
+                "results": [{"session_id": "vs_1", "reply": "r2", "status": "ok"}],
+            },
+            {
+                "status": "done",
+                "text": "q3",
+                "rules": [rule],
+                "results": [{"session_id": "vs_1", "reply": "r3", "status": "ok"}],
+            },
+        ]
+
+    # 切片 {1,1} → 评审上下文只含第 2 步
+    provider = FakeLLMProvider("prov_r", responses=['{"score": 90, "level": "好"}'])
+    assessor = Assessor(
+        FakeContext(providers=[provider]), {"rp_test": _valid_profile()}
+    )
+    steps = build_steps(
+        {
+            "kind": "llm",
+            "profile_id": "rp_test",
+            "context": "slice",
+            "slice_range": {"from": 1, "to": 1},
+        }
+    )
+    await assessor.assess(steps, [], [{"id": "vs_1"}])
+    verdict = steps[2]["results"][0]["verdicts"][0]
+    assert verdict["status"] == "ok" and verdict["pass"] is True
+    # format_record 在切片后重新编号（从「第 1 步:」起），故按内容断言只含第 2 步
+    prompt = provider.calls[0]["prompt"]
+    assert "q2" in prompt and "r2" in prompt
+    assert "q1" not in prompt and "q3" not in prompt
+
+    # 缺省（无 slice_range）→ 回退全部记录（与 record 等效）
+    provider2 = FakeLLMProvider("prov_r", responses=['{"score": 90, "level": "好"}'])
+    assessor2 = Assessor(
+        FakeContext(providers=[provider2]), {"rp_test": _valid_profile()}
+    )
+    steps2 = build_steps({"kind": "llm", "profile_id": "rp_test", "context": "slice"})
+    await assessor2.assess(steps2, [], [{"id": "vs_1"}])
+    prompt2 = provider2.calls[0]["prompt"]
+    assert "第 1 步:" in prompt2 and "第 2 步:" in prompt2
+    assert "第 3 步:" in prompt2
+
+    # _slice_entries 边界钳制：越界裁剪 / 倒序空 / 非 dict 与缺失回退原样
+    entries = ["a", "b", "c"]
+    assert Assessor._slice_entries(entries, {"from": 1, "to": 1}) == ["b"]
+    assert Assessor._slice_entries(entries, {"from": -3, "to": 10}) == entries
+    assert Assessor._slice_entries(entries, {"from": 3, "to": 1}) == []
+    assert Assessor._slice_entries(entries, None) == entries
+    assert Assessor._slice_entries(entries, "all") == entries
+
+
+@pytest.mark.asyncio
 async def test_assessor_llm_missing_profile():
     """LLM 规则引用不存在的 profile → error verdict（不抛异常）。"""
     assessor = Assessor(FakeContext(), {})

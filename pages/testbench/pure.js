@@ -38,13 +38,20 @@ export function rangesFromFlags(flags) {
 }
 
 // 行内 rule 构造：type 空 → null；需要值的类型值非空才保留（min_len / max_len
-// 须整数）；LLM 规则读 profile/context → {kind: "llm", profile_id, context?}
-export function buildRule(type, value, profileId, context) {
+// 须整数）；LLM 规则读 profile/context → {kind: "llm", profile_id, context?}。
+// sliceRange（消息规则的切片范围输入，仅 context=slice 时生效）：合法区间
+// "2-4" / "3" 经 parseScope 解析为 0 基 {from, to} 写入 rule.slice_range，
+// 空 / "all" / 非法输入不写入（回退该步及之前全部记录）
+export function buildRule(type, value, profileId, context, sliceRange) {
   if (!type) return null;
   if (type === "llm") {
     if (!profileId) return null;
     const rule = { kind: "llm", profile_id: profileId };
     if (context) rule.context = context;
+    if (context === "slice" && sliceRange) {
+      const sc = parseScope(sliceRange);
+      if (sc && sc !== "all") rule.slice_range = sc;
+    }
     return rule;
   }
   if (RULE_VALUE_TYPES.has(type)) {
@@ -59,12 +66,12 @@ export function buildRule(type, value, profileId, context) {
   return { type };
 }
 
-// 行内多断言收集：ruleInputs 为 [{type, value, profileId, context}]，
+// 行内多断言收集：ruleInputs 为 [{type, value, profileId, context, sliceRange?}]，
 // buildRule 归为 null 的整行丢弃
 export function collectRules(ruleInputs) {
   const rules = [];
   for (const r of ruleInputs || []) {
-    const rule = buildRule(r.type, r.value, r.profileId, r.context);
+    const rule = buildRule(r.type, r.value, r.profileId, r.context, r.sliceRange);
     if (rule) rules.push(rule);
   }
   return rules;

@@ -77,6 +77,40 @@ test("buildRule: 未知类型 → 原样 { type } 回退", () => {
   assert.deepEqual(buildRule("mystery", "", "", ""), { type: "mystery" });
 });
 
+test("buildRule: llm slice 空范围 → 无 slice_range", () => {
+  assert.deepEqual(buildRule("llm", "", "rp_1", "slice", ""), {
+    kind: "llm",
+    profile_id: "rp_1",
+    context: "slice",
+  });
+});
+
+test("buildRule: llm slice 区间 → slice_range 0 基", () => {
+  assert.deepEqual(buildRule("llm", "", "rp_1", "slice", "2-4"), {
+    kind: "llm",
+    profile_id: "rp_1",
+    context: "slice",
+    slice_range: { from: 1, to: 3 },
+  });
+});
+
+test("buildRule: llm slice 单步 → slice_range", () => {
+  assert.deepEqual(buildRule("llm", "", "rp_1", "slice", "3"), {
+    kind: "llm",
+    profile_id: "rp_1",
+    context: "slice",
+    slice_range: { from: 2, to: 2 },
+  });
+});
+
+test("buildRule: 非 slice 上下文忽略 sliceRange", () => {
+  assert.deepEqual(buildRule("llm", "", "rp_1", "record", "2-4"), {
+    kind: "llm",
+    profile_id: "rp_1",
+    context: "record",
+  });
+});
+
 // ---------- collectRules ----------
 
 test("collectRules: 空输入 → []", () => {
