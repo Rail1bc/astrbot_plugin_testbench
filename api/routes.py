@@ -159,4 +159,37 @@ _ROUTES: tuple[tuple[str, str, list[str], str], ...] = (
         ["GET"],
         "SSE 事件流（在途/会话完成/测试完成/测试集进度实时推送）",
     ),
+    ("/reviewers", "list_reviewers", ["GET"], "列出 LLM 评审 profile"),
+    (
+        "/reviewers",
+        "create_reviewer",
+        ["POST"],
+        "创建 LLM 评审 profile（支持多个，消息规则 / 最终断言按 profile_id 引用）",
+    ),
+    ("/reviewers/delete", "delete_reviewers", ["POST"], "删除 LLM 评审 profile"),
+    (
+        "/reviewers/<reviewer_id>/update",
+        "update_reviewer",
+        ["POST"],
+        "更新 LLM 评审 profile（部分更新，合并后校验输出契约）",
+    ),
+    (
+        "/reviewers/preview",
+        "preview_reviewer_metrics",
+        ["POST"],
+        "预览 {{metrics}} 占位符展开后的输出契约描述（不落库）",
+    ),
+    (
+        "/reports/<testset_id>",
+        "list_reports",
+        ["GET"],
+        "列出指定测试集产出的全部报告（含默认模板聚合数据）",
+    ),
+    ("/reports/delete", "delete_reports", ["POST"], "删除报告（按 report id）"),
+    (
+        "/reports/<report_id>/reviews/retry",
+        "retry_report_reviews",
+        ["POST"],
+        "重试报告的 LLM 评审（scope=failed|all 批量或 targets 单条，返回更新后的报告）",
+    ),
 )

@@ -71,21 +71,20 @@ def _evaluate_no_value(rule_type: str, reply: str) -> dict:
     return _no(f"未知断言类型: {rule_type!r}")
 
 
-def _parse_json_reply(reply: str) -> bool:
-    """宽松判定回复是否为（或包含）合法 JSON。
+def parse_json_value(text: str) -> Any:
+    """宽松解析文本中的 JSON 对象 / 数组，返回解析结果；失败返回 None。
 
     LLM 输出常把 JSON 包进 markdown 代码块围栏、或在前后夹带思维链 / 说明
     文本（如 AstrBot 开启思维链显示时，回复链头会被装饰阶段注入
     「🤔 思考: …」前缀）。换行缩进不影响 json.loads；先剥围栏直接解析，
     失败再取首个开括号到末个闭括号的子串解析。
     """
-    text = reply.strip()
+    text = (text or "").strip()
     if text.startswith("```"):
         text = re.sub(r"^```[a-zA-Z]*\s*", "", text)
         text = re.sub(r"\s*```\s*$", "", text)
     try:
-        json.loads(text)
-        return True
+        return json.loads(text)
     except ValueError:
         pass
     for opener, closer in (("{", "}"), ("[", "]")):
@@ -93,11 +92,15 @@ def _parse_json_reply(reply: str) -> bool:
         end = text.rfind(closer)
         if start >= 0 and end > start:
             try:
-                json.loads(text[start : end + 1])
-                return True
+                return json.loads(text[start : end + 1])
             except ValueError:
                 pass
-    return False
+    return None
+
+
+def _parse_json_reply(reply: str) -> bool:
+    """宽松判定回复是否为（或包含）合法 JSON（见 parse_json_value）。"""
+    return parse_json_value(reply) is not None
 
 
 def _evaluate_value(rule_type: str, value: Any, reply: str) -> dict:

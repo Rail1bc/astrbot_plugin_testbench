@@ -26,21 +26,53 @@ from .api import (
     GroupsAPI,
     IdentitiesAPI,
     MetaAPI,
+    ReportsAPI,
+    ReviewersAPI,
     RunsAPI,
     SessionsAPI,
     TestsetsAPI,
 )
 from .core.event_bus import EventBus
-from .core.runner import VirtualTestRunner
+from .core.runner import LATE_SEND_DETECT_WINDOW, VirtualTestRunner
 from .core.testset_runner import TestsetRunner
-from .core.virtual_event import TESTBENCH_LLM_REQUESTED_EXTRA_KEY, VirtualMessageEvent
+from .core.virtual_event import (
+    TESTBENCH_LLM_INPUT_EXTRA_KEY,
+    TESTBENCH_LLM_REQUESTED_EXTRA_KEY,
+    VirtualMessageEvent,
+)
 from .history_ops import HistoryOps
 from .store.group_store import VirtualGroupManager
 from .store.identity_store import ChatGroupStore, IdentityStore
+from .store.report_store import ReportStore
+from .store.reviewer_store import ReviewerStore
 from .store.stream_store import StreamStore
 from .store.testset_store import TestsetStore
 
 PLUGIN_NAME = "astrbot_plugin_testbench"
+
+
+def _snapshot_llm_input(req) -> dict:
+    """快照实际喂给被测 LLM 的输入（装饰后）。
+
+    框架 / 其他插件会在调用前改写 `req.prompt`（如 prompt 前缀注入）与
+    `req.extra_user_content_parts`（如 `<system_reminder>`、知识库结果），
+    评审材料应基于这份实际输入而非测试集原始文本。
+
+    必须渲染成纯字符串（TextPart / ThinkPart 抽取文本），不能存 ContentPart
+    引用——快照会随 SSE 事件与报告 JSON 序列化，存对象会破坏序列化。
+    """
+    parts = []
+    for part in getattr(req, "extra_user_content_parts", None) or []:
+        text = getattr(part, "text", None)
+        if text is None:
+            text = getattr(part, "think", None)  # ThinkPart
+        if text:
+            parts.append(str(text))
+    return {
+        "prompt": getattr(req, "prompt", None) or "",
+        "extra_parts": parts,
+        "system_prompt": getattr(req, "system_prompt", None) or "",
+    }
 
 
 class VirtualSessionPlugin(
@@ -52,6 +84,8 @@ class VirtualSessionPlugin(
     TestsetsAPI,
     IdentitiesAPI,
     EventsAPI,
+    ReportsAPI,
+    ReviewersAPI,
     ConfRouteMixin,
 ):
     def __init__(self, context: Context) -> None:
@@ -67,9 +101,18 @@ class VirtualSessionPlugin(
             stream_store=self.stream_store,
             identity_store=self.identity_store,
             chat_group_store=self.chat_group_store,
+            late_send_detect_window=LATE_SEND_DETECT_WINDOW,
         )
         self.testset_store = TestsetStore()
-        self.testset_runner = TestsetRunner(context, self.runner, self.event_bus)
+        self.reviewer_store = ReviewerStore()
+        self.report_store = ReportStore()
+        self.testset_runner = TestsetRunner(
+            context,
+            self.runner,
+            self.event_bus,
+            reviewer_store=self.reviewer_store,
+            report_store=self.report_store,
+        )
         self.history_ops = HistoryOps(
             context, lambda: self.group_mgr, self.runner, self.logger
         )
@@ -92,3 +135,4 @@ class VirtualSessionPlugin(
         if isinstance(event, VirtualMessageEvent) and event.entry_id:
             self.runner.mark_llm(event.entry_id)
             event.set_extra(TESTBENCH_LLM_REQUESTED_EXTRA_KEY, True)
+            event.set_extra(TESTBENCH_LLM_INPUT_EXTRA_KEY, _snapshot_llm_input(req))

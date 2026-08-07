@@ -363,6 +363,24 @@ def test_frontend_testset_summary_counts_assertion_failures():
     assert "断言 ✗" in src, "结果表格行尾未单独标注断言 ✗ 计数"
 
 
+def test_frontend_verdict_detail_shows_review_output():
+    """verdict 标记须可点击查看 LLM 评审详情（原始输出 + 评审输入）。
+
+    评审输出（raw）与评审输入（context_text）随 verdict 落库后，前端要在结果
+    表格 / 报告详情里提供详情入口——点 ✓/✗/⚠ 打开弹窗看 LLM 原始返回与喂给
+    LLM 的上下文。LLM 返回是数据不是代码，必须经 textContent 落进 <pre>（防
+    XSS），不得用 innerHTML 拼接。
+    """
+    src = _read_module("testset_run")
+    assert "verdict-chip" in src, "verdict 标记未渲染为可点击的详情入口按钮"
+    assert "data-vkey" in src, "verdict 标记缺少定位用的 data-vkey"
+    assert "resolveVerdict" in src, "缺少按 vkey 从 run 定位 verdict 的函数"
+    assert "openVerdictDetail" in src, "缺少 verdict 详情弹窗"
+    assert "评审输出（LLM 原始返回）" in src, "详情弹窗未展示评审输出"
+    assert "评审输入（喂给评审 LLM 的上下文）" in src, "详情弹窗未展示评审输入"
+    assert "pre.textContent" in src, "评审输出/输入未用 textContent 落盘（XSS 风险）"
+
+
 def test_frontend_no_parse_int_on_user_input():
     """用户数字输入不得用 parseInt 截断解析。
 
@@ -737,9 +755,17 @@ def test_frontend_testset_row_identity():
     assert "const sender = collectSender(" in editor_js, (
         "collectEditorRows 未收集行内身份"
     )
+    assert "const message = { text, rules }" in editor_js, (
+        "收集的消息未携带 text 与 rules 列表"
+    )
     assert (
-        "messages.push({ text, rule, ...sender, auto_at: atCb.checked })" in editor_js
+        "if (sender.sender_id !== undefined) Object.assign(message, sender)"
+        in editor_js
     ), "收集的消息未合并 sender / auto_at 字段"
+    assert "if (cmdCb.checked) message.is_command = true" in editor_js, (
+        "命令标记勾选未收集进消息"
+    )
+    assert "message.auto_at = atCb.checked" in editor_js, "收集的消息未带 auto_at"
     assert "message.sender_id = m.sender_id" in editor_js, "导入信封未保留 sender_id"
     assert "message.sender_name = m.sender_name" in editor_js, (
         "导入信封未保留 sender_name"
@@ -748,6 +774,77 @@ def test_frontend_testset_row_identity():
     assert "atCb.checked = !msg || msg.auto_at !== false" in editor_js, (
         "消息行 @ 勾选未按 auto_at 缺省开启渲染"
     )
+
+
+def test_frontend_rules_editor():
+    """消息行须支持多断言编辑：规则类型下拉 + 值输入 + 收集 + 行内样式。
+
+    M1 把单条 rule 扩展为 rules 列表：renderMsgRow 渲染 .ts-msg-rules 内的
+    多条 .ts-msg-rule 行（类型下拉 / 值输入 / 删除），collectRules 反向收集，
+    buildRule 对需要值的类型做校验（min_len/max_len 整数）。
+    """
+    editor_js = _read_module("testset_editor")
+    assert "RULE_TYPES" in editor_js, "缺少断言类型定义 RULE_TYPES"
+    assert "buildRuleRow(" in editor_js, "缺少单条断言编辑行构建 buildRuleRow"
+    assert "rulesBox.appendChild(buildRuleRow(" in editor_js, "消息行未渲染多断言列表"
+    assert "function collectRules(" in editor_js, "缺少多断言收集 collectRules"
+    assert (
+        'for (const wrap of rulesBox.querySelectorAll(".ts-msg-rule"))' in editor_js
+    ), "collectRules 未遍历 .ts-msg-rule 行"
+    assert 'wrap.className = "ts-msg-rule"' in editor_js, "断言行未使用 .ts-msg-rule 类"
+    assert "ruleTypeLabel(" in editor_js, "缺少断言类型中文名映射"
+    css = (PLUGIN_DIR / "pages" / "testbench" / "style.css").read_text(encoding="utf-8")
+    assert ".ts-msg-rules" in css, "style.css 缺少多断言列表样式"
+    assert ".ts-msg-rule-type" in css, "style.css 缺少断言类型下拉宽度样式"
+    assert ".ts-msg-rule-value" in css, "style.css 缺少断言值输入样式"
+
+
+def test_frontend_testset_identity_config():
+    """测试集编辑窗口须含身份配置（single 单一身份 / pool 身份池）。
+
+    index.html 须含 #ts-identity-mode / #ts-identity-ref / #ts-pool-ref；
+    testset_editor.js 须经 initIdentityConfig / refreshRowSenders 按模式切换
+    行内身份下拉来源，collectIdentityConfig 收集身份配置与内联快照。
+    """
+    html = _read_html()
+    assert 'id="ts-identity-mode"' in html, "index.html 缺少身份模式下拉"
+    assert 'id="ts-identity-ref"' in html, "index.html 缺少单一身份下拉"
+    assert 'id="ts-pool-ref"' in html, "index.html 缺少身份池（群聊）下拉"
+    editor_js = _read_module("testset_editor")
+    assert "initIdentityConfig(" in editor_js, "缺少身份配置初始化 initIdentityConfig"
+    assert "refreshIdentityFields()" in editor_js, "缺少身份字段显隐刷新"
+    assert "refreshRowSenders()" in editor_js, "缺少行内身份下拉重建 refreshRowSenders"
+    assert "collectIdentityConfig()" in editor_js, "缺少身份配置收集"
+    assert "buildIdentitySnapshot(" in editor_js, "缺少单身份快照构建"
+    assert "buildPoolSnapshot(" in editor_js, "缺少身份池快照构建"
+    assert 'identity_mode: "pool"' in editor_js, "池模式收集未写 identity_mode"
+    assert "identity_snapshot" in editor_js, "保存 payload 缺少 identity_snapshot"
+    assert "pool_snapshot" in editor_js, "保存 payload 缺少 pool_snapshot"
+    css = (PLUGIN_DIR / "pages" / "testbench" / "style.css").read_text(encoding="utf-8")
+    assert ".ts-identity" in css, "style.css 缺少身份配置行样式"
+
+
+def test_frontend_envelope_v2():
+    """导出/导入信封 v2：携带身份配置（identity / pool），解析兼容 v1。
+
+    M1 信封升到 version 2：导出按身份模式写 envelope.identity 或
+    envelope.pool；parseTestsetEnvelope 接受 v1（单条 rule → rules）与 v2
+    （rules / is_command / identity / pool），版本号高于 2 拒绝。
+    """
+    editor_js = _read_module("testset_editor")
+    assert "const EXPORT_VERSION = 2" in editor_js, "信封版本未升至 v2"
+    assert "envelope.identity = identity.identity_snapshot" in editor_js, (
+        "single 模式导出未携带 identity 快照"
+    )
+    assert "envelope.pool = identity.pool_snapshot" in editor_js, (
+        "pool 模式导出未携带身份池"
+    )
+    assert 'identity_mode: data.pool ? "pool" : "single"' in editor_js, (
+        "导入解析未按 envelope.pool 判定身份模式"
+    )
+    assert "data.version > EXPORT_VERSION" in editor_js, "导入未拒绝高于当前版本的信封"
+    assert "for (const r of m.rules)" in editor_js, "导入未处理 v2 rules 列表"
+    assert "m.rule != null" in editor_js, "导入未兼容 v1 单条 rule"
 
 
 def test_frontend_broadcast_identity_selector():
@@ -834,3 +931,306 @@ def test_frontend_group_security_badge():
     gl_js = _read_module("group_list")
     assert "g.security_warning" in gl_js, "组列表未按 security_warning 渲染警告标记"
     assert "⚠ 工具" in gl_js, "组列表缺少工具警告徽标文案"
+
+
+# ---------- M2 评审层前端：LLM 规则 / 最终断言 / Profile 管理 / verdict 渲染 ----------
+
+
+def test_frontend_llm_rule_row():
+    """消息断言须支持 LLM 评审规则行（类型下拉选 LLM → profile + context 下拉）。
+
+    M2 把断言规则扩展出 kind=llm：testset_editor.js 的 RULE_TYPES 须含
+    ["llm", "LLM 评审"]；buildRuleRow 须在类型切换 LLM 时用 .ts-msg-rule-llm
+    字段区（profile / context 两个下拉）替代值输入；collectRules / buildRule
+    收集为 {kind: "llm", profile_id, context?}；保存前校验未选 profile 的
+    LLM 规则（否则被静默丢弃）。
+    """
+    editor_js = _read_module("testset_editor")
+    assert '["llm", "LLM 评审"]' in editor_js, "RULE_TYPES 缺少 LLM 评审类型"
+    assert "buildProfileSelect(" in editor_js, "缺少评审 Profile 下拉构建"
+    assert "buildContextSelect(" in editor_js, "缺少上下文模式下拉构建"
+    assert 'className = "ts-msg-rule-llm"' in editor_js, "缺少 LLM 字段区容器"
+    assert 'sel.value === "llm"' in editor_js, "类型切换未按 llm 显示 LLM 字段区"
+    assert 'const rule = { kind: "llm", profile_id: profileId }' in editor_js, (
+        "LLM 规则未收集为 {kind: 'llm', profile_id}"
+    )
+    assert 'llmBox.querySelector(".ts-msg-rule-profile")' in editor_js, (
+        "collectRules 未读取 LLM 规则 profile 下拉"
+    )
+    assert "未选择评审 Profile" in editor_js, "保存前未拦截未选 profile 的 LLM 规则"
+
+
+def test_frontend_final_rules_editor():
+    """测试集编辑窗口须含最终断言（跨轮）编辑区。
+
+    index.html 须含 #ts-final-rules 容器与「＋ 添加」按钮；testset_editor.js
+    须实现 buildFinalRuleRow（类型 / 值 / LLM 字段 / scope 范围输入）与
+    collectFinalRules（scope 经 parseScope 解析为 "all" 或 {from, to}），
+    保存 / 导出 payload 携带 final_rules，导入解析也保留该字段。
+    """
+    html = _read_html()
+    editor_js = _read_module("testset_editor")
+    assert 'id="ts-final-rules"' in html, "index.html 缺少最终断言容器"
+    assert 'id="btn-ts-add-final"' in html, "index.html 缺少添加最终断言按钮"
+    assert "buildFinalRuleRow(" in editor_js, "缺少最终断言行构建"
+    assert "collectFinalRules()" in editor_js, "缺少最终断言收集"
+    assert "function parseScope(" in editor_js, "缺少 scope 范围解析"
+    assert "final_rules: finalRules" in editor_js, "保存 payload 缺少 final_rules"
+    assert "final_rules: collectFinalRules()" in editor_js, "导出信封缺少 final_rules"
+    assert "result.final_rules.push(item)" in editor_js, "导入解析未保留 final_rules"
+    assert "final_rules: parsed.final_rules" in editor_js, (
+        "导入未把 final_rules 传给 createTestset"
+    )
+    css = (PLUGIN_DIR / "pages" / "testbench" / "style.css").read_text(encoding="utf-8")
+    assert ".ts-final-rule" in css, "style.css 缺少最终断言行样式"
+
+
+def test_frontend_reviewer_profile_form():
+    """评审 Profile 管理：列表 tab + 新建/编辑/删除表单（支持多个）。
+
+    testset_list.js 须经 listReviewers 拉取 profile、renderReviewerList 渲染
+    列表（未配置提示 + 新建入口）、openProfileForm 表单（provider / 模型 /
+    提示词 / 输出契约指标编辑器 buildMetricsEditor / collectMetrics），保存走
+    createReviewer / updateReviewer、删除走 deleteReviewers；编辑器保留行内
+    profile 下拉重建 refreshAllProfileSelects；state.js 须有 reviewers；
+    app.js 的 loadOptions 须预载 reviewers。
+    """
+    list_js = _read_module("testset_list")
+    editor_js = _read_module("testset_editor")
+    state_js = _read_module("state")
+    app_js = _read_module("app")
+    assert "listReviewers" in list_js, "列表未拉取评审 Profile"
+    assert "renderReviewerList(" in list_js, "缺少 Profile 列表渲染"
+    assert "暂无评审 Profile" in list_js, "缺少未配置提示文案"
+    assert "新建评审 Profile" in list_js, "缺少新建 Profile 入口"
+    assert "openProfileForm(" in list_js, "缺少 Profile 表单函数"
+    assert "buildMetricsEditor(" in list_js, "缺少输出指标编辑器"
+    assert "collectMetrics(" in list_js, "缺少输出指标收集"
+    assert "METRIC_TYPES" in list_js, "缺少指标类型定义"
+    assert "createReviewer(payload)" in list_js, "新建 Profile 未调 createReviewer"
+    assert "updateReviewer(existing.id, payload)" in list_js, (
+        "编辑 Profile 未调 updateReviewer"
+    )
+    assert "deleteReviewers([profile.id])" in list_js, (
+        "删除 Profile 未调 deleteReviewers"
+    )
+    assert "{{metrics}}" in list_js, "提示词缺少 {{metrics}} 占位符提示"
+    assert "refreshAllProfileSelects" in editor_js, "编辑器缺少行内 profile 下拉重建"
+    assert "reviewers: []" in state_js, "state 缺少 reviewers 状态"
+    assert "listReviewers" in app_js, "app.js 未预载评审 Profile"
+
+
+def test_frontend_reviewer_profile_metrics_preview():
+    """评审 Profile 表单须有 {{metrics}} 展开预览 + 复制 + {{agent_system_prompt}} 提示。
+
+    预览经后端 /reviewers/preview 实时计算（api.js 封装 previewReviewerMetrics，
+    复用运行时 metrics_contract_description 保证与展开一致，前端不镜像格式化）；
+    复制按钮须带剪贴板回退（插件页 iframe sandbox 无 allow-clipboard-write）。
+    """
+    list_js = _read_module("testset_list")
+    api_js = _read_module("api")
+    assert "previewReviewerMetrics" in api_js, "api.js 缺少预览接口封装"
+    assert "previewReviewerMetrics" in list_js, "表单未调用预览接口"
+    assert "复制预览" in list_js, "缺少复制预览按钮"
+    assert "metrics-preview" in list_js, "缺少预览内容元素"
+    assert "{{agent_system_prompt}}" in list_js, (
+        "缺少 {{agent_system_prompt}} 占位符提示"
+    )
+    assert "navigator.clipboard" in list_js or "execCommand" in list_js, (
+        "复制缺少剪贴板实现（沙箱回退）"
+    )
+
+
+def test_frontend_profile_dialog_height_and_scroll():
+    """新建/编辑评审 Profile 弹窗须限高内部滚动。
+
+    弹窗内容（Provider/模型/提示词/指标）曾整体超出视口高度、页面放不下：
+    .modal 须限高（max-height + flex 列布局）、.modal-body 内部滚动
+    （overflow-y: auto + flex 子项可收缩）、.modal-actions 固定在底部
+    （flex-shrink: 0）；系统提示词 textarea 覆盖 .json-editor 的 360px
+    默认高度（紧凑打开，拖拽拉长后弹窗内滚动而非撑爆页面）。
+    """
+    css = (PLUGIN_DIR / "pages" / "testbench" / "style.css").read_text(encoding="utf-8")
+    assert "max-height: min(85vh, 720px)" in css, "style.css 未限制弹窗高度"
+    assert ".modal-body {\n  overflow-y: auto;" in css, "弹窗正文未允许内部滚动"
+    assert "gap: 8px;\n  flex-shrink: 0;" in css, "弹窗操作按钮未固定底部"
+    list_js = _read_module("testset_list")
+    assert 'taPrompt.style.minHeight = "120px"' in list_js, (
+        "系统提示词 textarea 未覆盖 json-editor 默认高度"
+    )
+
+
+def test_frontend_reviewer_provider_list():
+    """评审 Profile 表单的 Provider 下拉须有数据源。
+
+    防回归：openProfileForm 读 state.providers 构建下拉，但 api.js 曾缺
+    listProviders、state.js 缺 providers 初始值、loadOptions 未拉取——
+    state.providers 恒为 undefined，点击「新建评审 Profile」即抛
+    TypeError、弹窗打不开。三段链路（封装 / 状态 / 预载）缺一不可。
+    """
+    api_js = _read_module("api")
+    state_js = _read_module("state")
+    app_js = _read_module("app")
+    list_js = _read_module("testset_list")
+    assert "listProviders" in api_js, "api.js 缺少 listProviders 封装"
+    assert "providers: []" in state_js, "state 缺少 providers 初始值"
+    assert "listProviders" in app_js, "app.js 未 import listProviders"
+    assert "state.providers = Array.isArray(data)" in app_js, (
+        "loadOptions 未把 Provider 列表写入 state.providers"
+    )
+    assert "state.providers" in list_js, "Profile 表单未读 state.providers"
+
+
+def test_frontend_reviewer_rail_location():
+    """评审 Profile 管理迁到左侧测试集列表（「评审 Profile」tab）。
+
+    放开单 profile 限制并把管理入口移到测试集列表（类似身份实体与身份池）：
+    index.html 的 .testsets-card 须有「测试集 / 评审 Profile」tab 与
+    #reviewer-list 容器，编辑器窗口不再有 .ts-reviewer 摘要区；编辑器只保留
+    行内 profile 下拉重建并导出（refreshAllProfileSelects 经返回对象装配）。
+    """
+    html = _read_html()
+    list_js = _read_module("testset_list")
+    editor_js = _read_module("testset_editor")
+    assert 'data-tab="reviewer"' in html, "测试集卡片缺少「评审 Profile」tab"
+    assert 'id="reviewer-list"' in html, "缺少评审 Profile 列表容器"
+    assert 'id="reviewer-count"' in html, "缺少评审 Profile 计数"
+    assert "ts-reviewer-summary" not in html, "编辑器窗口仍残留 Profile 摘要区"
+    assert "switchTestsetTab(" in list_js, "缺少测试集卡片 tab 切换"
+    assert "editor.refreshAllProfileSelects()" in list_js, (
+        "Profile 变更未重建编辑器行内下拉"
+    )
+    assert "refreshAllProfileSelects," in editor_js, "编辑器未导出行内 profile 下拉重建"
+
+
+def test_frontend_reconcile_runs_unwrap():
+    """断线对账取最近运行须解包 {runs: [...]}。
+
+    防回归：后端 testset_runs 返回 json_response({runs: [...]})，reconcileEvents
+    曾把整个响应对象当数组调 .find（TypeError「(intermediate value).find is not a
+    function」，页面重开时拉取最近运行失败、无法找回运行中的测试集）。
+    """
+    events_js = _read_module("events")
+    assert ".runs || [])" in events_js or ".runs) || [])" in events_js, (
+        "reconcileEvents 未解包 listTestsetRuns 返回的 runs 数组"
+    )
+    assert "listTestsetRuns()" in events_js, "reconcileEvents 未取最近运行"
+
+
+def test_frontend_results_render_verdicts():
+    """测试集结果须渲染 verdicts 指标与最终断言，评审失败与不通过区分。
+
+    testset_run.js 须实现 verdictChip / verdictChips（✓/✗/⚠ 三态，悬停显示
+    指标摘要 metricsSummary）、renderFinalVerdicts（run.final_verdicts 跨轮
+    结果表）；总结须单独计数断言未通过与评审失败（ruleFailCount /
+    ruleReviewFailCount）。
+    """
+    run_js = _read_module("testset_run")
+    assert "function verdictChip(" in run_js, "缺少单个 verdict 标记"
+    assert "function verdictChips(" in run_js, "缺少结果单元格 verdict 渲染"
+    assert "function metricsSummary(" in run_js, "缺少指标摘要"
+    assert "function renderFinalVerdicts(" in run_js, "缺少最终断言结果表"
+    assert "final_verdicts" in run_js, "结果未引用 final_verdicts"
+    assert "assert-skip" in run_js, "评审失败未用 .assert-skip 标记"
+    assert "ruleFailCount(" in run_js, "缺少断言未通过计数"
+    assert "ruleReviewFailCount(" in run_js, "缺少评审失败计数"
+    assert "条评审失败" in run_js, "总结未单独计数评审失败"
+    css = (PLUGIN_DIR / "pages" / "testbench" / "style.css").read_text(encoding="utf-8")
+    assert ".assert-skip" in css, "style.css 缺少评审失败样式"
+
+
+def test_frontend_report_editor_toggle():
+    """测试集编辑窗口页眉须有「编辑 / 报告」切换。
+
+    M3 报告层把最近运行 / 报告迁入测试集视图：index.html 须含 #btn-ts-mode
+    按钮与 #ts-report-body 容器；testset_editor.js 须实现 toggleViewMode
+    （viewMode 在 edit / report 间切换）、syncViewModeUI（编辑/报告体互斥
+    显隐、按钮文案翻转）与 renderReportView（报告页渲染），并绑定按钮点击。
+    """
+    html = _read_html()
+    editor_js = _read_module("testset_editor")
+    assert 'id="btn-ts-mode"' in html, "index.html 缺少编辑/报告切换按钮"
+    assert 'id="ts-report-body"' in html, "index.html 缺少报告视图容器"
+    assert "function toggleViewMode(" in editor_js, "缺少视图切换函数"
+    assert 'viewMode === "report"' in editor_js, "缺少报告模式判定"
+    assert "function renderReportView(" in editor_js, "缺少报告视图渲染"
+    assert "syncViewModeUI()" in editor_js, "缺少视图显隐同步"
+    assert '$("btn-ts-mode").addEventListener("click", () => toggleViewMode())' in (
+        editor_js
+    ), "未绑定「编辑/报告」切换按钮"
+
+
+def test_frontend_report_enabled_checkbox():
+    """测试集配置须含报告产出开关 report_enabled。
+
+    index.html 编辑体须含 #ts-report-enabled 勾选框；testset_editor.js 渲染
+    时按测试集 report_enabled 回填（renderTestsetEditor 设置 checked），保存
+    payload 携带 report_enabled，勾选变更置脏。
+    """
+    html = _read_html()
+    editor_js = _read_module("testset_editor")
+    assert 'id="ts-report-enabled"' in html, "index.html 缺少报告产出开关"
+    assert 'report_enabled: $("ts-report-enabled").checked' in editor_js, (
+        "保存 payload 未携带 report_enabled"
+    )
+    assert 'ts-report-enabled").checked = !!(ts && ts.report_enabled)' in editor_js, (
+        "渲染时未按测试集回填报告开关"
+    )
+    assert (
+        '$("ts-report-enabled").addEventListener("change", markDirty)' in editor_js
+    ), "报告开关变更未置脏"
+
+
+def test_frontend_sidebar_recent_runs_removed():
+    """左侧测试集卡片不再罗列「最近运行」（迁入报告视图，按 testset_id 过滤）。
+
+    index.html 不得含 recent-runs 块；testset_list.js 不得再导入
+    listTestsetRuns / 渲染 renderRecentRuns（listTestsetRuns API 保留，
+    由报告视图经 testset_editor.js 使用）。
+    """
+    html = _read_html()
+    list_js = _read_module("testset_list")
+    assert "recent-runs" not in html, "index.html 仍含最近运行块"
+    assert "listTestsetRuns" not in list_js, "testset_list.js 仍导入 listTestsetRuns"
+    assert "renderRecentRuns" not in list_js, "testset_list.js 仍渲染最近运行"
+
+
+def test_frontend_report_api():
+    """api.js 须封装报告查询 / 删除与按测试集过滤的最近运行接口。
+
+    报告列表走 reports/<testset_id>（id 经 encodeURIComponent）、删除走
+    reports/delete（ids）；listTestsetRuns 须支持按 testset_id 过滤（查询串
+    走第二参数 params，不内嵌 `?`）。
+    """
+    api_js = _read_module("api")
+    assert "reports/${encodeURIComponent(testsetId)}" in api_js, (
+        "缺少按测试集列报告的接口封装"
+    )
+    assert 'bridge.apiPost("reports/delete", { ids })' in api_js, "缺少报告删除接口"
+    assert "{ testset_id: testsetId }" in api_js, "listTestsetRuns 缺少按测试集过滤参数"
+
+
+def test_frontend_report_list_actions():
+    """报告视图须实现报告条目渲染与查看 / 导出 / 删除操作。
+
+    testset_editor.js 报告页经 listReports 拉取报告、buildReportItem 渲染
+    条目（含 metrics_summary 指标聚合总览）、openReportModal 复用
+    buildResultsTable / renderFinalVerdicts 展示详情、exportReport 导出 JSON、
+    deleteReport 确认后走 deleteReports；最近运行区经 listTestsetRuns +
+    getDeps().viewTestsetRun 找回进度。
+    """
+    editor_js = _read_module("testset_editor")
+    assert "listReports(" in editor_js, "报告页未拉取报告列表"
+    assert "listTestsetRuns(ts.id)" in editor_js, "最近运行未按测试集过滤"
+    assert "function buildReportItem(" in editor_js, "缺少报告条目渲染"
+    assert "function openReportModal(" in editor_js, "缺少报告详情弹窗"
+    assert "function exportReport(" in editor_js, "缺少报告导出"
+    assert "function deleteReport(" in editor_js, "缺少报告删除"
+    assert "buildResultsTable" in editor_js, "报告详情未复用结果表格"
+    assert "renderFinalVerdicts" in editor_js, "报告详情未复用最终断言表"
+    assert "metrics_summary" in editor_js, "报告条目未展示指标聚合"
+    assert "deleteReport(report.id)" in editor_js, "报告条目删除未传 report.id"
+    assert "deleteReports([id])" in editor_js, "删除报告未调 deleteReports"
+    assert "getDeps().viewTestsetRun(r.run_id)" in editor_js, (
+        "最近运行查看未走 viewTestsetRun 找回"
+    )

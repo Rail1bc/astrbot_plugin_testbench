@@ -5,6 +5,7 @@
 export const state = {
   groups: [],
   platforms: [],
+  providers: [],
   confs: [],
   openIds: [],
   pinnedIds: [],
@@ -39,4 +40,6 @@ export const state = {
   // 全局显示视图（"history" | "stream"；默认 "history"）：由轮次对齐旁的
   // #view-toggle 统一切换，应用到全部已打开的会话（不再按会话分别记忆）
   globalView: "history",
+  // LLM 评审 profile 列表（测试集编辑器 LLM 断言规则 / 评审 Profile 管理表单的数据源）
+  reviewers: [],
 };

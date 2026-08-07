@@ -37,7 +37,8 @@ class IdentitiesAPI:
         name = payload.get("name")
         if not isinstance(name, str) or not name.strip():
             return error_response("name 不能为空", status_code=400)
-        identity = self.identity_store.create_identity(
+        identity = await self.identity_store.write(
+            self.identity_store.create_identity,
             name=name,
             sender_id=payload.get("sender_id"),
             sender_name=payload.get("sender_name"),
@@ -48,7 +49,8 @@ class IdentitiesAPI:
     async def update_identity(self, identity_id: str):
         """更新测试身份（只更新传入字段）。"""
         payload = await request.json(default={})
-        updated = self.identity_store.update_identity(
+        updated = await self.identity_store.write(
+            self.identity_store.update_identity,
             identity_id,
             name=payload.get("name"),
             sender_id=payload.get("sender_id"),
@@ -65,7 +67,9 @@ class IdentitiesAPI:
         ids = _require_ids(payload)
         if ids is None:
             return error_response("ids 不能为空", status_code=400)
-        deleted = self.identity_store.delete_identities(ids)
+        deleted = await self.identity_store.write(
+            self.identity_store.delete_identities, ids
+        )
         return json_response({"deleted": deleted})
 
     # ---------- 虚拟群聊 ----------
@@ -80,15 +84,18 @@ class IdentitiesAPI:
         name = payload.get("name")
         if not isinstance(name, str) or not name.strip():
             return error_response("name 不能为空", status_code=400)
-        chat_group = self.chat_group_store.create_chat_group(
-            name=name, member_ids=payload.get("member_ids")
+        chat_group = await self.chat_group_store.write(
+            self.chat_group_store.create_chat_group,
+            name=name,
+            member_ids=payload.get("member_ids"),
         )
         return json_response(chat_group)
 
     async def update_chat_group(self, group_id: str):
         """更新虚拟群聊（只更新传入字段）。"""
         payload = await request.json(default={})
-        updated = self.chat_group_store.update_chat_group(
+        updated = await self.chat_group_store.write(
+            self.chat_group_store.update_chat_group,
             group_id,
             name=payload.get("name"),
             member_ids=payload.get("member_ids"),
@@ -103,7 +110,9 @@ class IdentitiesAPI:
         ids = _require_ids(payload)
         if ids is None:
             return error_response("ids 不能为空", status_code=400)
-        deleted = self.chat_group_store.delete_chat_groups(ids)
+        deleted = await self.chat_group_store.write(
+            self.chat_group_store.delete_chat_groups, ids
+        )
         return json_response({"deleted": deleted})
 
     # ---------- 群消息流 ----------

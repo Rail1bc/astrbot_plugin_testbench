@@ -13,14 +13,17 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 import uuid
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any
 
 from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
+
+from ._base import AsyncWriteMixin
 
 
 def _load_list(file: Path) -> list[dict]:
@@ -36,11 +39,16 @@ def _load_list(file: Path) -> list[dict]:
     return []
 
 
-class _ListStore:
-    """基于 ``{"items": [...]}`` 文件的通用列表 store（全量写 JSON）。"""
+class _ListStore(AsyncWriteMixin):
+    """基于 ``{"items": [...]}`` 文件的通用列表 store（全量写 JSON）。
+
+    同步写方法（add / remove / replace）保持同步签名，由 API 层经 ``write``
+    （实例锁内线程化）执行，避免事件循环阻塞与并发写竞态。
+    """
 
     def __init__(self, file: Path) -> None:
         self._file = file
+        self._lock = asyncio.Lock()
         self._items: list[dict] = _load_list(file)
 
     def _save(self) -> None:
@@ -96,6 +104,10 @@ class IdentityStore:
         directory = base / "virtual_session"
         directory.mkdir(parents=True, exist_ok=True)
         self._store = _ListStore(directory / "identities.json")
+
+    async def write(self, func: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+        """经 _ListStore 实例锁线程化执行一次同步写操作（create/update/delete）。"""
+        return await self._store.write(func, *args, **kwargs)
 
     def list_identities(self) -> list[dict]:
         return self._store.list()
@@ -168,6 +180,10 @@ class ChatGroupStore:
         directory = base / "virtual_session"
         directory.mkdir(parents=True, exist_ok=True)
         self._store = _ListStore(directory / "chat_groups.json")
+
+    async def write(self, func: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+        """经 _ListStore 实例锁线程化执行一次同步写操作（create/update/delete）。"""
+        return await self._store.write(func, *args, **kwargs)
 
     def list_chat_groups(self) -> list[dict]:
         return self._store.list()

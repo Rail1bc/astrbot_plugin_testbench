@@ -12,6 +12,8 @@ from .events import EventsAPI
 from .groups import GroupsAPI
 from .identities import IdentitiesAPI
 from .meta import MetaAPI
+from .reports import ReportsAPI
+from .reviewers import ReviewersAPI
 from .routes import _ROUTES
 from .runs import RunsAPI
 from .sessions import SessionsAPI
@@ -24,6 +26,8 @@ __all__ = [
     "GroupsAPI",
     "IdentitiesAPI",
     "MetaAPI",
+    "ReportsAPI",
+    "ReviewersAPI",
     "RunsAPI",
     "SessionsAPI",
     "TestsetsAPI",

@@ -64,7 +64,8 @@ class GroupsAPI(ConfRouteMixin):
                 status_code=400,
             )
         conf_id = payload.get("conf_id") or None
-        group = self.group_mgr.create_group(
+        group = await self.group_mgr.write(
+            self.group_mgr.create_group,
             name=payload.get("name"),
             count=count,
             platform_id=payload.get("platform_id"),
@@ -86,7 +87,7 @@ class GroupsAPI(ConfRouteMixin):
         ids = payload.get("ids")
         if not isinstance(ids, list) or not ids:
             return error_response("ids 不能为空", status_code=400)
-        removed = self.group_mgr.delete_groups(ids)
+        removed = await self.group_mgr.write(self.group_mgr.delete_groups, ids)
         sessions = [self.group_mgr.effective(group, s) for group, s in removed]
         await self._clear_conf_routes(sessions)
         await self.history_ops.delete_session_conversations(sessions)
@@ -112,7 +113,8 @@ class GroupsAPI(ConfRouteMixin):
         group = self.group_mgr.get_group(group_id)
         if group is None:
             return error_response("未找到该测试组", status_code=404)
-        created = self.group_mgr.add_sessions(
+        created = await self.group_mgr.write(
+            self.group_mgr.add_sessions,
             group_id,
             count,
             payload.get("name_prefix"),
@@ -150,7 +152,7 @@ class GroupsAPI(ConfRouteMixin):
             updates[key] = value if isinstance(value, str) and value else None
 
         old_sessions = [self.group_mgr.effective(group, s) for s in group["sessions"]]
-        self.group_mgr.update_group(group_id, **updates)
+        await self.group_mgr.write(self.group_mgr.update_group, group_id, **updates)
         updated = self.group_mgr.get_group(group_id)
         if updated is None:
             return error_response("未找到该测试组", status_code=404)

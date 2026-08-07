@@ -40,6 +40,13 @@ STALE_RUN_TIMEOUT = 3600
 # 切换到「完成」后仍能看到结果落定，随后条目自然被清理。
 DONE_KEEP_SECONDS = 30
 
+# pipeline 结束后观察异步补发的窗口（秒）：fire-and-forget 补发通常落在
+# pipeline 结束后的极短时间内。窗口内到达的回复**不计入结果**（摘要已冻结），
+# 只标记警告——检测不是捕获；长延时 / 定时任务来源由 cron 探测（warnings）
+# 覆盖其计划根源。main.py 装配 runner 时传入启用；构造缺省 0 保持测试快速
+# 且行为与旧版一致。
+LATE_SEND_DETECT_WINDOW = 1.0
+
 logger = logging.getLogger(__name__)
 
 
@@ -58,8 +65,12 @@ class VirtualTestRunner:
         stream_store: StreamStore | None = None,
         identity_store: IdentityStore | None = None,
         chat_group_store: ChatGroupStore | None = None,
+        late_send_detect_window: float = 0.0,
     ) -> None:
         self.context = context
+        # 异步补发检测窗口：main.py 装配时传 LATE_SEND_DETECT_WINDOW（默认
+        # 0 使未显式启用的构造（如测试）保持零延迟旧行为）
+        self.late_send_detect_window = late_send_detect_window
         # 未注入时自建空总线：publish 到无订阅者的总线是 no-op，测试可省去该参数
         self.event_bus = event_bus or EventBus()
         self.stream_store = stream_store
@@ -104,10 +115,12 @@ class VirtualTestRunner:
         provider_id: str | None = None,
         model: str | None = None,
         conf_id: str | None = None,
-        assertion: dict | None = None,
+        assertion: dict | list | None = None,
         sender_id: str | None = None,
         sender_name: str | None = None,
+        sender_is_admin: bool | None = None,
         auto_at: bool = True,
+        warnings: list | None = None,
     ) -> str:
         """投递消息并立即返回 test_id（不等待回复）。
 
@@ -117,11 +130,16 @@ class VirtualTestRunner:
             provider_id: 可选，覆盖 LLM provider。
             model: 可选，覆盖模型名。
             conf_id: 可选，临时把会话的配置档案路由到指定档案（测试提示词/系统设定）。
-            assertion: 可选，回复断言规则（见 assertions.py），随结果评估返回。
+            assertion: 可选，回复断言（单条 dict 或规则列表），随结果评估返回。
             sender_id: 可选，消息级发送者 id 覆盖（优先级高于会话绑定的群聊默认成员）。
             sender_name: 可选，消息级发送者昵称覆盖。
+            sender_is_admin: 可选，显式指定发送者是否管理员（覆盖身份库查询）——
+                测试集身份快照自包含（身份被删仍可用），is_admin 不依赖身份库；
+                None 时回退按 sender_id 查身份库（_resolve_role）。
             auto_at: 发送时选项，是否模拟「@机器人」发言（默认开启）；仅群聊
                 消息有意义，私聊恒不生效。来自群发栏 / 测试集消息行的配置。
+            warnings: 可选，启动前由调用方探测出的运行级警告（如 cron 任务可能
+                向虚拟会话发送主动消息），随 status() / 事件流呈现。
 
         Returns:
             test_id，用于查询 status()（实时结果经事件流推送）。
@@ -139,9 +157,14 @@ class VirtualTestRunner:
             effective_auto_at = (
                 auto_at and message_type == MessageType.GROUP_MESSAGE.value
             )
-            # 发送者是否管理员：按解析后的 sender_id 在身份库中查 is_admin，
-            # 决定 event.role，供权限类工具（如 require_admin 的计算机工具）判断
-            is_admin = self._resolve_role(sid) == "admin"
+            # 发送者是否管理员：显式 sender_is_admin（测试集身份快照，自包含）
+            # 优先，否则按解析后的 sender_id 在身份库中查 is_admin，决定
+            # event.role，供权限类工具（如 require_admin 的计算机工具）判断
+            is_admin = (
+                sender_is_admin
+                if sender_is_admin is not None
+                else self._resolve_role(sid) == "admin"
+            )
             events.append(
                 VirtualMessageEvent.create(
                     session_id=s["id"],
@@ -165,6 +188,7 @@ class VirtualTestRunner:
             "total": len(events),
             "results": {},  # session_id -> 结果摘要
             "assertion": assertion,
+            "warnings": list(warnings) if warnings else [],
             "created_at": time.time(),
             "finished_at": None,
             "done": False,
@@ -321,13 +345,27 @@ class VirtualTestRunner:
             entry["status"] = "done"
             entry["status_at"] = time.time()
             self._publish_pending()
+        # 立即快照：结果只含 pipeline 内捕获的回复。随后若开启检测窗口，等待
+        # 期间晚到的回复**不计入结果**（检测不是捕获），只标记 warning 如实
+        # 告知「有异步补发被漏掉」；窗口内快照未变则不打扰。
+        summary = event.result_summary()
+        if self.late_send_detect_window > 0:
+            captured_len = len(event.captured)
+            await asyncio.sleep(self.late_send_detect_window)
+            late = len(event.captured) - captured_len
+            if late > 0:
+                summary["warning"] = (
+                    f"pipeline 结束后又有 {late} 条回复到达（插件异步补发），"
+                    "未计入本次结果"
+                )
         record = self._runs.get(test_id)
         if record is None:
             return
-        summary = event.result_summary()
         assertion = record.get("assertion")
         if assertion:
-            summary["assertion"] = evaluate_rule(assertion, summary.get("reply") or "")
+            evaluated = self._evaluate_assertions(assertion, summary.get("reply") or "")
+            if evaluated is not None:
+                summary["assertion"] = evaluated
         record["results"][event.session_id] = summary
         if self.stream_store is not None:
             await self._write_stream_reply(entry, event, summary)
@@ -350,6 +388,33 @@ class VirtualTestRunner:
                     "record": self.status(test_id),
                 }
             )
+
+    @staticmethod
+    def _evaluate_assertions(assertion: dict | list | None, reply: str) -> dict | None:
+        """评估一条消息的断言（单条 dict 或规则列表）。
+
+        单条规则保持旧结构 ``{pass, detail}``（向后兼容）；多条规则按
+        all-pass 聚合：``{pass, detail:[{pass, detail}, ...]}``。无规则或规则
+        全部无效 → None（结果摘要不出现 assertion 键）。
+        """
+        if assertion is None:
+            return None
+        rules = assertion if isinstance(assertion, list) else [assertion]
+        results = []
+        for rule in rules:
+            if isinstance(rule, dict) and rule.get("kind") == "llm":
+                continue  # LLM 规则由评审阶段评估（Assessor），机械断言路径跳过
+            result = evaluate_rule(rule, reply)
+            if result is not None:
+                results.append(result)
+        if not results:
+            return None
+        if len(results) == 1:
+            return results[0]
+        return {
+            "pass": all(r["pass"] for r in results),
+            "detail": [{"pass": r["pass"], "detail": r["detail"]} for r in results],
+        }
 
     async def _write_stream_reply(
         self,
@@ -402,6 +467,7 @@ class VirtualTestRunner:
             "total": record["total"],
             "done": record["done"],
             "results": results,
+            "warnings": record.get("warnings") or [],
             "stats": duration_stats([r["duration"] for r in results]),
         }
 

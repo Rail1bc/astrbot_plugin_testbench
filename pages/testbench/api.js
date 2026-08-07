@@ -11,6 +11,11 @@ export async function listPlatforms() {
   return bridge.apiGet("platforms");
 }
 
+export async function listProviders() {
+  // 返回裸数组（后端 json_response(providers)），与 listPlatforms 同款
+  return bridge.apiGet("providers");
+}
+
 export async function listConfs() {
   return bridge.apiGet("confs");
 }
@@ -109,8 +114,28 @@ export async function abortTestsetRun(runId) {
   return bridge.apiPost("testsets/run/abort", { run_id: runId });
 }
 
-export async function listTestsetRuns() {
-  return bridge.apiGet("testsets/runs");
+export async function listTestsetRuns(testsetId) {
+  // 可选按测试集过滤（报告视图顶部最近运行）；不带参数返回全部（断线对账 reconcile）
+  return testsetId
+    ? bridge.apiGet("testsets/runs", { testset_id: testsetId })
+    : bridge.apiGet("testsets/runs");
+}
+
+export async function listReports(testsetId) {
+  return bridge.apiGet(`reports/${encodeURIComponent(testsetId)}`);
+}
+
+export async function deleteReports(ids) {
+  return bridge.apiPost("reports/delete", { ids });
+}
+
+export async function retryReviews(reportId, payload) {
+  // payload: {scope: "failed"|"all"} 批量或 {targets: [locator]} 单条；
+  // 返回 {updated, failed, errors, report}（report 为更新后的完整报告数据）
+  return bridge.apiPost(
+    `reports/${encodeURIComponent(reportId)}/reviews/retry`,
+    payload,
+  );
 }
 
 export async function listIdentities() {
@@ -151,6 +176,26 @@ export async function getStream(id) {
 
 export async function clearStream(ids) {
   return bridge.apiPost("sessions/stream/clear", { ids });
+}
+
+export async function listReviewers() {
+  return bridge.apiGet("reviewers");
+}
+
+export async function createReviewer(payload) {
+  return bridge.apiPost("reviewers", payload);
+}
+
+export async function updateReviewer(reviewerId, payload) {
+  return bridge.apiPost(`reviewers/${encodeURIComponent(reviewerId)}/update`, payload);
+}
+
+export async function deleteReviewers(ids) {
+  return bridge.apiPost("reviewers/delete", { ids });
+}
+
+export async function previewReviewerMetrics(metrics) {
+  return bridge.apiPost("reviewers/preview", { metrics });
 }
 
 // ---------- SSE 事件流 ----------

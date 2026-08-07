@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 import uuid
@@ -14,6 +15,8 @@ from pathlib import Path
 from typing import Any
 
 from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
+
+from ._base import AsyncWriteMixin
 
 DEFAULT_PLATFORM_ID = "webchat"
 DEFAULT_SENDER_ID = "testbench"
@@ -31,12 +34,13 @@ def umo_of(session: dict) -> str:
     return f"{platform_id}:{message_type}:{session['id']}"
 
 
-class VirtualGroupManager:
+class VirtualGroupManager(AsyncWriteMixin):
     """测试组的创建、持久化与配置解析。
 
     数据保存到 data 目录下 `virtual_session/groups.json`，符合「插件持久化
     数据存 data 目录」的规范。旧版平铺会话文件（sessions.json）会自动迁移为
-    一个「默认测试组」。
+    一个「默认测试组」。同步写方法保持同步签名，由 API 层经 ``write``
+    （实例锁内线程化）执行，避免事件循环阻塞与并发写竞态。
     """
 
     def __init__(self, data_dir: Path | None = None) -> None:
@@ -45,6 +49,7 @@ class VirtualGroupManager:
         self._dir.mkdir(parents=True, exist_ok=True)
         self._file = self._dir / "groups.json"
         self._legacy_file = self._dir / "sessions.json"
+        self._lock = asyncio.Lock()
         self._groups: list[dict] = self._load()
 
     # ---------- 持久化 ----------
