@@ -981,11 +981,38 @@ async def test_plugin_create_group_applies_conf_route(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_plugin_create_group_invalid_count(tmp_path):
+async def test_plugin_create_group_zero_count_allowed(tmp_path):
     plugin = main_mod.VirtualSessionPlugin(FakeContext())
     plugin.group_mgr = VirtualGroupManager(data_dir=tmp_path)
-    resp = await call_handler(plugin.create_group, {"name": "组A", "count": 0})
+    # count=0 允许：创建 0 会话的空测试组（前端「＋ 新建测试组」直接建空组
+    # 不弹窗，用户后续在编辑弹窗按「会话数量」补齐）
+    resp = await call_handler(plugin.create_group, {"name": "空组", "count": 0})
+    assert resp.status_code == 200
+    body = json.loads(resp.body)
+    assert len(body["sessions"]) == 0
+    # 负数仍拒绝
+    resp = await call_handler(plugin.create_group, {"name": "组A", "count": -1})
     assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_plugin_post_handler_non_dict_body_400(tmp_path):
+    """POST handler 收到非 dict JSON 体（数组/标量/null）→ 400 而非 500。
+
+    修复前 request.json(default={}) 只防解析失败，数组体直接 .get 触发
+    AttributeError → 500；json_dict 统一把非 dict 体转 400。覆盖 api/ 与
+    history_ops 的 save_history / regenerate_history 两处 handler。
+    """
+    plugin = main_mod.VirtualSessionPlugin(FakeContext())
+    plugin.group_mgr = VirtualGroupManager(data_dir=tmp_path)
+    plugin.report_store = rps_mod.ReportStore(data_dir=tmp_path)
+    handlers = [plugin.delete_reports, plugin.save_history, plugin.regenerate_history]
+    for bad_body in ([1, 2], "x", None):
+        for handler in handlers:
+            resp = await call_handler(handler, bad_body)
+            assert resp.status_code == 400, (
+                f"{handler.__name__} 非 dict 体 {bad_body!r} 应被拒绝"
+            )
 
 
 @pytest.mark.asyncio
@@ -2451,6 +2478,17 @@ def test_testset_store_message_auto_at(tmp_path):
     assert msgs[1]["auto_at"] is True
     assert "auto_at" not in msgs[2]  # 非 bool 丢弃
     assert "auto_at" not in msgs[3]  # 缺省不落字段（发送时按 True）
+
+
+def test_normalize_messages_ignores_non_dict_items():
+    """_normalize_messages 对非 dict 消息项直接跳过（数据损坏可见但不崩溃）。"""
+    out = TestsetStore._normalize_messages(
+        [{"text": "a"}, "junk", 42, None, {"text": "  b  "}]
+    )
+    assert out == [
+        {"text": "a", "rules": []},
+        {"text": "b", "rules": []},
+    ]
 
 
 def test_testset_store_delete_unknown(tmp_path):
@@ -4058,6 +4096,47 @@ async def test_runner_writes_stream(tmp_path):
     assert msgs[1]["text"] == "回复"
 
 
+class _FailingReplyStreamStore:
+    """append 正常返回固定 id；update_reply 抛 OSError（模拟流回填磁盘故障）。"""
+
+    def __init__(self) -> None:
+        self.appended: list[dict] = []
+
+    async def append(self, session_id: str, message: dict) -> str:
+        self.appended.append(message)
+        return "m1"
+
+    async def update_reply(self, session_id: str, message_id: str, status: str) -> None:
+        raise OSError("模拟流写入磁盘故障")
+
+
+@pytest.mark.asyncio
+async def test_runner_stream_write_failure_still_completes():
+    """流回填失败不阻断结果收集：完成判定恒执行，运行不挂死。
+
+    修复前 _await_event 里流写入无 try/except：update_reply 抛错会让任务在
+    完成判定之前死亡，done/test_done 不触发，运行挂到 STALE_RUN_TIMEOUT。
+    """
+    queue = asyncio.Queue()
+    runner = VirtualTestRunner(
+        FakeContext(queue), stream_store=_FailingReplyStreamStore()
+    )
+    session = make_session(1)
+
+    async def handler(event):
+        await event.send(MessageChain().message("回复"))
+        event.cleanup_temporary_local_files()
+
+    task = asyncio.create_task(consume(queue, handler))
+    try:
+        test_id = await runner.start(sessions=[session], text="hello")
+        rec = await wait_run_done(runner, test_id)
+    finally:
+        task.cancel()
+    assert rec["done"] is True
+    assert rec["results"][0]["status"] == "ok"
+
+
 @pytest.mark.asyncio
 async def test_runner_auto_at_request_level():
     """auto@ 是请求级选项：默认开启，仅群聊消息生效，私聊恒不生效。"""
@@ -4125,6 +4204,20 @@ def test_conf_tool_info():
             }
         }
     )
+
+
+def test_conf_tool_info_wrong_typed_nested():
+    """嵌套键类型错误（配置被手改坏）不崩溃：非 dict 按空对象处理。
+
+    与缺键同语义——空配置 cron 工具缺省 True，故坏值也不改变判定，
+    只是不再 AttributeError。
+    """
+    assert conf_tool_info({"provider_settings": "x"})["has_callable_tools"] is True
+    info = conf_tool_info({"provider_settings": {"proactive_capability": 5}})
+    assert (
+        info["has_callable_tools"] is True
+    )  # proactive_capability 非 dict → cron 缺省 True
+    assert info["cron_tools"] is True
 
 
 @pytest.mark.asyncio
@@ -4779,6 +4872,14 @@ async def test_assessor_final_rules_scope():
     mech = out[1]
     assert mech["results"][0]["verdict"]["pass"] is True
     assert mech["results"][0]["verdict"]["metrics"][0]["value"] is True
+
+
+def test_assessor_scope_indices_clamping():
+    """_scope_indices 边界钳制：越界裁剪、倒序空、非 dict 回退全部。"""
+    assert Assessor._scope_indices({"from": -3, "to": 10}, 5) == [0, 1, 2, 3, 4]
+    assert Assessor._scope_indices({"from": 2, "to": 2}, 5) == [2]
+    assert Assessor._scope_indices({"from": 3, "to": 1}, 5) == []
+    assert Assessor._scope_indices("all", 3) == [0, 1, 2]
 
 
 # ---------- 实际输入快照与结构化评审材料 ----------

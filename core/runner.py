@@ -367,7 +367,13 @@ class VirtualTestRunner:
                 summary["assertion"] = evaluated
         record["results"][event.session_id] = summary
         if self.stream_store is not None:
-            await self._write_stream_reply(entry, event, summary)
+            try:
+                await self._write_stream_reply(entry, event, summary)
+            except Exception:
+                # 流写入失败不阻断结果收集：记录并继续，保证完成判定恒执行
+                logger.exception(
+                    "测试 %s 会话 %s 消息流写入失败", test_id, event.session_id
+                )
         self.event_bus.publish(
             {
                 "type": "session_done",

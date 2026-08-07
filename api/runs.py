@@ -5,6 +5,7 @@ from __future__ import annotations
 from astrbot.api.web import error_response, json_response, request
 
 from ..core.cron_probe import collect_cron_warnings, target_sets
+from .common import json_dict
 
 
 class RunsAPI:
@@ -15,7 +16,9 @@ class RunsAPI:
 
         与真实平台一致：不设总超时、不分批投递，完全由 AstrBot 原生 pipeline 处理。
         """
-        payload = await request.json(default={})
+        payload = await json_dict()
+        if payload is None:
+            return error_response("请求体必须是 JSON 对象", status_code=400)
         sessions = payload.get("sessions")
         text = payload.get("text")
         if not isinstance(sessions, list) or not sessions:

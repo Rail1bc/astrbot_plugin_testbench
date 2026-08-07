@@ -280,13 +280,15 @@ export function createGroupList(env) {
     );
   }
 
-  // 「＋」块：创建默认配置的测试组，随后弹出编辑弹窗
+  // 「＋」块：直接创建 0 会话的默认配置测试组，不弹编辑弹窗——弹窗会先建组
+  // 再打开，用户点取消时组已被创建（含 1 个会话），行为意外；改为只建空组、
+  // 留在列表里，用户按需点击 ✎ 编辑补配置与「会话数量」。
   async function handleAddGroup() {
     try {
-      const group = await createGroup({ count: 1 });
+      const group = await createGroup({ count: 0 });
       state.expandedGroups.add(group.id);
       await refreshGroups();
-      openGroupSettings(group.id);
+      showRunStatus("ok", `测试组「${group.name}」已创建（0 会话），点击 ✎ 编辑配置会话`);
     } catch (err) {
       showModal("创建失败: " + err.message);
     }

@@ -5,6 +5,30 @@
 <!-- markdownlint-disable MD041 -->
 # ChangeLog
 
+## [Unreleased]
+
+### 🐛 Bug Fixes (修复)
+
+- **运行器消息流写入失败不再挂起运行（HIGH）**：`_await_event` 的流回填调用包 try/except——`stream_store.update_reply` / `append` 抛错（磁盘故障等）时记录日志后继续，`done` / `test_done` 完成判定恒执行，运行不会挂到 `STALE_RUN_TIMEOUT` / `TESTSET_STEP_TIMEOUT` 超时。
+- **「＋ 新建测试组」改为直接建 0 会话空组、不再弹编辑弹窗**：此前创建即弹编辑弹窗，点取消测试组也已被创建（含 1 个会话）；现 `create_group` 允许 `count=0` 创建空测试组，前端直接建组留在列表、不弹窗，用户按需点 ✎ 编辑补配置与「会话数量」。
+- **全 POST handler 非 dict JSON 体不再 500**：`api/common.py` 新增 `json_dict()` 统一读取 helper，全部 POST handler（api/ 下 28 处 + `history_ops` 的 `save_history` / `regenerate_history` 2 处，共 30 处）的 `request.json(default={})` 调用点替换——数组 / 标量 / null 请求体统一返回 400「请求体必须是 JSON 对象」，不再因 `.get` 触发 AttributeError → 500。
+- **配置档案嵌套键类型错误不再崩溃**：`conf_tool_info` 对非 dict 的 `provider_settings` / `proactive_capability` 按空对象处理（配置被手改坏时 `list_confs` / `list_groups` 不再 500）。
+- **测试集消息清洗容忍非 dict 项**：`_normalize_messages` 对非 dict 消息项直接跳过（直调 store 时不因 `.get` 崩溃）。
+- **前端事件流订阅建立即失败可重连**：`connectEvents` 主体包 try/catch，`subscribeEvents` 初始 reject 时同样延迟 3s 重连（此前只在断线回调里重连，首次订阅失败事件层本会话报废）。
+- **历史 / 消息流加载失败回退缓存**：`loadHistory` / `loadStream` 的失败分支优先渲染 `state.historyCache` / `state.streamCache` 已有内容，仅无缓存时才显示错误（瞬态失败不再摧毁已渲染好的面板）。
+- **群成员变更异步失败有反馈**：`removeMember` / `addMember` / `saveChatGroupName` 的 API 失败包 try/catch 并显示错误状态（此前 unhandled rejection + 零反馈）。
+- **报告视图加渲染序号守卫**：`renderReportView` 两个 await 之间切换测试集 / 视图时丢弃乱序迟到响应，不再渲染错对象的运行 / 报告。
+- **「＋ 新建测试集」未保存修改先确认**：`openNewTestset` 有脏编辑时弹 danger 确认（此前 `createTestset` 后 `clearDirty` 把未保存编辑静默丢弃）。
+- **segmentLabel 缺 steps 不崩溃**：运行记录缺 `steps` 字段时回退「第 N 步」文案。
+
+### 🧪 Tests (测试)
+
+- 后端 +5：运行器流写入失败仍完成、`_normalize_messages` 非 dict 项、`conf_tool_info` 嵌套错型、`_scope_indices` 边界钳制、非 dict 请求体 400（223 → 228）。
+- pure.js 动态测试 +7：buildRule 未知类型回退、信封缺 messages / 版本非 number / 非字符串 text / 畸形 final_rules、ruleFailCount 空 verdicts 回退、segmentLabel 缺 steps（35 → 42 断言组）。
+- 前端静态检查 +1：`test_frontend_defensive_fixes` 防御性改动静态标记（59 → 60）。
+
+---
+
 ## [v0.4.4] - 2026-08-07
 
 ### 🧹 Chores / Refactoring (重构与工程化)

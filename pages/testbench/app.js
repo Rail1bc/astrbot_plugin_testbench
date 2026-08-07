@@ -173,7 +173,9 @@ async function loadHistory(id) {
     if (align.isAlignMode()) align.reflowAlign();
   } catch (err) {
     if (historySeq.get(id) !== seq) return; // 迟到失败同样丢弃，不覆盖较新内容
-    chat.innerHTML = `<div class="empty">加载历史失败: ${escapeHtml(err.message)}</div>`;
+    const cached = state.historyCache.get(id);
+    if (cached) renderChat(panel, cached);
+    else chat.innerHTML = `<div class="empty">加载历史失败: ${escapeHtml(err.message)}</div>`;
   }
 }
 
@@ -205,7 +207,9 @@ async function loadStream(id) {
   } catch (err) {
     if (historySeq.get(id) !== seq) return;
     const chatEl = panel.querySelector(".chat");
-    chatEl.innerHTML = `<div class="empty">加载消息流失败: ${escapeHtml(err.message)}</div>`;
+    const cached = state.streamCache.get(id);
+    if (cached) chat.renderStream(panel, cached);
+    else chatEl.innerHTML = `<div class="empty">加载消息流失败: ${escapeHtml(err.message)}</div>`;
   }
 }
 

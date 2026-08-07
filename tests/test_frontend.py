@@ -1299,3 +1299,31 @@ def test_frontend_pure_module_extracted():
     assert "function ruleFailCount(" not in run_js, (
         "testset_run.js 残留 ruleFailCount 定义"
     )
+
+
+def test_frontend_defensive_fixes():
+    """质量复审修复轮的防御性改动标记（防回归）。
+
+    本轮（v0.4.4 不 bump）修复：事件流订阅建立即失败的延迟重连、历史/消息流
+    加载失败回退缓存、群成员变更异步失败反馈、报告视图乱序响应丢弃、新建测试
+    集未保存修改确认、新建测试组直接建 0 会话空组不弹窗。各标记为修复的静态
+    落点，缺失即修复被回退。
+    """
+    reports_js = _read_module("testset_reports")
+    events_js = _read_module("events")
+    app_js = _read_module("app")
+    list_js = _read_module("testset_list")
+    identity_js = _read_module("identity_list")
+    gl_js = _read_module("group_list")
+    assert "reportSeq" in reports_js, "报告视图缺少渲染序号守卫 reportSeq"
+    assert "事件流订阅失败" in events_js, "事件流订阅建立失败缺少延迟重连"
+    assert "state.historyCache.get(id)" in app_js, "历史加载失败未回退缓存"
+    assert "state.streamCache.get(id)" in app_js, "消息流加载失败未回退缓存"
+    assert "doOpenNewTestset" in list_js, "新建测试集未提取 doOpenNewTestset（脏确认）"
+    assert "成员加入失败" in identity_js, "群成员加入失败缺少错误反馈"
+    assert "成员移除失败" in identity_js, "群成员移除失败缺少错误反馈"
+    assert "群聊名称保存失败" in identity_js, "群聊名称保存失败缺少错误反馈"
+    assert "createGroup({ count: 0 })" in gl_js, (
+        "「＋ 新建测试组」未改为直接建 0 会话空组"
+    )
+    assert "showRunStatus" in gl_js, "新建测试组后缺少状态提示"

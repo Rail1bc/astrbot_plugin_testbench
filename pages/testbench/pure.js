@@ -235,5 +235,6 @@ export function segmentLabel(run, idx) {
   for (const [s, e] of (run && run.batch_ranges) || []) {
     if (idx >= s && idx <= e) return `第 ${s + 1}–${e + 1} 步（批量）`;
   }
-  return `第 ${idx + 1}/${run.steps.length} 步`;
+  const total = (run && run.steps && run.steps.length) || 0;
+  return total ? `第 ${idx + 1}/${total} 步` : `第 ${idx + 1} 步`;
 }

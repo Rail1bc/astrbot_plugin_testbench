@@ -2,10 +2,22 @@
 
 from __future__ import annotations
 
+from astrbot.api.web import request
+
 from ..core.conf_routes import apply_routes, clear_routes, sync_route
 
 # 单测试组会话数上限（与 store/testset_store 的 MAX_MESSAGES_PER_TESTSET 同风格安全阀）
 MAX_SESSIONS_PER_GROUP = 500
+
+
+async def json_dict() -> dict | None:
+    """读取请求 JSON 体；非 dict（数组 / 标量 / null / 损坏）返回 None。
+
+    全部 POST handler 用它替代 ``request.json(default={})``——default 只防解析
+    失败，非 dict 体直接 ``.get`` 会 AttributeError → 500。调用方对 None 返回 400。
+    """
+    payload = await request.json(default=None)
+    return payload if isinstance(payload, dict) else None
 
 
 class ConfRouteMixin:

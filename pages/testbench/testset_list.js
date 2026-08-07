@@ -115,6 +115,19 @@ export function createTestsetList(env) {
   }
 
   function openNewTestset() {
+    // 与切换 / 删除 / 导入一致：有未保存修改时先确认，否则 createTestset 之后
+    // clearDirty 会把脏状态掩盖掉，未保存的编辑被静默丢弃
+    if (editor.getDirty()) {
+      showModal("新建将丢弃当前测试集的未保存修改，确定吗？", {
+        danger: true,
+        onOk: () => doOpenNewTestset(),
+      });
+      return;
+    }
+    doOpenNewTestset();
+  }
+
+  function doOpenNewTestset() {
     const inp = document.createElement("input");
     inp.type = "text";
     inp.value = "测试集";

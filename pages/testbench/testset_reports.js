@@ -56,6 +56,8 @@ export function createReportView(deps) {
 
   // 编辑窗口当前视图：「edit」编辑消息 /「report」报告页（最近运行 + 持久化报告）
   let viewMode = "edit";
+  // 报告视图渲染序号：两个 await 间切换测试集 / 视图会渲染错对象，乱序响应丢弃
+  let reportSeq = 0;
 
   // 页眉「报告」按钮：在编辑与报告视图之间切换；切到报告时拉取渲染
   function toggleViewMode() {
@@ -79,6 +81,7 @@ export function createReportView(deps) {
   // 报告视图：顶部该测试集最近的运行（可找回进度），下方持久化报告列表。
   // 无选中测试集 → 空态引导
   async function renderReportView() {
+    const seq = ++reportSeq;
     const ts = currentSelected();
     const body = $("ts-report-body");
     body.innerHTML = "";
@@ -107,12 +110,14 @@ export function createReportView(deps) {
     let reportsFailed = false;
     try {
       const data = await listTestsetRuns(ts.id);
+      if (seq !== reportSeq) return; // 期间已切换渲染目标，丢弃本次迟到响应
       runs = Array.isArray(data.runs) ? data.runs : [];
     } catch (err) {
       runsFailed = true;
     }
     try {
       const data = await listReports(ts.id);
+      if (seq !== reportSeq) return;
       reports = Array.isArray(data.reports) ? data.reports : [];
     } catch (err) {
       reportsFailed = true;

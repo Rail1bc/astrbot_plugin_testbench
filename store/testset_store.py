@@ -103,6 +103,8 @@ class TestsetStore(AsyncWriteMixin):
         """
         out: list[dict] = []
         for item in messages:
+            if not isinstance(item, dict):
+                continue
             text = str(item.get("text") or "").strip()
             if not text:
                 continue

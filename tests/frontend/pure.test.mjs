@@ -73,6 +73,10 @@ test("buildRule: llm 带 profile + context", () => {
   });
 });
 
+test("buildRule: 未知类型 → 原样 { type } 回退", () => {
+  assert.deepEqual(buildRule("mystery", "", "", ""), { type: "mystery" });
+});
+
 // ---------- collectRules ----------
 
 test("collectRules: 空输入 → []", () => {
@@ -291,6 +295,65 @@ test("parseTestsetEnvelope: 非法 batch_ranges 过滤", () => {
   assert.deepEqual(parsed.batch_ranges, [[0, 1]]);
 });
 
+test("parseTestsetEnvelope: 缺 messages 数组 → 抛错", () => {
+  assert.throws(
+    () =>
+      parseTestsetEnvelope(
+        JSON.stringify({ format: "astrbot-testbench-testset", version: 2, name: "x" }),
+      ),
+    /缺少 messages 数组/,
+  );
+});
+
+test("parseTestsetEnvelope: 版本非 number → 抛错", () => {
+  assert.throws(
+    () =>
+      parseTestsetEnvelope(
+        JSON.stringify({
+          format: "astrbot-testbench-testset",
+          version: "2",
+          messages: [],
+        }),
+      ),
+    /不支持的测试集格式版本/,
+  );
+});
+
+test("parseTestsetEnvelope: 非字符串 text 行跳过", () => {
+  const parsed = parseTestsetEnvelope(
+    JSON.stringify({
+      format: "astrbot-testbench-testset",
+      version: 2,
+      name: "x",
+      messages: [{ text: "ok" }, { text: 123 }, { text: null }],
+    }),
+  );
+  assert.equal(parsed.messages.length, 1);
+  assert.equal(parsed.messages[0].text, "ok");
+});
+
+test("parseTestsetEnvelope: 畸形 final_rules 项过滤", () => {
+  const parsed = parseTestsetEnvelope(
+    JSON.stringify({
+      format: "astrbot-testbench-testset",
+      version: 2,
+      name: "x",
+      messages: [{ text: "a" }],
+      final_rules: [
+        { rule: { type: "contains", value: "x" }, scope: "all" },
+        { scope: "all" },
+        null,
+        { rule: "notdict" },
+        { rule: { type: "contains", value: "y" } },
+      ],
+    }),
+  );
+  assert.deepEqual(parsed.final_rules, [
+    { rule: { type: "contains", value: "x" }, scope: "all" },
+    { rule: { type: "contains", value: "y" } },
+  ]);
+});
+
 // ---------- ruleFailCount / ruleReviewFailCount ----------
 
 test("ruleFailCount: verdicts 优先，pass=false 计失败", () => {
@@ -304,6 +367,11 @@ test("ruleFailCount: 旧格式回退 assertion", () => {
   assert.equal(ruleFailCount({ assertion: { pass: false } }), 1);
   assert.equal(ruleFailCount({ assertion: { pass: true } }), 0);
   assert.equal(ruleFailCount({}), 0);
+});
+
+test("ruleFailCount: 空 verdicts → assertion 回退", () => {
+  assert.equal(ruleFailCount({ verdicts: [], assertion: { pass: false } }), 1);
+  assert.equal(ruleFailCount({ verdicts: [], assertion: { pass: true } }), 0);
 });
 
 test("ruleReviewFailCount: 只数 status error/invalid", () => {
@@ -332,4 +400,10 @@ test("segmentLabel: 批量段内/外", () => {
   const run = { batch_ranges: [[1, 2]], steps: [{}, {}, {}, {}] };
   assert.equal(segmentLabel(run, 1), "第 2–3 步（批量）");
   assert.equal(segmentLabel(run, 3), "第 4/4 步");
+});
+
+test("segmentLabel: 缺 steps 不崩溃", () => {
+  assert.equal(segmentLabel({ batch_ranges: [] }, 0), "第 1 步");
+  assert.equal(segmentLabel({}, 0), "第 1 步");
+  assert.equal(segmentLabel(undefined, 0), "第 1 步");
 });

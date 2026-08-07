@@ -13,8 +13,9 @@ import copy
 import json
 from typing import Any
 
-from astrbot.api.web import error_response, json_response, request
+from astrbot.api.web import error_response, json_response
 
+from .api.common import json_dict
 from .store.group_store import umo_of
 
 
@@ -50,7 +51,9 @@ class HistoryOps:
         语义与原生对话管理的一致：编辑器展示完整结构，保存即整体替换，
         编辑、新增、删除对话都通过直接修改 JSON 完成。
         """
-        payload = await request.json(default={})
+        payload = await json_dict()
+        if payload is None:
+            return error_response("请求体必须是 JSON 对象", status_code=400)
         session_id = payload.get("id")
         conversations = payload.get("conversations")
         if not isinstance(session_id, str) or not session_id:
@@ -129,7 +132,9 @@ class HistoryOps:
 
     async def regenerate_history(self) -> Any:
         """重新生成指定轮次：截断该轮（含）之后的历史，重发该轮的 user 消息。"""
-        payload = await request.json(default={})
+        payload = await json_dict()
+        if payload is None:
+            return error_response("请求体必须是 JSON 对象", status_code=400)
         session_id = payload.get("id")
         index = payload.get("index")
         conversation_id = payload.get("conversation_id")

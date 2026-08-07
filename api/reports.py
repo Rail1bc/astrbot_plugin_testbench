@@ -9,10 +9,11 @@
 
 from __future__ import annotations
 
-from astrbot.api.web import error_response, json_response, request
+from astrbot.api.web import error_response, json_response
 
 from ..eval.reporting import build_metrics_summary
 from ..eval.reviewer import retry_llm_verdict
+from .common import json_dict
 
 
 def _iter_verdict_locators(data: dict):
@@ -59,7 +60,9 @@ class ReportsAPI:
 
     async def delete_reports(self):
         """删除报告（按 report id）。"""
-        payload = await request.json(default={})
+        payload = await json_dict()
+        if payload is None:
+            return error_response("请求体必须是 JSON 对象", status_code=400)
         ids = payload.get("ids")
         if not isinstance(ids, list) or not ids:
             return error_response("ids 不能为空", status_code=400)
@@ -75,7 +78,9 @@ class ReportsAPI:
         未存上下文 / profile 已删除的 verdict 跳过并计入 failed。重试后重建
         metrics_summary 并整体替换报告 data。
         """
-        payload = await request.json(default={})
+        payload = await json_dict()
+        if payload is None:
+            return error_response("请求体必须是 JSON 对象", status_code=400)
         scope = payload.get("scope")
         targets = payload.get("targets")
         if scope not in ("failed", "all") and not isinstance(targets, list):

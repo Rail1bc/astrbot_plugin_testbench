@@ -391,8 +391,13 @@ export function createIdentityList(env) {
     const memberIds = (Array.isArray(cg.member_ids) ? cg.member_ids : []).filter(
       (x) => x !== mid,
     );
-    await updateChatGroup(cg.id, { member_ids: memberIds });
-    await refreshChatGroups();
+    try {
+      await updateChatGroup(cg.id, { member_ids: memberIds });
+      await refreshChatGroups();
+    } catch (err) {
+      showRunStatus("error", `成员移除失败: ${err.message}`);
+      return;
+    }
     showRunStatus("ok", "成员已移出该群");
   }
 
@@ -458,9 +463,14 @@ export function createIdentityList(env) {
       return;
     }
     memberIds.push(mid);
-    await updateChatGroup(cg.id, { member_ids: memberIds });
-    $("cg-search").value = "";
-    await refreshChatGroups();
+    try {
+      await updateChatGroup(cg.id, { member_ids: memberIds });
+      $("cg-search").value = "";
+      await refreshChatGroups();
+    } catch (err) {
+      showRunStatus("error", `成员加入失败: ${err.message}`);
+      return;
+    }
     showRunStatus("ok", "成员已加入该群");
   }
 
@@ -473,8 +483,13 @@ export function createIdentityList(env) {
       showRunStatus("warn", "群聊名称不能为空");
       return;
     }
-    await updateChatGroup(cg.id, { name });
-    await refreshChatGroups();
+    try {
+      await updateChatGroup(cg.id, { name });
+      await refreshChatGroups();
+    } catch (err) {
+      showRunStatus("error", `群聊名称保存失败: ${err.message}`);
+      return;
+    }
     showRunStatus("ok", "群聊名称已保存");
   }
 
