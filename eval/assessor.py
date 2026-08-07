@@ -92,12 +92,12 @@ def inject_system_prompt_block(
 
     ``{{agent_system_prompt}}`` 占位符展开已废弃（部分评审 Provider 不把
     system_prompt 真正发给评审 LLM，占位符内容到不了模型）；改为注入评审
-    输入（prompt）开头——prompt 是所有 Provider 必传的。未捕获（无快照）或
-    为空时原样返回。
+    输入（prompt）开头——prompt 是所有 Provider 必传的。注入块恒存在：未捕获
+    （无快照）或内容为空时显示占位文案，报告详情可直观确认注入链路状态，
+    不静默吞掉。
     """
-    if not agent_system_prompt:
-        return context_text
-    return f"【被测 Agent 系统提示词】\n{agent_system_prompt}\n\n{context_text}"
+    content = agent_system_prompt or "（未捕获到被测 agent 系统提示词）"
+    return f"【被测 Agent 系统提示词】\n{content}\n\n{context_text}"
 
 
 class Assessor:

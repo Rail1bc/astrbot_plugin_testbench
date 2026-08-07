@@ -4809,7 +4809,11 @@ async def test_assessor_step_llm_ok_with_context_modes():
     verdict = steps[0]["results"][0]["verdicts"][0]
     assert verdict["status"] == "ok" and verdict["pass"] is True
     prompt = provider.calls[0]["prompt"]
-    assert prompt.startswith("第 1 步:")
+    # 未捕获系统提示词 → 注入块占位文案仍存在，多轮记录随后
+    assert prompt.startswith(
+        "【被测 Agent 系统提示词】\n（未捕获到被测 agent 系统提示词）\n\n"
+    )
+    assert "第 1 步:" in prompt
     # 结构化评审材料：中文标签块标注身份与输入/输出分界
     assert "【输入 · user（测试台）】\n问" in prompt
     assert "【输出 · agent（virtual_bot）】\n回答" in prompt
@@ -5206,13 +5210,17 @@ async def test_retry_llm_verdict_keeps_agent_system_prompt_field():
 
 
 def test_inject_system_prompt_block():
-    """注入块纯函数：有系统提示词 → 开头注入中文标签块；空 / 无 → 原样返回。"""
+    """注入块纯函数：有系统提示词 → 开头注入中文标签块；未捕获 → 占位文案块。"""
     ctx = "【输入 · user（测试台）】\n问\n\n【输出 · agent（virtual_bot）】\n答"
     out = inject_system_prompt_block(ctx, "你是助手")
     assert out == "【被测 Agent 系统提示词】\n你是助手\n\n" + ctx
-    # 未捕获（None / 空串）→ 原样返回（不注入空块）
-    assert inject_system_prompt_block(ctx, None) == ctx
-    assert inject_system_prompt_block(ctx, "") == ctx
+    # 未捕获（None / 空串）→ 注入块仍存在，显示占位文案（详情可确认链路状态）
+    assert inject_system_prompt_block(ctx, None) == (
+        "【被测 Agent 系统提示词】\n（未捕获到被测 agent 系统提示词）\n\n" + ctx
+    )
+    assert inject_system_prompt_block(ctx, "") == (
+        "【被测 Agent 系统提示词】\n（未捕获到被测 agent 系统提示词）\n\n" + ctx
+    )
 
 
 @pytest.mark.asyncio
@@ -5271,7 +5279,7 @@ async def test_assessor_inject_system_prompt_rule_level():
     assert "被测 Agent 系统提示词" not in prompt2
     assert prompt2.startswith("【输入 · user（测试台）】")
 
-    # 开启但未捕获系统提示词（无 llm_input 快照）→ 不注入（无内容可注入）
+    # 开启但未捕获系统提示词（无 llm_input 快照）→ 注入占位块（详情可见链路状态）
     provider3 = make_provider()
     assessor3 = Assessor(FakeContext(providers=[provider3]), {"rp_test": profile})
     steps3 = [
@@ -5284,8 +5292,10 @@ async def test_assessor_inject_system_prompt_rule_level():
     ]
     await assessor3.assess(steps3, [], [])
     prompt3 = provider3.calls[0]["prompt"]
-    assert "被测 Agent 系统提示词" not in prompt3
-    assert prompt3.startswith("【输入 · user（测试台）】")
+    assert prompt3.startswith(
+        "【被测 Agent 系统提示词】\n（未捕获到被测 agent 系统提示词）\n\n"
+    )
+    assert "【输入 · user（测试台）】" in prompt3
 
 
 def test_result_summary_carries_llm_input():
