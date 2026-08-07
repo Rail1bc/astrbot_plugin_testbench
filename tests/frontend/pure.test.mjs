@@ -45,6 +45,13 @@ test("buildRule: min_len 整数 → 数值", () => {
   assert.deepEqual(buildRule("min_len", "5", "", ""), { type: "min_len", value: 5 });
 });
 
+test("buildRule: min_len/max_len 负数与超大整数按原样保留", () => {
+  // Number("-1") = -1 是整数 → 负数原样保留（语义上退化但合法，不静默改值）；
+  // 超大整数在 JS Number 安全整数范围内，不溢出不截断。
+  assert.deepEqual(buildRule("min_len", "-1", "", ""), { type: "min_len", value: -1 });
+  assert.deepEqual(buildRule("max_len", "1000000", "", ""), { type: "max_len", value: 1000000 });
+});
+
 test("buildRule: json/non_empty 无值（忽略多余值）", () => {
   assert.deepEqual(buildRule("json", "", "", ""), { type: "json" });
   assert.deepEqual(buildRule("non_empty", "ignored", "", ""), { type: "non_empty" });
@@ -136,6 +143,24 @@ test("collectEditorRows: sender 无 sender_id 不合并", () => {
     { text: "hi", rules: [], sender: {}, isCommand: false, autoAt: true, batch: false },
   ]);
   assert.deepEqual(messages[0], { text: "hi", rules: [], auto_at: true });
+});
+
+test("collectEditorRows: rules 缺失 / undefined / null 归一为 []", () => {
+  const { messages } = collectEditorRows([
+    { text: "a", sender: {}, isCommand: false, autoAt: true, batch: false },
+    { text: "b", rules: undefined, sender: {}, isCommand: false, autoAt: true, batch: false },
+    { text: "c", rules: null, sender: {}, isCommand: false, autoAt: true, batch: false },
+  ]);
+  assert.equal(messages.length, 3);
+  for (const m of messages) {
+    assert.ok(Array.isArray(m.rules), "rules 必须归一为数组");
+    assert.deepEqual(m.rules, []);
+  }
+});
+
+test("collectEditorRows: 空 / null 输入 → 空消息列表与空批量段", () => {
+  assert.deepEqual(collectEditorRows(null), { messages: [], batchRanges: [] });
+  assert.deepEqual(collectEditorRows([]), { messages: [], batchRanges: [] });
 });
 
 // ---------- parseScope ----------
