@@ -1,0 +1,6 @@
+{
+  "name": "astrbot_plugin_testbench",
+  "private": true,
+  "type": "module",
+  "description": "声明 ES module：Node 的 node:test 可直接加载 pages/testbench/pure.js（浏览器页面脚本不受影响，本项目无 npm 依赖）"
+}

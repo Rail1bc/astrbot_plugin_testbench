@@ -15,6 +15,12 @@ import {
 import { openModal } from "./modal.js";
 import { state } from "./state.js";
 import { effectiveView, escapeHtml, statusText } from "./utils.js";
+import {
+  ruleFailCount,
+  ruleReviewFailCount,
+  segmentLabel,
+  segmentSummary,
+} from "./pure.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -26,24 +32,6 @@ const MAX_STASHED_REPORTS = 20;
 // 这些渲染辅助不依赖控制器状态（只读 run dict），提到模块级导出；报告数据是
 // 运行终态快照，与 run 记录同构，buildResultsTable / renderFinalVerdicts
 // 可直接渲染持久化报告。
-
-// 单条会话结果的「断言未通过」数：优先 verdicts（评审层产物，含机械 + LLM
-// 规则，pass=false 计失败）；旧格式回退 assertion。评审失败（error/invalid，
-// pass 为 null）不计入——评审失败 ≠ 评审不通过，单列 review 失败数
-function ruleFailCount(r) {
-  if (Array.isArray(r.verdicts) && r.verdicts.length) {
-    return r.verdicts.filter((v) => v.pass === false).length;
-  }
-  return r.assertion && !r.assertion.pass ? 1 : 0;
-}
-
-// 单条会话结果的「评审失败」数（LLM 调用失败 / 输出契约不符，pass 为 null）
-function ruleReviewFailCount(r) {
-  if (!Array.isArray(r.verdicts)) return 0;
-  return r.verdicts.filter(
-    (v) => v.status === "error" || v.status === "invalid",
-  ).length;
-}
 
 // 运行级警告块（cron 任务可能向虚拟会话发送主动消息等）：无警告返回 null，
 // 供结果表格 / 报告视图在表格上方呈现
@@ -349,21 +337,7 @@ export function createTestsetRunController(env) {
     getRefreshTestsets = getter;
   }
 
-  // 批量发送范围的启动文案：如「，含批量段 1-2、4」；无批量段返回空串
-  function segmentSummary(testset) {
-    const ranges = testset.batch_ranges || [];
-    if (!ranges.length) return "";
-    const parts = ranges.map(([s, e]) => (s === e ? `${s + 1}` : `${s + 1}-${e + 1}`));
-    return `，含批量段 ${parts.join("、")}`;
-  }
-
-  // 进度文案：当前步在某批量段内 → 显示段范围；否则显示第 i/N 步
-  function segmentLabel(run, idx) {
-    for (const [s, e] of run.batch_ranges || []) {
-      if (idx >= s && idx <= e) return `第 ${s + 1}–${e + 1} 步（批量）`;
-    }
-    return `第 ${idx + 1}/${run.steps.length} 步`;
-  }
+  // 批量段启动文案 / 进度文案（segmentSummary / segmentLabel 在 pure.js）
 
   // 测试集运行进度：由 /events 的 testset 事件（完整 run 快照）驱动。
   // 新完成的步骤经 applySessionFeedback 逐会话反馈（与手动群发同路径）；

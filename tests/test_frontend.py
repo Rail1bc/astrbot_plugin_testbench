@@ -11,7 +11,8 @@ PLUGIN_DIR = REPO_ROOT  # 插件根目录即仓库根，页面文件在 pages/te
 
 # 页面全部 ES module（入口 app.js + 视图/状态/工具模块；events.js 事件驱动反馈层、
 # testset_run.js 测试集运行编排、testset_editor.js 测试集编辑器、identity_list.js
-# 「身份与群聊」视图为拆分后新增模块）
+# 「身份与群聊」视图为拆分后新增模块；pure.js 为零依赖纯函数层，由 node:test 动态
+# 测试、经本清单做静态防回归检查）
 _FRONTEND_MODULES = (
     "app",
     "api",
@@ -26,6 +27,7 @@ _FRONTEND_MODULES = (
     "events",
     "testset_run",
     "identity_list",
+    "pure",
 )
 
 
@@ -317,8 +319,9 @@ def test_frontend_testset_export_import_and_group_target():
     testset_editor.js，运行弹窗在 testset_list.js。
     """
     editor_js = _read_module("testset_editor")
+    pure_js = _read_module("pure")
     list_js = _read_module("testset_list")
-    assert "astrbot-testbench-testset" in editor_js, "导出信封缺少 format 标识"
+    assert "astrbot-testbench-testset" in pure_js, "信封 format 标识未在 pure.js 定义"
     assert "version: EXPORT_VERSION" in editor_js, "导出信封缺少 version"
     assert "format: EXPORT_FORMAT" in editor_js, "导出信封未序列化 format"
     assert "createTestset({" in editor_js, "导入未复用 createTestset 端点"
@@ -751,26 +754,30 @@ def test_frontend_testset_row_identity():
     须保留可选 sender 与 auto_at 字段。
     """
     editor_js = _read_module("testset_editor")
+    pure_js = _read_module("pure")
     assert "collectSender(" in editor_js, "缺少行内身份收集函数 collectSender"
     assert "const sender = collectSender(" in editor_js, (
         "collectEditorRows 未收集行内身份"
     )
-    assert "const message = { text, rules }" in editor_js, (
-        "收集的消息未携带 text 与 rules 列表"
+    # 行收集的纯逻辑在 pure.js（collectEditorRows），编辑器只做 DOM 读取薄包装
+    assert "const message = { text, rules" in pure_js, (
+        "pure.js 收集的消息未携带 text 与 rules 列表"
     )
-    assert (
-        "if (sender.sender_id !== undefined) Object.assign(message, sender)"
-        in editor_js
-    ), "收集的消息未合并 sender / auto_at 字段"
-    assert "if (cmdCb.checked) message.is_command = true" in editor_js, (
-        "命令标记勾选未收集进消息"
+    assert "sender.sender_id !== undefined" in pure_js, (
+        "pure.js 收集的消息未合并可选 sender 字段"
     )
-    assert "message.auto_at = atCb.checked" in editor_js, "收集的消息未带 auto_at"
-    assert "message.sender_id = m.sender_id" in editor_js, "导入信封未保留 sender_id"
-    assert "message.sender_name = m.sender_name" in editor_js, (
+    assert "Object.assign(message, row.sender)" in pure_js, (
+        "pure.js 收集的消息未合并 sender / auto_at 字段"
+    )
+    assert "row.isCommand" in pure_js and "message.is_command = true" in pure_js, (
+        "pure.js 命令标记勾选未收集进消息"
+    )
+    assert "message.auto_at = !!row.autoAt" in pure_js, "pure.js 收集的消息未带 auto_at"
+    assert "message.sender_id = m.sender_id" in pure_js, "导入信封未保留 sender_id"
+    assert "message.sender_name = m.sender_name" in pure_js, (
         "导入信封未保留 sender_name"
     )
-    assert "message.auto_at = m.auto_at" in editor_js, "导入信封未保留 auto_at"
+    assert "message.auto_at = m.auto_at" in pure_js, "导入信封未保留 auto_at"
     assert "atCb.checked = !msg || msg.auto_at !== false" in editor_js, (
         "消息行 @ 勾选未按 auto_at 缺省开启渲染"
     )
@@ -784,13 +791,16 @@ def test_frontend_rules_editor():
     buildRule 对需要值的类型做校验（min_len/max_len 整数）。
     """
     editor_js = _read_module("testset_editor")
+    pure_js = _read_module("pure")
     assert "RULE_TYPES" in editor_js, "缺少断言类型定义 RULE_TYPES"
     assert "buildRuleRow(" in editor_js, "缺少单条断言编辑行构建 buildRuleRow"
     assert "rulesBox.appendChild(buildRuleRow(" in editor_js, "消息行未渲染多断言列表"
-    assert "function collectRules(" in editor_js, "缺少多断言收集 collectRules"
-    assert (
-        'for (const wrap of rulesBox.querySelectorAll(".ts-msg-rule"))' in editor_js
-    ), "collectRules 未遍历 .ts-msg-rule 行"
+    assert "export function collectRules(" in pure_js, (
+        "多断言收集 collectRules 未在 pure.js"
+    )
+    assert 'querySelectorAll(".ts-msg-rule")' in editor_js, (
+        "collectEditorRows 未遍历 .ts-msg-rule 行读取输入"
+    )
     assert 'wrap.className = "ts-msg-rule"' in editor_js, "断言行未使用 .ts-msg-rule 类"
     assert "ruleTypeLabel(" in editor_js, "缺少断言类型中文名映射"
     css = (PLUGIN_DIR / "pages" / "testbench" / "style.css").read_text(encoding="utf-8")
@@ -832,19 +842,21 @@ def test_frontend_envelope_v2():
     （rules / is_command / identity / pool），版本号高于 2 拒绝。
     """
     editor_js = _read_module("testset_editor")
-    assert "const EXPORT_VERSION = 2" in editor_js, "信封版本未升至 v2"
+    pure_js = _read_module("pure")
+    assert "export const EXPORT_VERSION = 2" in pure_js, "信封版本未升至 v2"
     assert "envelope.identity = identity.identity_snapshot" in editor_js, (
         "single 模式导出未携带 identity 快照"
     )
     assert "envelope.pool = identity.pool_snapshot" in editor_js, (
         "pool 模式导出未携带身份池"
     )
-    assert 'identity_mode: data.pool ? "pool" : "single"' in editor_js, (
+    # 导入解析（parseTestsetEnvelope）在 pure.js
+    assert 'identity_mode: data.pool ? "pool" : "single"' in pure_js, (
         "导入解析未按 envelope.pool 判定身份模式"
     )
-    assert "data.version > EXPORT_VERSION" in editor_js, "导入未拒绝高于当前版本的信封"
-    assert "for (const r of m.rules)" in editor_js, "导入未处理 v2 rules 列表"
-    assert "m.rule != null" in editor_js, "导入未兼容 v1 单条 rule"
+    assert "data.version > EXPORT_VERSION" in pure_js, "导入未拒绝高于当前版本的信封"
+    assert "for (const r of m.rules)" in pure_js, "导入未处理 v2 rules 列表"
+    assert "m.rule != null" in pure_js, "导入未兼容 v1 单条 rule"
 
 
 def test_frontend_broadcast_identity_selector():
@@ -946,16 +958,18 @@ def test_frontend_llm_rule_row():
     LLM 规则（否则被静默丢弃）。
     """
     editor_js = _read_module("testset_editor")
+    pure_js = _read_module("pure")
     assert '["llm", "LLM 评审"]' in editor_js, "RULE_TYPES 缺少 LLM 评审类型"
     assert "buildProfileSelect(" in editor_js, "缺少评审 Profile 下拉构建"
     assert "buildContextSelect(" in editor_js, "缺少上下文模式下拉构建"
     assert 'className = "ts-msg-rule-llm"' in editor_js, "缺少 LLM 字段区容器"
     assert 'sel.value === "llm"' in editor_js, "类型切换未按 llm 显示 LLM 字段区"
-    assert 'const rule = { kind: "llm", profile_id: profileId }' in editor_js, (
+    # 规则构造（buildRule）在 pure.js，编辑器把 LLM 行的 profile/context 下拉读入
+    assert 'const rule = { kind: "llm", profile_id: profileId }' in pure_js, (
         "LLM 规则未收集为 {kind: 'llm', profile_id}"
     )
     assert 'llmBox.querySelector(".ts-msg-rule-profile")' in editor_js, (
-        "collectRules 未读取 LLM 规则 profile 下拉"
+        "编辑器未读取 LLM 规则 profile 下拉"
     )
     assert "未选择评审 Profile" in editor_js, "保存前未拦截未选 profile 的 LLM 规则"
 
@@ -970,14 +984,15 @@ def test_frontend_final_rules_editor():
     """
     html = _read_html()
     editor_js = _read_module("testset_editor")
+    pure_js = _read_module("pure")
     assert 'id="ts-final-rules"' in html, "index.html 缺少最终断言容器"
     assert 'id="btn-ts-add-final"' in html, "index.html 缺少添加最终断言按钮"
     assert "buildFinalRuleRow(" in editor_js, "缺少最终断言行构建"
     assert "collectFinalRules()" in editor_js, "缺少最终断言收集"
-    assert "function parseScope(" in editor_js, "缺少 scope 范围解析"
+    assert "export function parseScope(" in pure_js, "scope 范围解析未在 pure.js"
     assert "final_rules: finalRules" in editor_js, "保存 payload 缺少 final_rules"
     assert "final_rules: collectFinalRules()" in editor_js, "导出信封缺少 final_rules"
-    assert "result.final_rules.push(item)" in editor_js, "导入解析未保留 final_rules"
+    assert "result.final_rules.push(item)" in pure_js, "导入解析未保留 final_rules"
     assert "final_rules: parsed.final_rules" in editor_js, (
         "导入未把 final_rules 传给 createTestset"
     )
@@ -1233,4 +1248,49 @@ def test_frontend_report_list_actions():
     assert "deleteReports([id])" in editor_js, "删除报告未调 deleteReports"
     assert "getDeps().viewTestsetRun(r.run_id)" in editor_js, (
         "最近运行查看未走 viewTestsetRun 找回"
+    )
+
+
+def test_frontend_pure_module_extracted():
+    """纯函数抽取完整性：pure.js 承载可测纯逻辑，页面模块经 import 复用同一实现。
+
+    Phase 2 把 testset_editor.js / testset_run.js 的行收集、规则构造、导入解析、
+    verdict 计数、段文案等纯函数抽到 pages/testbench/pure.js（零依赖、不引用
+    DOM/state/其它模块），由 node:test（tests/frontend/pure.test.mjs）动态测试；
+    两个页面模块须从该模块 import，防止两处实现漂移。静态检查只做结构性防回归，
+    行为由 node:test 覆盖。
+    """
+    import re
+
+    pure_js = _read_module("pure")
+    editor_js = _read_module("testset_editor")
+    run_js = _read_module("testset_run")
+    # 零依赖：不得 import 其它模块 / 引用 DOM
+    assert not re.search(r"^\s*import\b", pure_js, re.MULTILINE), (
+        "pure.js 不得 import 其它模块（保持零依赖可被 node:test 直接加载）"
+    )
+    assert "document." not in pure_js, "pure.js 不得引用 document（保持纯函数）"
+    assert "querySelector" not in pure_js, "pure.js 不得做 DOM 查询（保持纯函数）"
+    # 被抽取纯函数均在 pure.js 导出
+    for fn in (
+        "collectEditorRows",
+        "collectRules",
+        "buildRule",
+        "parseScope",
+        "parseTestsetEnvelope",
+        "rangesFromFlags",
+        "ruleFailCount",
+        "ruleReviewFailCount",
+        "segmentLabel",
+        "segmentSummary",
+    ):
+        assert f"export function {fn}(" in pure_js, f"pure.js 缺少导出 {fn}"
+    # 两个页面模块从 pure.js import，源文件不再重复定义
+    assert 'from "./pure.js"' in editor_js, "testset_editor.js 未从 pure.js import"
+    assert 'from "./pure.js"' in run_js, "testset_run.js 未从 pure.js import"
+    assert "function parseScope(" not in editor_js, (
+        "testset_editor.js 残留 parseScope 定义"
+    )
+    assert "function ruleFailCount(" not in run_js, (
+        "testset_run.js 残留 ruleFailCount 定义"
     )

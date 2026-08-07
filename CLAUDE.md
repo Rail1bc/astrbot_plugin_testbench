@@ -6,7 +6,7 @@
 
 会话测试台（astrbot_plugin_testbench）是一个 AstrBot 插件：通过框架原生插件页面创建「虚拟会话」，并把一句话并发投递给多个虚拟会话，用于测试插件、提示词、模型与整体稳定性。
 
-- **版本**：v0.4.1（metadata.yaml 中的版本号，未经用户批准不得擅自 bump）
+- **版本**：v0.4.2（metadata.yaml 中的版本号；版本号 bump 须经用户批准——用户已批准 Phase 2 升到 v0.4.2、Phase 3 / Phase 4 各允许升一个补丁版本）
 - **兼容范围**：`astrbot_version: ">=4.24.1"`（v4.24.1 起提供插件页面 `subscribeSSE`，事件驱动前端依赖它）
 - **独立 git 仓库**：remote `git@github.com:Rail1bc/astrbot_plugin_testbench.git`；**开发在 `dev` 分支，`main` 仅用于发布**（release.yml 只在 main 上 metadata.yaml 变更时触发自动发版）
 - **无第三方依赖**：只依赖 AstrBot 公共 API（`astrbot.api.*`），不需要 requirements.txt
@@ -83,11 +83,13 @@ astrbot_plugin_testbench/
 │  ├─ api.js            # bridge 调用的统一封装（listPlatforms/listConfs/...）
 │  ├─ align.js          # 轮次对齐控制器（createAlignController，依赖注入）
 │  ├─ chat.js           # 聊天内容渲染（createChatRenderer：气泡/思维链/工具调用/轮次分组）
+│  ├─ pure.js           # 零依赖纯函数层（行收集/规则构造/导入解析/verdict 计数/段文案；node:test 动态测试）
 │  └─ style.css         # 亮/暗主题样式
 ├─ CHANGELOG.md         # 变更记录（[Unreleased] 在上）
 ├─ README.md            # 面向用户的说明
+├─ package.json         # 声明 type: module（node:test 可直接加载 pure.js；无 npm 依赖）
 ├─ run_ruff.bat         # Windows 一键 ruff format+check 脚本（调用主仓库 venv）
-├─ tests/               # 单元测试（test_backend.py 需 astrbot，test_frontend.py 零依赖）
+├─ tests/               # 单元测试（test_backend.py 需 astrbot，test_frontend.py 零依赖，frontend/ 为 node:test）
 ├─ data/                # 本地运行数据（gitignored，发布时排除）
 ├─ assets/  .github/    # 仓库资源与 CI 工作流
 ```
@@ -228,6 +230,7 @@ astrbot_plugin_testbench/
 - `state.js`：全部共享可变状态收进一个 `state` 对象（groups/platforms/**providers**/confs/openIds/pinnedIds/panelEls/historyCache/expandedGroups/expandedSessions/testsets/selectedTestsetId/activeRunId/pendingEntries/runReports/latestReportRunId/testsetReportedSteps/streamCache/globalView/reviewers）。ES module 顶层绑定无法跨模块共享可变值，故集中到叶子模块，各模块从 `state` 读写，保持依赖单向。`providers` 由 `loadOptions` 预载（评审 Profile 表单 Provider 下拉的数据源，曾缺该字段导致「新建评审 Profile」按钮无效）。
 - `utils.js`：纯工具与配置解析（`escapeHtml`/`statusText`/`confName`/`platformName`/`findSession`/`effectiveView`），唯一依赖 `state`。`effectiveView` 是后端 `effective()` 的客户端镜像（曾漏 sender 字段导致显示「—」，有防回归测试）。
 - `modal.js`：自绘弹窗（iframe 沙箱禁用原生 alert/confirm），回调状态 `modalCallback` 封装在模块内部，对外只暴露 `openModal`/`showModal`/`hideModal`。弹窗**限高内部滚动**（style.css：`.modal` 有 `max-height: min(85vh, 720px)` + flex 列布局、`.modal-body` `overflow-y: auto`、`.modal-actions` `flex-shrink: 0`）——内容过高的弹窗在正文区滚动而非撑爆页面。
+- `pure.js`：**零依赖纯函数层**（Phase 2 抽取，node:test 动态测试）。不引用 DOM / state / 其它模块，页面模块经 `import` 复用同一份实现，防两处漂移。含：`buildRule` / `collectRules`（规则构造与收集）、`collectEditorRows`（行数据 → 消息列表 + 批量段）、`parseScope`（scope 解析）、`parseTestsetEnvelope`（信封导入解析）、`rangesFromFlags`（批量段区间合并）、`ruleFailCount` / `ruleReviewFailCount`（verdict 计数）、`segmentLabel` / `segmentSummary`（段文案）、`RULE_VALUE_TYPES` / `EXPORT_FORMAT` / `EXPORT_VERSION`（配套常量）。**新增值类断言类型须同步 `testset_editor.js` 的 `RULE_TYPES` 与本模块的 `RULE_VALUE_TYPES`**。行为变更须在 `tests/frontend/pure.test.mjs` 补测试。
 - `group_list.js`：左侧测试组列表与组/会话配置弹窗。`createGroupList(env)` 依赖注入视图动作（toggleOpen/openAll/deleteSession/renderPanels/showRunStatus/updateRunOverview/switchToIdentities），本模块不 import app.js，模块依赖保持单向。`platformOptions()`/`confOptions()` 是平台/档案下拉选项的共享构建（含「档案已不存在」占位，防静默丢绑定）。组编辑弹窗含**消息类型**（私聊/群聊 select）、**绑定虚拟群聊**（select，仅群聊显示，`chatGroupOptions` 含「群聊已不存在」占位）与「管理身份与群聊 →」链接（`hideModal` + `switchToIdentities` 跳转视图，**不嵌嵌套管理弹窗**）；会话配置弹窗同两字段（空 = 继承组）。提交按 `isGroup` 分支：私聊时 chat_group_id 恒 null（无副作用）。**auto@ 是发送时选项（群发栏 / 测试集消息级），不属于组/会话配置，弹窗不再提供**。
 - `testset_list.js`：左侧测试集列表与运行弹窗 + **评审 Profile 管理**。`createTestsetList(env)` 依赖注入视图动作（showRunStatus/runTestset/viewTestsetRun/switchToTestsets），同样不 import app.js。列表条目是**有名字的条目**（点击选中后右侧打开编辑窗口，不再内联展开）；右侧编辑窗口由 `createTestsetEditor` 创建（见下条），互相引用的列表侧函数（formatTime/openTestsetRun/deleteTestset/doSelect/refreshTestsets）在创建后经 `editor.setDeps` 注入。运行弹窗目标**三选**：已打开的 / 全部 / 选择测试组（`buildGroupCheckboxes` 组多选 → `selectedGroupSessionIds` 把勾选组解析为该组全部会话 id），`env.runTestset(testset, ids)` 只收会话 id 列表。最近运行与持久化报告已迁入编辑窗口的报告视图（见 testset_editor.js）。**评审 Profile 管理在本模块**：左侧卡片以 tab 拆分「测试集 / 评审 Profile」（`switchTestsetTab`，与身份与群聊同款）——`#reviewer-list` 列表（每条显示 provider · model · context · N 个指标徽标 + 编辑 / 删除，`renderReviewerList`）+ 末尾「＋ 新建评审 Profile」块；表单 `openProfileForm`（provider / 模型 / 提示词 {{metrics}} 占位符 / 输出契约指标编辑器 `buildMetricsEditor`/`collectMetrics`，弹窗限高内部滚动）保存走 createReviewer / updateReviewer，删除走 deleteReviewers；`refreshReviewers` 拉取到 state 后重绘列表**并经 `editor.refreshAllProfileSelects()` 重建编辑器内已渲染的 profile 下拉**（消息规则行与最终断言行防 stale），`refreshTestsets` 顺带重绘评审列表。`CONTEXT_MODES` / `METRIC_TYPES`：前者由 testset_editor.js 导出（表单与行内 context 下拉共用），后者随表单迁到本模块。
 - `testset_editor.js`：右侧测试集编辑窗口。`createTestsetEditor(env)`（env 只注入 showRunStatus）由 testset_list.js 创建——编辑器与列表互相引用、直接 import 会成环，故列表侧函数经 `setDeps` 延迟注入。消息行 = `.ts-msg-line`（序号 / 文本 / **命令标记** `.ts-msg-command` / 发送身份 / 自动@ / 批量勾选 / 删除）+ 下方 `.ts-msg-rules` **多断言列表**（`buildRuleRow` 逐条渲染类型下拉 / 值输入 / 删除 + 「＋ 断言」按钮，多条按全部通过判定；`RULE_TYPES` 定义断言类型选项为唯一来源，未来新增测试行为只改这两处 + 后端 `_normalize_messages`；**LLM 评审**类型行为 profile + 上下文双下拉 `.ts-msg-rule-llm`，`validateRuleRow` 对未选 profile 的 LLM 规则带行号提示「该规则不会生效」）；**`renderMsgRow` 单行构建 + `collectEditorRows` 反向收集是唯二变化点**——收集产物为 `{text, rules}` + `is_command`（仅勾选）+ 身份 + `auto_at`，`collectRules`/`buildRule` 对值类规则做校验（min_len/max_len 须整数、空值丢弃），保存 / 导出前 `validateEditorRows` 带行号提示；**身份配置区**（`.ts-identity`：`#ts-identity-mode` 单一身份 / 身份池 + `#ts-identity-ref` / `#ts-pool-ref`，`initIdentityConfig` 按测试集数据初始化并给已删除身份 / 群聊保留占位选项防静默丢绑定，`refreshRowSenders` 按模式重建全部行内身份下拉——pool 列出池成员（`currentPoolMembers` 按选中群聊 + 身份库解析、群聊已删除回退测试集 `pool_snapshot`）、single 无测试集身份时列身份库、single 已配置测试集身份时行内下拉隐藏；`collectIdentityConfig` 收集身份配置与**内联快照**（`buildIdentitySnapshot` / `buildPoolSnapshot`，含 is_admin））；编辑窗口**不再有评审 Profile 管理区**（增删改已迁到左侧测试集列表的「评审 Profile」tab，见 testset_list.js；本模块只保留行内 profile 下拉的构建 `buildProfileSelect` 与重建 `refreshAllProfileSelects`（导出经返回对象供列表侧调用）防 stale）与**最终断言（跨轮）编辑区**（`.ts-final-rules`：`renderFinalRules` / `buildFinalRuleRow` 逐条渲染「任意类型规则 + 范围输入」，`parseScope` 解析「2-4 / 3 / 空=全部」，`collectFinalRules` 收集为 `[{rule, scope}]`）；连续勾选「批量」的消息合并为批量段（`collectEditorRows` 丢弃空文本行后按索引连续性合并，`batch_ranges` 引用保留后的消息索引），`#ts-segments` 实时显示段摘要；**脏标记** `dirty`（任一行输入 / 勾选变化置位，切换测试集 / 导入 / 导出 / 运行前确认，`refreshTestsets` 在 dirty 时跳过编辑器重渲染以免异步刷新清掉未保存修改）；**未选中任何测试集时编辑窗口按钮（添加消息 / 保存 / 运行 / 导出）仍可见，点击须经 `requireSelected` 给指引提示而非静默无效**。导出走 Blob `<a download>`（iframe 沙箱含 `allow-downloads`），信封 v2 `{format: "astrbot-testbench-testset", version: 2, name, messages, batch_ranges, final_rules, identity?/pool?}` 预留「测试集市场」下载兼容，按身份模式携带 `envelope.identity`（single 快照）或 `envelope.pool`（身份池）；导入复用 `createTestset` 端点（无新后端接口，携带身份字段），`parseTestsetEnvelope` 校验 format/version≤2/name/messages/batch_ranges，v1 兼容（单条 rule → rules 列表）、v2 处理 rules / is_command / final_rules / identity / pool，高于当前版本拒绝；编辑窗口头部「编辑 / 报告」视图切换（`toggleViewMode` + `#btn-ts-mode`），报告视图 = 最近运行（按测试集过滤）+ 持久化报告列表（查看 / 导出 / 删除，见「报告层」）。
@@ -301,32 +304,39 @@ astrbot_plugin_testbench/
 ## 测试与验证
 
 > **开发流程（2026-08-05 起）**：本地**不跑**测试，修改直接提交推送到 `dev` 分支，
-> 由 GitHub Actions 自动把关——push 到 dev 触发 `pytest.yml`（279 个测试函数 +
-> 前端 JS 语法检查 `js-check`：node --check 十三个页面脚本）+ `ruff-format.yml`；
+> 由 GitHub Actions 自动把关——push 到 dev 触发 `pytest.yml`（280 个测试函数 +
+> 前端 JS 检查 `js-check`：node --check 十四个页面脚本 + node:test 纯函数动态
+> 测试）+ `ruff-format.yml`；
 > dev 验证通过后合并到 `main`，metadata.yaml 变更即触发 release.yml 自动发版。
-> 本地命令（下面的 pytest/ruff）仅在需要主动排查时使用。
+> 本地命令（下面的 pytest/ruff/node）仅在需要主动排查时使用。
 
 测试随插件仓库维护（`tests/`，可与主仓库无关地推送、供协作者运行）。
 
 - `tests/test_backend.py`：后端单元测试（221 个），需要 astrbot（PyPI 包，插件运行时依赖）。以 **namespace package** 加载插件：`sys.path.insert(0, str(REPO_ROOT.parent))` 后 `import astrbot_plugin_testbench.*`——插件模块用相对导入（`from .group_store import ...`），必须按包加载，这与 AstrBot 在 data/plugins 下加载插件的方式一致。未安装 astrbot 时整组跳过（`pytest.importorskip`）。
-- `tests/test_frontend.py`：前端脚本静态检查（58 个），零依赖，任何环境可运行。
+- `tests/test_frontend.py`：前端脚本静态检查（59 个），零依赖，任何环境可运行。
+- `tests/frontend/pure.test.mjs`：**pure.js 纯函数动态测试**（node:test，32 个断言组），零依赖；`node --test` 直接加载页面模块 `pages/testbench/pure.js`（仓库根 package.json 声明 `"type": "module"`）。
 
 本地运行（用主仓库 venv，bash cwd 不稳定，命令先 `cd /e/AstrBot` 或 `git -C` 插件目录）：
 
 ```bash
 cd /e/AstrBot && .venv/Scripts/python.exe -m pytest data/plugins/astrbot_plugin_testbench/tests/ -q
 cd /e/AstrBot && .venv/Scripts/python.exe -m ruff check data/plugins/astrbot_plugin_testbench/tests/
+cd /e/AstrBot/data/plugins/astrbot_plugin_testbench && node --test "tests/frontend/*.test.mjs"
 ```
 
-CI（`.github/workflows/pytest.yml`）：ubuntu + Python 3.12，`pip install astrbot pytest pytest-asyncio` 后跑 `pytest tests/ -q`，随 push/PR 触发。
+CI（`.github/workflows/pytest.yml`）：ubuntu + Python 3.12，`pip install astrbot pytest pytest-asyncio` 后跑 `pytest tests/ -q`；js-check 跑 node --check + node:test，随 push/PR 触发。
 
-前端 ES module 语法检查（node 不认 .js 里的 import，须复制为 .mjs；页面全部 13 个模块逐一检查，与 CI js-check 一致）：
+前端 ES module 语法检查（node 不认 .js 里的 import，须复制为 .mjs；页面全部 14 个模块逐一检查，与 CI js-check 一致）：
 
 ```bash
-for f in app api align chat state utils modal group_list testset_list testset_editor events testset_run identity_list; do
+for f in app api align chat state utils modal group_list testset_list testset_editor events testset_run identity_list pure; do
   cp "$f.js" "$TEMP/$f.mjs" && node --check "$TEMP/$f.mjs"
 done
 ```
+
+> `node --test` 的**目录参数**形式（如 `node --test tests/frontend/`）在 Node ≥21 有
+> 回归（nodejs/node#64555，把目录当模块加载报 MODULE_NOT_FOUND），须用 glob
+> 形式 `node --test "tests/frontend/*.test.mjs"`。
 
 测试设施（tests/test_backend.py 内定义）：`FakeContext`（可注入 queue/ucr/conv_mgr/platform_mgr）、`FakeUCR`、`FakeConvManager`、`FakePlatformManager`/`FakePlatformInst`、`call_handler`/`make_plugin_request`（绑定 PluginRequest 调 handler）、`_add_history`（造对话历史）。
 
