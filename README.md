@@ -58,7 +58,7 @@ data/plugins/astrbot_plugin_testbench/
 
 ## 🔧 开发与测试
 
-> **开发流程**：本地不跑测试，修改直接提交推送到 `dev` 分支，由 GitHub Actions 自动把关——push 到 dev 触发 `pytest.yml`（281 个测试函数 + 前端 JS 检查：node --check 语法检查与 node:test 纯函数动态测试）与 `ruff-format.yml`；dev 验证通过后合并到 `main`，metadata.yaml 变更即触发 release.yml 自动发版。以下本地命令仅在主动排查时使用。
+> **开发流程**：本地不跑测试，修改直接提交推送到 `dev` 分支，由 GitHub Actions 自动把关——push 到 dev 触发 `pytest.yml`（282 个测试函数 + 前端 JS 检查：node --check 语法检查与 node:test 纯函数动态测试）与 `ruff-format.yml`；dev 验证通过后合并到 `main`，metadata.yaml 变更即触发 release.yml 自动发版。以下本地命令仅在主动排查时使用。
 
 ```bash
 # 单元测试（测试随插件仓库维护，位于 data/plugins/astrbot_plugin_testbench/tests/）

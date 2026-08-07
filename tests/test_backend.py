@@ -4252,6 +4252,32 @@ def test_identity_admin_index(tmp_path):
     assert store3.is_admin_of("anything") is False
 
 
+def test_identity_admin_index_degenerate_data(tmp_path):
+    """索引对脏数据健壮：非 str sender_id（is_admin 真）与旧数据缺 is_admin 键均不命中且不崩。"""
+    (tmp_path / "virtual_session").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "virtual_session" / "identities.json").write_text(
+        json.dumps(
+            {
+                "items": [
+                    {"id": "n1", "name": "null", "sender_id": None, "is_admin": True},
+                    {"id": "n2", "name": "num", "sender_id": 123, "is_admin": True},
+                    {"id": "n3", "name": "list", "sender_id": ["x"], "is_admin": True},
+                    {"id": "l1", "name": "旧身份", "sender_id": "legacy_admin"},
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    store = IdentityStore(data_dir=tmp_path)
+    # 构建索引不崩；非 str sender_id 被 isinstance 守卫排除 → 查询不命中
+    assert store.is_admin_of("123") is False
+    assert store.is_admin_of(123) is False
+    assert store.is_admin_of("x") is False
+    # 旧数据缺 is_admin 键 → 非管理员
+    assert store.is_admin_of("legacy_admin") is False
+
+
 @pytest.mark.asyncio
 async def test_identity_api_is_admin(tmp_path):
     """API 级身份创建/更新透传 is_admin。"""
