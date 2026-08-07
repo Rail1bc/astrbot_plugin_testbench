@@ -1,6 +1,6 @@
 name: astrbot_plugin_testbench # 插件唯一识别名，以 astrbot_plugin_ 前缀开头
 display_name: 会话测试台 # 用于展示的名字
-desc: 插件、提示词与模型上线前的试跑场：一键创建虚拟会话，同一条消息并发压测多个配置，走真实处理管道逐会话观察回复；测试集支持机械 + LLM 自动评审，报告一键生成。 # 插件简短描述
+desc: 轻松对比调提示词：一条消息并发发送给多个虚拟会话，直观看到不同提示词 / 插件配置 / 模型下的回复差异，告别凭感觉调试；进阶可用测试集做极端场景稳定性压测与机械 + LLM 自动评审。 # 插件简短描述
 version: v1.0.0 # 插件版本号
 author: Rail1bc # 作者
 repo: https://github.com/Rail1bc/astrbot_plugin_testbench # 插件的仓库地址
