@@ -6,7 +6,7 @@
 
 会话测试台（astrbot_plugin_testbench）是一个 AstrBot 插件：通过框架原生插件页面创建「虚拟会话」，并把一句话并发投递给多个虚拟会话，用于测试插件、提示词、模型与整体稳定性。
 
-- **版本**：v0.4.4（metadata.yaml 中的版本号；版本号 bump 须经用户批准——用户已批准 Phase 2 升到 v0.4.2、Phase 3 升到 v0.4.3、Phase 4 升到 v0.4.4）
+- **版本**：v0.4.5（metadata.yaml 中的版本号；版本号 bump 须经用户批准——用户已批准 Phase 2 升到 v0.4.2、Phase 3 升到 v0.4.3、Phase 4 升到 v0.4.4、testset-redesign v2 收尾升到 v0.4.5）
 - **兼容范围**：`astrbot_version: ">=4.24.1"`（v4.24.1 起提供插件页面 `subscribeSSE`，事件驱动前端依赖它）
 - **独立 git 仓库**：remote `git@github.com:Rail1bc/astrbot_plugin_testbench.git`；**开发在 `dev` 分支，`main` 仅用于发布**（release.yml 只在 main 上 metadata.yaml 变更时触发自动发版）
 - **无第三方依赖**：只依赖 AstrBot 公共 API（`astrbot.api.*`），不需要 requirements.txt
