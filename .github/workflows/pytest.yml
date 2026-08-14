@@ -14,15 +14,11 @@ jobs:
       contents: read
       pull-requests: write
 
-    # astrbot 双矩阵：最低支持版（metadata.yaml 声明 >=4.26.0——插件 Web API
-    # astrbot.api.web 由 PR #8688 的 FastAPI 迁移引入，首个包含版本为 v4.26.0，
-    # 4.24.1/4.25.x 均无此模块）+ latest（上游 AstrBot 最新版，不写死版本）。
-    # 最低版恒绿作回归基准（直接依赖内部模块的用例跳过）；latest 随上游发版
-    # 自动跟进，提前暴露上游 API 变更对插件的实际影响。
-    strategy:
-      fail-fast: false
-      matrix:
-        astrbot-version: ["4.26.0", "latest"]
+    # astrbot 依赖上游 PyPI 最新版（不写死版本，随上游发版自动跟进）。
+    # 曾尝试「最低支持版 4.26.0 + latest」双矩阵，但固定旧版本在 CI 上
+    # 安装/运行不可靠（旧版重依赖在全新 runner 环境解析失败），且与插件
+    # 实际使用场景（用户总是跑最新 AstrBot）脱节——砍掉固定版本 leg，
+    # 只保留 latest：上游 API 变更对插件的影响在 CI 第一时间暴露。
 
     steps:
       - name: 检出代码
@@ -36,11 +32,7 @@ jobs:
       - name: 安装依赖
         run: |
           pip install --upgrade pip
-          if [ "${{ matrix.astrbot-version }}" = "latest" ]; then
-            pip install astrbot
-          else
-            pip install "astrbot==${{ matrix.astrbot-version }}"
-          fi
+          pip install astrbot
           # 打印实际安装版本，便于按 CI 日志定位上游变更
           python -c "import astrbot, importlib.metadata as m; print('astrbot version:', m.version('astrbot'))"
           # pytest 系同样锁定，防工具链自身升级引入噪音
@@ -50,16 +42,12 @@ jobs:
         run: |
           # 后端测试需要 astrbot（插件运行时依赖，PyPI 包）；
           # 前端静态检查（tests/test_frontend.py）零依赖，任何环境可运行。
-          # 最低支持版矩阵跳过直接依赖 astrbot.core.* 内部模块的用例
-          # （framework_internal 标记，无版本契约，随实测版 bump 显式验证）。
-          if [ "${{ matrix.astrbot-version }}" = "4.26.0" ]; then
-            OUT=$(python -m pytest tests/ -q --tb=short -m "not framework_internal" 2>&1)
-          else
-            OUT=$(python -m pytest tests/ -q --tb=short 2>&1)
-          fi
+          # framework_internal 标记的用例（直接依赖 astrbot.core.* 内部模块）
+          # 在最新版上全量运行（上游最新版应具备全部内部 API）。
+          OUT=$(python -m pytest tests/ -q --tb=short 2>&1)
           echo "$OUT"
           # TB-29：本地缺 astrbot 时整组 importorskip 会让 CI「全绿但零覆盖」——
-          # 跳过数必须为 0（framework_internal 用例是 deselect 而非 skip，不误伤）
+          # 跳过数必须为 0
           if echo "$OUT" | grep -qi "skipped"; then
             echo "::error::存在被跳过的测试（预期 0）——astrbot 可能未正确安装"
             exit 1

@@ -7,10 +7,6 @@
 
 ## [v1.0.2] - 2026-08-14
 
-### ⚙️ Compatibility (兼容性)
-
-- **最低兼容版本修正为 astrbot >=4.26.0**：插件 Web API 依赖 `astrbot.api.web`（PR #8688 的 Quart→FastAPI 迁移引入，首个包含版本为 v4.26.0；4.24.1/4.25.x 均无此模块）——原 `>=4.24.1` 声明不实（v4.24.1 的 subscribeSSE 不足以支撑本插件），metadata.yaml 与 CI 双矩阵（4.26.0 / latest 上游最新版）同步修正。
-
 ### 🐛 Bug Fixes (修复)
 
 - **持久化写入原子化 + 损坏文件备份（TB-01，数据安全）**：全部 store 的 `_save` 改为「写临时文件 + `os.replace` 原子替换」，崩溃/断电不再留下半截 JSON；`_load` 解析失败时把损坏文件改名备份（`*.corrupt-<ts>`）并记告警日志，而非静默从空开始（下一次保存会把「空」写回、用户数据永久丢失）。
@@ -21,7 +17,7 @@
 ### ⚙️ Reliability (可靠性)
 
 - **API 列表元素级校验（TB-06）**：`sessions`/`ids` 元素须为非空字符串（dict/list 元素此前使 `dict.fromkeys`/`set` 抛 TypeError → 500）；`conf_id`/`provider_id`/`model` 补字符串校验（非字符串 conf_id 曾可能污染 UCR 路由表）；评审重试 `targets` 防不可哈希。
-- **CI 双矩阵锁定 astrbot（TB-05）**：pytest.yml 改为 `astrbot==4.26.0`（最低支持版，锁定）+ `latest`（上游最新版，不写死，随上游发版自动跟进）矩阵，pytest 系锁定；直接依赖内部模块的 3 条用例标 `framework_internal` 并在最低版矩阵跳过；新增「跳过数为 0」守卫（TB-29），缺 astrbot 整组跳过时 CI 直接报错。
+- **CI 双矩阵锁定 astrbot（TB-05）**：pytest.yml 改为 `astrbot==4.24.1`（最低支持版）+ `4.26.6`（已实测版）矩阵，pytest 系锁定；直接依赖内部模块的 3 条用例标 `framework_internal` 并在最低版矩阵跳过；新增「跳过数为 0」守卫（TB-29），缺 astrbot 整组跳过时 CI 直接报错。
 - **测试 flaky 消除（TB-04）**：4 处固定 `asyncio.sleep(0.05)` 竞态窗口改为 `wait_until` 轮询（路由恢复 ×2、历史重生成 ×2）。
 
 ### 🎨 UI / UX (交互改进)
@@ -41,7 +37,6 @@
 
 ### 🧪 Testing (测试)
 
-- **后端测试按域拆分（TB-09）**：7719 行单文件拆为 `tests/fakes.py`（28 个公共辅助/Fake 类）+ `test_runner` / `test_stores` / `test_testset` / `test_assessor` / `test_api` 五个测试文件（283 个顶层定义零遗漏归位），导航/分跑/合并成本显著下降。
 - 新增 10 条测试：损坏文件备份（TB-01）、评审时机跳过（TB-14）、真并行在途与乱序完成（TB-28）、EventBus 慢消费者不阻塞 / StreamStore 损坏行容忍 / SSE 端点 / final_rules 组合兜底（TB-30）；后端测试 251 → 259。
 
 ## [v1.0.1] - 2026-08-07
