@@ -125,7 +125,7 @@ export function createGroupList(env) {
         `<span class="group-name" title="${escapeHtml(g.name)}">${escapeHtml(g.name)}</span>` +
         `<span class="group-actions">` +
         `<button class="btn small" data-action="open-all">${allOpen ? "关闭全部" : "打开全部"}</button>` +
-        `<button class="icon-btn" data-action="edit" title="编辑测试组">✎</button>` +
+        `<button class="icon-btn" data-action="edit" title="编辑测试组" aria-label="编辑测试组">✎</button>` +
         `</span>` +
         `</div>` +
         `<div class="group-meta">${countBadge}${platformBadge}${confBadge}${warnBadge}</div>` +
@@ -374,6 +374,17 @@ export function createGroupList(env) {
     inpCount.max = String(MAX_SESSIONS);
     inpCount.value = String(Math.max(1, sessions.length));
 
+    // TB-20：数量小于现有会话数时内联提示——减少数量不会删除已有会话，
+    // 避免用户误以为保存后会删会话
+    const shrinkHint = document.createElement("p");
+    shrinkHint.className = "hint";
+    shrinkHint.textContent = "减少数量不会删除已有会话，仅保存后按较大值自动补齐。";
+    shrinkHint.hidden = true;
+    inpCount.addEventListener("input", () => {
+      const n = Number(inpCount.value);
+      shrinkHint.hidden = !(Number.isInteger(n) && n < sessions.length);
+    });
+
     const selP = buildPlatformSelect(g.platform_id);
     const selC = buildConfSelect(g.conf_id);
     // 安全警告条：所选配置启用了可调用工具时即时显示（空值 = 默认配置）
@@ -439,6 +450,7 @@ export function createGroupList(env) {
     form.append(
       field("组名", inpName),
       field("会话数量（保存时若少于该值将自动新增）", inpCount),
+      shrinkHint,
       field("平台来源", selP),
       field("配置档案", selC),
       warnBar,
@@ -454,6 +466,7 @@ export function createGroupList(env) {
       title: `编辑测试组 · ${g.name}`,
       content: form,
       okText: "保存",
+      dirty: true,
       onOk: async () => {
         const count = Number(inpCount.value);
         if (!Number.isInteger(count) || count < 1 || count > MAX_SESSIONS) {
@@ -559,6 +572,7 @@ export function createGroupList(env) {
       title: `会话配置 · ${session.name || sid}`,
       content: form,
       okText: "保存",
+      dirty: true,
       onOk: async () => {
         await updateSession({
           id: sid,

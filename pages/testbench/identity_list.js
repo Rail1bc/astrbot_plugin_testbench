@@ -78,7 +78,9 @@ export function createIdentityList(env) {
   // 身份与群聊分开两个 tab，一次只渲染一个列表：身份膨胀后找群聊不被长列表挤走
   function switchIdentityTab(tab) {
     document.querySelectorAll(".identities-card .tab-btn").forEach((btn) => {
-      btn.classList.toggle("active", btn.dataset.tab === tab);
+      const active = btn.dataset.tab === tab;
+      btn.classList.toggle("active", active);
+      btn.setAttribute("aria-selected", String(active)); // a11y（TB-21）
     });
     document.querySelectorAll(".identities-card .tab-pane").forEach((pane) => {
       pane.hidden = pane.dataset.pane !== tab;
@@ -108,8 +110,8 @@ export function createIdentityList(env) {
         `<div class="group-head">` +
         `<span class="group-name" title="${escapeHtml(name)}">${escapeHtml(name)}</span>` +
         `<span class="group-actions">` +
-        `<button class="icon-btn" data-action="edit" title="编辑身份">✎</button>` +
-        `<button class="icon-btn danger" data-action="delete" title="删除身份">✕</button>` +
+        `<button class="icon-btn" data-action="edit" title="编辑身份" aria-label="编辑身份">✎</button>` +
+        `<button class="icon-btn danger" data-action="delete" title="删除身份" aria-label="删除身份">✕</button>` +
         `</span>` +
         `</div>` +
         `<div class="group-meta">` +
@@ -172,9 +174,10 @@ export function createIdentityList(env) {
       adminWarn.hidden = !inpAdmin.checked;
     });
 
-    // 管理员：checkbox 在前、与标签同行（field() 的纵向布局会让方框独占一行）
+    // 管理员：checkbox 在前、与标签同行（field() 的纵向布局会让方框独占一行；
+    // 修饰类 settings-field-checkbox 而非 :has()，兼容不支持 :has() 的老 WebView）
     const fAdmin = document.createElement("label");
-    fAdmin.className = "settings-field";
+    fAdmin.className = "settings-field settings-field-checkbox";
     const adminText = document.createElement("span");
     adminText.textContent = "管理员（发送时自动按管理员身份设置角色）";
     fAdmin.append(inpAdmin, adminText);
@@ -193,6 +196,7 @@ export function createIdentityList(env) {
       title: identity ? `编辑身份 · ${identity.name}` : "新建身份",
       content: form,
       okText: identity ? "保存" : "创建",
+      dirty: true,
       onOk: async () => {
         const name = inpName.value.trim();
         if (!name) throw new Error("名称不能为空");
@@ -248,8 +252,8 @@ export function createIdentityList(env) {
         `<span class="group-name" title="${escapeHtml(cg.name)}">${escapeHtml(cg.name)}</span>` +
         `<span class="badge">${count} 成员</span>` +
         `<span class="group-actions">` +
-        `<button class="icon-btn" data-action="edit" title="编辑群聊">✎</button>` +
-        `<button class="icon-btn danger" data-action="delete" title="删除群聊">✕</button>` +
+        `<button class="icon-btn" data-action="edit" title="编辑群聊" aria-label="编辑群聊">✎</button>` +
+        `<button class="icon-btn danger" data-action="delete" title="删除群聊" aria-label="删除群聊">✕</button>` +
         `</span>` +
         `</div>`;
       // 条目整体点击 → 右侧打开该群聊的编辑视图
@@ -291,6 +295,7 @@ export function createIdentityList(env) {
       title: "新建群聊",
       content: form,
       okText: "创建",
+      dirty: true,
       onOk: async () => {
         const name = inpName.value.trim();
         if (!name) throw new Error("群聊名称不能为空");
@@ -368,7 +373,7 @@ export function createIdentityList(env) {
           // 管理员成员挂「管理员」+「⚠ 危险」徽标（与身份列表一致）
           `${ident.is_admin ? '<span class="badge admin" title="管理员身份，发送时自动设置 event.role=admin">管理员</span>' : ""}` +
           `${ident.is_admin ? '<span class="badge warn" title="管理员身份可调用需管理员权限的工具（本地/沙箱执行、联网搜索、定时任务等），可能执行危险操作">⚠ 危险</span>' : ""}` +
-          `<button class="icon-btn danger" data-action="remove" title="移出该群">✕</button>`;
+          `<button class="icon-btn danger" data-action="remove" title="移出该群" aria-label="移出该群">✕</button>`;
       } else {
         // 身份已删除：成员 id 悬空引用，保留占位并允许移除
         row.innerHTML =
@@ -509,9 +514,15 @@ export function createIdentityList(env) {
     void saveChatGroupName();
   });
   $("btn-cg-delete").addEventListener("click", deleteChatGroupView);
-  $("cg-search").addEventListener("input", (e) =>
-    renderSearchResults(e.target.value.trim()),
-  );
+  // 搜索防抖（TB-18）：击键不立即全量过滤重建 DOM，身份池大时不卡顿
+  const SEARCH_DEBOUNCE_MS = 150;
+  let searchTimer = null;
+  $("cg-search").addEventListener("input", (e) => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => {
+      renderSearchResults(e.target.value.trim());
+    }, SEARCH_DEBOUNCE_MS);
+  });
 
   // 拖拽投放区：把左侧「身份」条目拖到成员区即加入当前群聊
   const cgMembers = $("cg-members");
@@ -533,10 +544,11 @@ export function createIdentityList(env) {
     if (mid) void addMember(mid);
   });
 
+  // syncBroadcastSenders 仅本模块内部使用（refreshIdentities 内调用），
+  // 不导出（TB-22 死导出清理）
   return {
     refreshIdentities,
     refreshChatGroups,
-    syncBroadcastSenders,
     renderChatGroupView,
   };
 }

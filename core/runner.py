@@ -326,7 +326,13 @@ class VirtualTestRunner:
             self._publish_pending()
 
     def pending_entries(self) -> list[dict]:
-        """返回全部在途条目（含刚完成、仍处展示保留期的条目），供断线对账取回。"""
+        """返回全部在途条目（含刚完成、仍处展示保留期的条目），供断线对账取回。
+
+        顺带触发 ``_prune_runs``：清理只挂在 ``start()`` 上时，无新测试的
+        场景下已完成条目不会按时消失（前端轮询/对账取回的总是完整列表，
+        与 TB-02 的前端残留叠加放大）。
+        """
+        self._prune_runs()
         return list(self._pending.values())
 
     def _enqueue(self, test_id: str, events: list[VirtualMessageEvent]) -> None:

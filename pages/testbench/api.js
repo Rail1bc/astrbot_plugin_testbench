@@ -180,10 +180,6 @@ export async function getStream(id) {
   return bridge.apiGet(`sessions/${encodeURIComponent(id)}/stream`);
 }
 
-export async function clearStream(ids) {
-  return bridge.apiPost("sessions/stream/clear", { ids });
-}
-
 export async function listReviewers() {
   return bridge.apiGet("reviewers");
 }

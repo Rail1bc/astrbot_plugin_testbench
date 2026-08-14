@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from astrbot.api.web import request
 
 from ..core.conf_routes import apply_routes, clear_routes, sync_route
@@ -18,6 +20,19 @@ async def json_dict() -> dict | None:
     """
     payload = await request.json(default=None)
     return payload if isinstance(payload, dict) else None
+
+
+def validate_id_list(value: Any) -> list[str] | None:
+    """校验 id 列表：非空 list 且元素全为非空字符串，返回去重后的列表。
+
+    只校验「是 list 且非空」会让 dict/list 元素漏网，随后 ``dict.fromkeys`` /
+    ``set`` 抛 TypeError → 500（曾实测确认）。调用方对 None 返回 400。
+    """
+    if not isinstance(value, list) or not value:
+        return None
+    if not all(isinstance(x, str) and x for x in value):
+        return None
+    return list(dict.fromkeys(value))  # 去重，保持顺序
 
 
 class ConfRouteMixin:

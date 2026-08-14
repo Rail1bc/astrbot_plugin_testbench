@@ -21,7 +21,7 @@ from ..eval.reporting import (
     build_metrics_summary,
 )
 from ..eval.reviewer import retry_llm_verdict
-from .common import json_dict
+from .common import json_dict, validate_id_list
 
 
 def _iter_verdict_locators(data: dict):
@@ -71,9 +71,9 @@ class ReportsAPI:
         payload = await json_dict()
         if payload is None:
             return error_response("请求体必须是 JSON 对象", status_code=400)
-        ids = payload.get("ids")
-        if not isinstance(ids, list) or not ids:
-            return error_response("ids 不能为空", status_code=400)
+        ids = validate_id_list(payload.get("ids"))
+        if ids is None:
+            return error_response("ids 须为非空字符串列表", status_code=400)
         deleted = await self.report_store.write(self.report_store.delete_reports, ids)
         return json_response({"deleted": deleted})
 
@@ -109,17 +109,24 @@ class ReportsAPI:
         }
         target_keys = None
         if isinstance(targets, list):
-            target_keys = {
-                (
-                    t.get("kind"),
-                    t.get("step"),
-                    t.get("rule"),
-                    t.get("session_id"),
-                    t.get("verdict"),
+            try:
+                target_keys = {
+                    (
+                        t.get("kind"),
+                        t.get("step"),
+                        t.get("rule"),
+                        t.get("session_id"),
+                        t.get("verdict"),
+                    )
+                    for t in targets
+                    if isinstance(t, dict)
+                }
+            except TypeError:
+                # 元素字段为 dict/list 等不可哈希值时元组不可哈希 → 500，
+                # 与 ids 元素校验同口径，入口拦截
+                return error_response(
+                    "targets 元素须为含字符串/整数字段的对象", status_code=400
                 )
-                for t in targets
-                if isinstance(t, dict)
-            }
 
         def _wanted(locator: dict, verdict: dict) -> bool:
             if target_keys is not None:

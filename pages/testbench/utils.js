@@ -49,6 +49,23 @@ export function platformName(id) {
   return p ? p.display_name || p.name : id;
 }
 
+// Provider 下拉选项 HTML（评审 Profile 表单与报告 LLM 配置共用，TB-23 去重）：
+// 显示「供应商名（当前模型）」——不单独配模型（评审 / 报告都用 Provider 当前
+// 模型），只显示供应商名无法区分同名供应商
+export function providerOptions() {
+  return (
+    `<option value="">选择 Provider…</option>` +
+    state.providers
+      .map(
+        (p) =>
+          `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name || p.id)}${
+            p.current_model ? `（${escapeHtml(p.current_model)}）` : ""
+          }</option>`,
+      )
+      .join("")
+  );
+}
+
 export function findSession(id) {
   for (const g of state.groups) {
     const s = (g.sessions || []).find((x) => x.id === id);

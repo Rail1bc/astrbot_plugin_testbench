@@ -5,7 +5,7 @@ from __future__ import annotations
 from astrbot.api.web import error_response, json_response, request
 
 from ..core.cron_probe import collect_cron_warnings, target_sets
-from .common import json_dict
+from .common import json_dict, validate_id_list
 
 
 class RunsAPI:
@@ -21,11 +21,17 @@ class RunsAPI:
             return error_response("请求体必须是 JSON 对象", status_code=400)
         sessions = payload.get("sessions")
         text = payload.get("text")
-        if not isinstance(sessions, list) or not sessions:
-            return error_response("sessions 不能为空", status_code=400)
+        requested = validate_id_list(sessions)
+        if requested is None:
+            return error_response("sessions 须为非空字符串列表", status_code=400)
         if not isinstance(text, str):
             return error_response("text 必须是字符串", status_code=400)
-        requested = list(dict.fromkeys(sessions))  # 去重，保持顺序
+        # 非字符串 conf_id 会经 put_route_front 把非法值临时写进 UCR 路由表
+        # （provider_id / model 同理被直接透传），一律在入口拦截
+        for key in ("provider_id", "model", "conf_id"):
+            value = payload.get(key)
+            if value is not None and not isinstance(value, str):
+                return error_response(f"{key} 必须是字符串", status_code=400)
         session_objs = self.group_mgr.effective_many(requested)
         if len(session_objs) != len(requested):
             found = {r["id"] for r in session_objs}

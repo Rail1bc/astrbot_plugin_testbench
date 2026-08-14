@@ -19,7 +19,7 @@ from typing import Any
 
 from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
 
-from ._base import AsyncWriteMixin
+from ._base import AsyncWriteMixin, atomic_write_text, backup_corrupt_file, logger
 
 # 单测试集消息条数上限（与 MAX_SESSIONS_PER_GROUP 同风格的安全阀）
 MAX_MESSAGES_PER_TESTSET = 100
@@ -62,8 +62,14 @@ class TestsetStore(AsyncWriteMixin):
         if self._file.exists():
             try:
                 data = json.loads(self._file.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                data = None
+            except json.JSONDecodeError:
+                backup_corrupt_file(self._file)
+                return []
+            except OSError:
+                logger.warning(
+                    "[testbench] 读取数据文件 %s 失败，从空数据继续", self._file
+                )
+                return []
             if isinstance(data, dict) and isinstance(data.get("testsets"), list):
                 testsets = [t for t in data["testsets"] if isinstance(t, dict)]
                 for testset in testsets:
@@ -88,9 +94,9 @@ class TestsetStore(AsyncWriteMixin):
         return []
 
     def _save(self) -> None:
-        self._file.write_text(
+        atomic_write_text(
+            self._file,
             json.dumps({"testsets": self._testsets}, ensure_ascii=False, indent=2),
-            encoding="utf-8",
         )
 
     @staticmethod

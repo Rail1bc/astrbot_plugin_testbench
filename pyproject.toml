@@ -4,6 +4,9 @@
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "framework_internal: 直接依赖 AstrBot 内部模块（astrbot.core.*）的用例；最低支持版矩阵下跳过",
+]
 
 [tool.ruff]
 line-length = 88

@@ -22,6 +22,11 @@ const PENDING_STATUS_TEXT = {
   done: "完成",
 };
 
+// 断线后延迟重连的间隔（毫秒）
+const RECONNECT_DELAY_MS = 3000;
+// 在途条内消息文本的截断长度（字符）
+const PENDING_TEXT_TRUNCATE = 24;
+
 export function createEventController(env) {
   // 手动群发 / 单发的消费者注册表：test_id -> {onSession, onAll, seen, finished}。
   // /events 的 session_done / test_done 事件经 handleEvent 分发到这里（替代旧的
@@ -101,7 +106,9 @@ export function createEventController(env) {
     el.innerHTML = visible
       .map((e) => {
         const text =
-          e.text && e.text.length > 24 ? e.text.slice(0, 24) + "…" : e.text || "";
+          e.text && e.text.length > PENDING_TEXT_TRUNCATE
+            ? e.text.slice(0, PENDING_TEXT_TRUNCATE) + "…"
+            : e.text || "";
         const label = PENDING_STATUS_TEXT[e.status] || e.status;
         return (
           `<span class="pending-item pending-${escapeHtml(e.status)}">` +
@@ -172,7 +179,7 @@ export function createEventController(env) {
         // 断线：延迟重连；丢的事件由 reconcileEvents 的一次性取回兜底
         setTimeout(() => {
           void connectEvents().catch((err) => console.error("重连事件流失败:", err));
-        }, 3000);
+        }, RECONNECT_DELAY_MS);
       });
       void reconcileEvents();
     } catch (err) {
@@ -181,7 +188,7 @@ export function createEventController(env) {
       console.error("事件流订阅失败:", err);
       setTimeout(() => {
         void connectEvents().catch((e) => console.error("重连事件流失败:", e));
-      }, 3000);
+      }, RECONNECT_DELAY_MS);
     }
   }
 
@@ -279,5 +286,14 @@ export function createEventController(env) {
     }
   }
 
-  return { registerTestConsumer, applySessionFeedback, connectEvents, setTestsetEvent };
+  return {
+    registerTestConsumer,
+    applySessionFeedback,
+    connectEvents,
+    setTestsetEvent,
+    // 在途条刷新入口：loadHistory / loadStream 成功写入 historyRefreshedAt
+    // 后由 app.js 调用，把「已完成且已刷入历史」的条目从在途条移除（此前
+    // 只随 pending 事件重渲染，最后一条消息完成后「完成」条目会一直残留）
+    renderAllPendingStrips,
+  };
 }

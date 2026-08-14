@@ -37,9 +37,9 @@
 
         <section class="card testsets-card" hidden>
           <div class="toolbar">
-            <div class="tab-bar">
-              <button class="tab-btn active" data-tab="testset">测试集</button>
-              <button class="tab-btn" data-tab="reviewer">评审 Profile</button>
+            <div class="tab-bar" role="tablist">
+              <button class="tab-btn active" data-tab="testset" role="tab" aria-selected="true">测试集</button>
+              <button class="tab-btn" data-tab="reviewer" role="tab" aria-selected="false">评审 Profile</button>
             </div>
             <span class="toolbar-spacer"></span>
             <button id="btn-refresh-testsets" class="btn small">刷新</button>
@@ -60,9 +60,9 @@
 
         <section class="card identities-card" hidden>
           <div class="toolbar">
-            <div class="tab-bar">
-              <button class="tab-btn active" data-tab="identity">身份</button>
-              <button class="tab-btn" data-tab="chatgroup">群聊</button>
+            <div class="tab-bar" role="tablist">
+              <button class="tab-btn active" data-tab="identity" role="tab" aria-selected="true">身份</button>
+              <button class="tab-btn" data-tab="chatgroup" role="tab" aria-selected="false">群聊</button>
             </div>
             <span class="toolbar-spacer"></span>
             <button id="btn-refresh-identities" class="btn small">刷新</button>
@@ -251,9 +251,18 @@
     </div>
 
     <div id="modal-mask" class="modal-mask" hidden>
-      <div class="modal" role="dialog" aria-modal="true">
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
         <div id="modal-body" class="modal-body"></div>
         <div id="modal-error" class="modal-error" hidden></div>
+        <div id="modal-confirm" class="modal-confirm" hidden>
+          <span id="modal-confirm-text" class="modal-confirm-text">
+            当前内容已修改，关闭将丢失这些修改。
+          </span>
+          <div class="modal-confirm-actions">
+            <button id="modal-confirm-keep" class="btn">继续编辑</button>
+            <button id="modal-confirm-discard" class="btn danger">放弃修改</button>
+          </div>
+        </div>
         <div class="modal-actions">
           <button id="modal-cancel" class="btn">取消</button>
           <button id="modal-ok" class="btn primary">确定</button>

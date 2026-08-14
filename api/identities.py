@@ -13,9 +13,15 @@ from .common import json_dict
 
 
 def _require_ids(payload: dict) -> list[str] | None:
-    """校验并返回非空 id 列表；无效返回 None（调用方转 400）。"""
+    """校验并返回非空 id 列表（元素须为非空字符串）；无效返回 None（调用方转 400）。
+
+    元素级校验防 dict/list 漏网：store 内部 ``set(ids)`` 对不可哈希元素会抛
+    TypeError → 500。
+    """
     ids = payload.get("ids")
     if not isinstance(ids, list) or not ids:
+        return None
+    if not all(isinstance(x, str) and x for x in ids):
         return None
     return ids
 

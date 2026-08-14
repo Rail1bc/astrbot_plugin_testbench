@@ -11,7 +11,7 @@ from __future__ import annotations
 from astrbot.api.web import error_response, json_response
 
 from ..eval.reviewer import metrics_contract_description, validate_profile
-from .common import json_dict
+from .common import json_dict, validate_id_list
 
 # profile 可更新字段（白名单；id / created_at 不可改）
 _PROFILE_KEYS = (
@@ -99,9 +99,9 @@ class ReviewersAPI:
         payload = await json_dict()
         if payload is None:
             return error_response("请求体必须是 JSON 对象", status_code=400)
-        ids = payload.get("ids")
-        if not isinstance(ids, list) or not ids:
-            return error_response("ids 不能为空", status_code=400)
+        ids = validate_id_list(payload.get("ids"))
+        if ids is None:
+            return error_response("ids 须为非空字符串列表", status_code=400)
         deleted = await self.reviewer_store.write(
             self.reviewer_store.delete_profiles, ids
         )

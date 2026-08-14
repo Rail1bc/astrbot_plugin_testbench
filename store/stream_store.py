@@ -32,6 +32,8 @@ from pathlib import Path
 
 from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
 
+from ._base import atomic_write_text, logger
+
 # 单会话消息流条数上限（超出截断最旧，与测试集/组容量同风格的安全阀）
 MAX_STREAM_MESSAGES = 500
 
@@ -80,6 +82,7 @@ class StreamStore:
                     if isinstance(op, dict):
                         self._apply_op(streams, op)
         except OSError:
+            logger.warning("[testbench] 读取数据文件 %s 失败，从空数据继续", self._file)
             streams = {}
             line_count = 0
         self._streams = streams
@@ -116,7 +119,11 @@ class StreamStore:
                     return
 
     def _save(self) -> None:
-        """全量重写：把内存态序列化为逐条 append 记录（幂等压缩日志）。"""
+        """全量重写：把内存态序列化为逐条 append 记录（幂等压缩日志）。
+
+        经 ``atomic_write_text`` 原子替换：压缩重写窗口内进程崩溃不会留下
+        半截日志（下一轮 append 仍按原行数阈值触发重写，数据不丢）。
+        """
         body = "\n".join(
             json.dumps(
                 {"op": "append", "session_id": sid, "message": message},
@@ -125,7 +132,7 @@ class StreamStore:
             for sid, stream in self._streams.items()
             for message in stream["messages"]
         )
-        self._file.write_text(body + ("\n" if body else ""), encoding="utf-8")
+        atomic_write_text(self._file, body + ("\n" if body else ""))
         self._line_count = sum(
             len(stream["messages"]) for stream in self._streams.values()
         )

@@ -24,16 +24,24 @@ from typing import Any
 
 from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
 
-from ._base import AsyncWriteMixin
+from ._base import AsyncWriteMixin, atomic_write_text, backup_corrupt_file, logger
 
 
 def _load_profiles(file: Path) -> list[dict]:
-    """读取 ``{"profiles": [...]}`` 结构的 JSON 文件，损坏时返回空列表。"""
+    """读取 ``{"profiles": [...]}`` 结构的 JSON 文件。
+
+    损坏（JSONDecodeError）时把文件改名备份（保留现场供人工恢复）并记告警
+    日志，从空列表继续——而不是静默清空后把「空」写回（用户数据永久丢失）。
+    """
     if not file.exists():
         return []
     try:
         data = json.loads(file.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except json.JSONDecodeError:
+        backup_corrupt_file(file)
+        return []
+    except OSError:
+        logger.warning("[testbench] 读取数据文件 %s 失败，从空数据继续", file)
         return []
     if isinstance(data, dict) and isinstance(data.get("profiles"), list):
         return [p for p in data["profiles"] if isinstance(p, dict)]
@@ -59,9 +67,9 @@ class ReviewerStore(AsyncWriteMixin):
         self._profiles: list[dict] = _load_profiles(self._file)
 
     def _save(self) -> None:
-        self._file.write_text(
+        atomic_write_text(
+            self._file,
             json.dumps({"profiles": self._profiles}, ensure_ascii=False, indent=2),
-            encoding="utf-8",
         )
 
     def list_profiles(self) -> list[dict]:

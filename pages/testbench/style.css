@@ -2397,8 +2397,10 @@ code {
 }
 
 /* 弹窗表单中的 checkbox（身份管理员、运行弹窗测试组多选）：与标签同行显示，
-   方框不再独占一行——全局 input 宽 100% + settings-field 纵向布局所致 */
-.settings-field:has(input[type="checkbox"]) {
+   方框不再独占一行——全局 input 宽 100% + settings-field 纵向布局所致。
+   TB-26：布局规则用显式修饰类而非 :has()（老内核 WebView 不支持 :has()，
+   缺失时 checkbox 布局会坏；checked 高亮类 :has() 仅装饰、降级无害） */
+.settings-field-checkbox {
   flex-direction: row;
   align-items: center;
   gap: 6px;
@@ -2431,4 +2433,32 @@ code {
   font-size: 12px;
   line-height: 1.5;
   word-break: break-word;
+}
+
+/* dirty 弹窗的「放弃修改？」确认条：取消/遮罩点击/Esc 时替换操作区显示，
+   确认后才真正关闭（不销毁表单 DOM，见 modal.js requestClose） */
+.modal-confirm {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.modal-confirm-text {
+  font-size: 12px;
+  color: var(--text);
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.modal-confirm-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
 }

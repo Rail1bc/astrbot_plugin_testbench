@@ -9,7 +9,7 @@ from astrbot.api.web import error_response, json_response
 
 from ..core.conf_routes import delete_route_if_exists
 from ..store.group_store import umo_of
-from .common import MAX_SESSIONS_PER_GROUP, ConfRouteMixin, json_dict
+from .common import MAX_SESSIONS_PER_GROUP, ConfRouteMixin, json_dict, validate_id_list
 
 
 class SessionsAPI(ConfRouteMixin):
@@ -51,8 +51,11 @@ class SessionsAPI(ConfRouteMixin):
                 overrides[key] = ""  # 显式使用默认配置档案（不绑定）
             elif isinstance(value, str) and value:
                 overrides[key] = value
+            elif isinstance(value, str):
+                overrides[key] = None  # 空串归一为 None（恢复继承，同 store 语义）
             else:
-                overrides[key] = None
+                # 数字等非法值不再静默吞成 None（与 update_group 同口径）
+                return error_response(f"{key} 必须是字符串或 null", status_code=400)
 
         await self.group_mgr.write(
             self.group_mgr.update_session, session_id, **overrides
@@ -78,9 +81,9 @@ class SessionsAPI(ConfRouteMixin):
         payload = await json_dict()
         if payload is None:
             return error_response("请求体必须是 JSON 对象", status_code=400)
-        ids = payload.get("ids")
-        if not isinstance(ids, list) or not ids:
-            return error_response("ids 不能为空", status_code=400)
+        ids = validate_id_list(payload.get("ids"))
+        if ids is None:
+            return error_response("ids 须为非空字符串列表", status_code=400)
         removed = await self.group_mgr.write(self.group_mgr.delete_sessions, ids)
         sessions = [self.group_mgr.effective(group, s) for group, s in removed]
         await self._clear_conf_routes(sessions)
@@ -224,9 +227,9 @@ class SessionsAPI(ConfRouteMixin):
         payload = await json_dict()
         if payload is None:
             return error_response("请求体必须是 JSON 对象", status_code=400)
-        ids = payload.get("ids")
-        if not isinstance(ids, list) or not ids:
-            return error_response("ids 不能为空", status_code=400)
+        ids = validate_id_list(payload.get("ids"))
+        if ids is None:
+            return error_response("ids 须为非空字符串列表", status_code=400)
         sessions = self.group_mgr.effective_many(ids)
         reset = await self.history_ops.delete_session_conversations(sessions)
         for session in sessions:

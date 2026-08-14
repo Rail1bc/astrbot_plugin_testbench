@@ -9,7 +9,7 @@ from astrbot.api.web import error_response, json_response
 from ..core.conf_routes import delete_route_if_exists
 from ..core.conf_tools import conf_has_callable_tools
 from ..store.group_store import umo_of
-from .common import MAX_SESSIONS_PER_GROUP, ConfRouteMixin, json_dict
+from .common import MAX_SESSIONS_PER_GROUP, ConfRouteMixin, json_dict, validate_id_list
 
 
 class GroupsAPI(ConfRouteMixin):
@@ -71,6 +71,9 @@ class GroupsAPI(ConfRouteMixin):
                 status_code=400,
             )
         conf_id = payload.get("conf_id") or None
+        if conf_id is not None and not isinstance(conf_id, str):
+            # 非字符串 conf_id 会经 _apply_conf_routes 把非法值写进 UCR 路由表
+            return error_response("conf_id 必须是字符串", status_code=400)
         group = await self.group_mgr.write(
             self.group_mgr.create_group,
             name=payload.get("name"),
@@ -93,9 +96,9 @@ class GroupsAPI(ConfRouteMixin):
         payload = await json_dict()
         if payload is None:
             return error_response("请求体必须是 JSON 对象", status_code=400)
-        ids = payload.get("ids")
-        if not isinstance(ids, list) or not ids:
-            return error_response("ids 不能为空", status_code=400)
+        ids = validate_id_list(payload.get("ids"))
+        if ids is None:
+            return error_response("ids 须为非空字符串列表", status_code=400)
         removed = await self.group_mgr.write(self.group_mgr.delete_groups, ids)
         sessions = [self.group_mgr.effective(group, s) for group, s in removed]
         await self._clear_conf_routes(sessions)
@@ -124,6 +127,12 @@ class GroupsAPI(ConfRouteMixin):
         group = self.group_mgr.get_group(group_id)
         if group is None:
             return error_response("未找到该测试组", status_code=404)
+        # 与 clone_sessions 的总数校验保持一致：新增后仍不超组上限
+        if len(group.get("sessions", [])) + count > MAX_SESSIONS_PER_GROUP:
+            return error_response(
+                f"新增后会话数将超过测试组上限 {MAX_SESSIONS_PER_GROUP}",
+                status_code=400,
+            )
         created = await self.group_mgr.write(
             self.group_mgr.add_sessions,
             group_id,
@@ -162,7 +171,15 @@ class GroupsAPI(ConfRouteMixin):
             if key not in payload:
                 continue
             value = payload[key]
-            updates[key] = value if isinstance(value, str) and value else None
+            if value is None:
+                updates[key] = None  # 恢复默认（继承链回退）
+            elif isinstance(value, str) and value:
+                updates[key] = value
+            elif isinstance(value, str):
+                updates[key] = None  # 空串同样归一为 None（恢复默认）
+            else:
+                # 数字等非法值不再静默吞成 None（曾导致用户以为配置成功）
+                return error_response(f"{key} 必须是字符串或 null", status_code=400)
 
         old_sessions = [self.group_mgr.effective(group, s) for s in group["sessions"]]
         await self.group_mgr.write(self.group_mgr.update_group, group_id, **updates)

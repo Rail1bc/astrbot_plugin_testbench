@@ -22,6 +22,17 @@ export function createChatRenderer(alignGetter) {
     if (a) a.reflowAlign();
   }
 
+  // 距底部多少像素内视为「在底部」（滚动跟随判据，TB-15）
+  const SCROLL_BOTTOM_TOLERANCE = 40;
+
+  // 重渲染前判断用户是否停留在底部：向上翻阅历史时反馈刷新不强制拉回底部
+  function isNearBottom(chat) {
+    return (
+      chat.scrollHeight - chat.scrollTop - chat.clientHeight <=
+      SCROLL_BOTTOM_TOLERANCE
+    );
+  }
+
   function renderChat(panel, conversations) {
     if (isAlignMode()) renderAligned(panel, conversations);
     else renderHistory(panel, conversations);
@@ -29,6 +40,9 @@ export function createChatRenderer(alignGetter) {
 
   function renderHistory(panel, conversations) {
     const chat = panel.querySelector(".chat");
+    // 重渲染前记录是否在底部：多轮测试中用户向上翻阅时，反馈刷新不强制
+    // 拉回底部（TB-15）；空面板（初始加载）视为在底部，仍滚到最新
+    const nearBottom = isNearBottom(chat);
     chat.innerHTML = "";
     chat.classList.remove("aligned");
     let count = 0;
@@ -47,7 +61,7 @@ export function createChatRenderer(alignGetter) {
       p.textContent = "暂无对话历史";
       chat.appendChild(p);
     }
-    chat.scrollTop = chat.scrollHeight;
+    if (nearBottom) chat.scrollTop = chat.scrollHeight;
   }
 
   // 把消息历史按轮次分组：每个 user 发言开启新的一轮，期间的推理/工具调用/回复都属于该轮
@@ -318,6 +332,8 @@ export function createChatRenderer(alignGetter) {
   function renderStream(panel, messages) {
     if (isAlignMode()) return renderStreamAligned(panel, messages);
     const chatEl = panel.querySelector(".chat");
+    // 同 renderHistory：仅原在底部时滚到最新（TB-15）
+    const nearBottom = isNearBottom(chatEl);
     chatEl.innerHTML = "";
     chatEl.classList.remove("aligned");
     if (!messages.length) {
@@ -328,7 +344,7 @@ export function createChatRenderer(alignGetter) {
       return;
     }
     for (const m of messages) chatEl.appendChild(streamBubble(m));
-    chatEl.scrollTop = chatEl.scrollHeight;
+    if (nearBottom) chatEl.scrollTop = chatEl.scrollHeight;
   }
 
   return { renderChat, renderHistory, renderAligned, bubbleFor, renderStream };

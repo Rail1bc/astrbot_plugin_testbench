@@ -20,7 +20,7 @@ import {
 } from "./api.js";
 import { state } from "./state.js";
 import { openModal, showModal } from "./modal.js";
-import { escapeHtml, field } from "./utils.js";
+import { escapeHtml, field, providerOptions } from "./utils.js";
 import { CONTEXT_MODES, createTestsetEditor } from "./testset_editor.js";
 
 // 评审指标类型（与后端 reviewer profile 的 metrics.type 枚举一致）
@@ -29,6 +29,9 @@ const METRIC_TYPES = [
   ["enum", "枚举"],
   ["text", "文本"],
 ];
+
+// {{metrics}} 展开预览防抖间隔（毫秒）
+const PREVIEW_DEBOUNCE_MS = 300;
 
 const $ = (id) => document.getElementById(id);
 
@@ -139,6 +142,7 @@ export function createTestsetList(env) {
       title: "新建测试集",
       content: form,
       okText: "创建",
+      dirty: true,
       onOk: async () => {
         const name = inp.value.trim() || "测试集";
         const ts = await createTestset({ name, messages: [] });
@@ -239,7 +243,7 @@ export function createTestsetList(env) {
     }
     for (const g of groups) {
       const l = document.createElement("label");
-      l.className = "settings-field";
+      l.className = "settings-field settings-field-checkbox";
       const r = document.createElement("input");
       r.type = "checkbox";
       r.dataset.gid = g.id;
@@ -289,7 +293,9 @@ export function createTestsetList(env) {
   // 与「身份与群聊」同款 tab：测试集 / 评审 Profile 一次只渲染一个列表
   function switchTestsetTab(tab) {
     document.querySelectorAll(".testsets-card .tab-btn").forEach((btn) => {
-      btn.classList.toggle("active", btn.dataset.tab === tab);
+      const active = btn.dataset.tab === tab;
+      btn.classList.toggle("active", active);
+      btn.setAttribute("aria-selected", String(active)); // a11y（TB-21）
     });
     document.querySelectorAll(".testsets-card .tab-pane").forEach((pane) => {
       pane.hidden = pane.dataset.pane !== tab;
@@ -405,16 +411,7 @@ export function createTestsetList(env) {
     // Provider 即「供应商 / 模型」：不单独配模型，评审用 Provider 当前模型；
     // 下拉显示供应商名 + 当前模型，避免只显示供应商名无法区分同名供应商
     const selProvider = document.createElement("select");
-    selProvider.innerHTML =
-      `<option value="">选择 Provider…</option>` +
-      state.providers
-        .map(
-          (p) =>
-            `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name || p.id)}${
-              p.current_model ? `（${escapeHtml(p.current_model)}）` : ""
-            }</option>`,
-        )
-        .join("");
+    selProvider.innerHTML = providerOptions();
     if (existing && existing.provider_id) selProvider.value = existing.provider_id;
 
     const selContext = document.createElement("select");
@@ -492,7 +489,7 @@ export function createTestsetList(env) {
     };
     const schedulePreview = () => {
       clearTimeout(previewTimer);
-      previewTimer = setTimeout(renderPreview, 300);
+      previewTimer = setTimeout(renderPreview, PREVIEW_DEBOUNCE_MS);
     };
     // 委托覆盖新增/删除行（删行 row.remove() 不触发 input/change，须补 click）
     metricsBox.addEventListener("input", schedulePreview);
@@ -548,6 +545,7 @@ export function createTestsetList(env) {
       content: wrap,
       okText: "保存",
       wide: true,
+      dirty: true,
       onOk: async () => {
         if (!inpName.value.trim()) throw new Error("评审 Profile 名称不能为空");
         if (!selProvider.value) throw new Error("请选择 Provider");
@@ -748,5 +746,6 @@ export function createTestsetList(env) {
     btn.addEventListener("click", () => switchTestsetTab(btn.dataset.tab));
   });
 
-  return { refreshTestsets, renderTestsetNav, refreshReviewers };
+  // renderTestsetNav 仅本模块内部使用（列表头部导航），不导出（TB-22 死导出清理）
+  return { refreshTestsets, refreshReviewers };
 }

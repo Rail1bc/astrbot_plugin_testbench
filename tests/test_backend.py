@@ -8,6 +8,7 @@ import asyncio
 import json
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -259,6 +260,33 @@ def test_group_manager_delete_group_with_no_sessions(tmp_path):
     # 重新加载（新实例）确认删除已持久化
     mgr2 = VirtualGroupManager(data_dir=tmp_path)
     assert mgr2.list_groups() == []
+
+
+def test_group_manager_corrupt_file_backed_up(tmp_path):
+    """TB-01: 损坏的 groups.json 改名备份（.corrupt-<ts>）而非静默清空。
+
+    直接覆盖写 + 损坏时静默回退空，会让下一次保存把「空」写回、用户数据
+    永久丢失。损坏文件必须保留现场供人工恢复。
+    """
+    mgr = VirtualGroupManager(data_dir=tmp_path)
+    mgr.create_group("组A", count=2)
+
+    # 模拟崩溃留下的半截 JSON
+    data_file = tmp_path / "virtual_session" / "groups.json"
+    data_file.write_text(
+        '{"groups": [{"id": "g_1", "name": "组A", "sessions": [{"id"',
+        encoding="utf-8",
+    )
+
+    mgr2 = VirtualGroupManager(data_dir=tmp_path)
+    assert mgr2.list_groups() == []  # 从空数据继续（不崩溃、不迁移旧文件）
+    backups = list((tmp_path / "virtual_session").glob("groups.json.corrupt-*"))
+    assert len(backups) == 1  # 损坏文件被备份而非删除
+    assert '"组A"' in backups[0].read_text(encoding="utf-8")  # 现场可人工恢复
+
+    # 下一次保存为原子写：不留 .tmp 残留
+    mgr2.create_group("新组")
+    assert not list((tmp_path / "virtual_session").glob("groups.json.tmp"))
 
 
 def test_group_create_stores_conf(tmp_path):
@@ -705,6 +733,19 @@ async def wait_run_done(runner, test_id: str, max_wait: float = 5.0) -> dict:
             await asyncio.sleep(0.01)
 
 
+async def wait_until(predicate, max_wait: float = 5.0) -> None:
+    """轮询直到 ``predicate()`` 为真。
+
+    替代固定 ``asyncio.sleep`` 等待异步工作完成（路由恢复、历史重生成等）：
+    固定等待在慢调度 CI 上断言可能先于异步任务完成而间歇性失败（flaky），
+    轮询 + 超时则快慢机器都稳定。
+    """
+    async with asyncio.timeout(max_wait):
+        # noqa: ASYNC110 —— 轮询等待异步工作完成是测试辅助的意图（同 wait_run_done）
+        while not predicate():  # noqa: ASYNC110
+            await asyncio.sleep(0.01)
+
+
 @pytest.mark.asyncio
 async def test_runner_start_and_status_ok():
     queue = asyncio.Queue()
@@ -845,8 +886,8 @@ async def test_runner_applies_and_restores_conf_route():
             conf_id="conf_b",
         )
         await wait_run_done(runner, test_id)
-        # 路由恢复在全部完成后异步执行，等待其完成
-        await asyncio.sleep(0.05)
+        # 路由恢复在全部完成后异步执行，等待其完成（轮询替代固定 sleep）
+        await wait_until(lambda: ucr.umop_to_conf_id == {})
     finally:
         task.cancel()
     # 测试结束后的临时路由不残留
@@ -870,7 +911,8 @@ async def test_runner_restores_previous_route():
     try:
         test_id = await runner.start(sessions=[session], text="x", conf_id="conf_b")
         await wait_run_done(runner, test_id)
-        await asyncio.sleep(0.05)
+        # 覆盖结束后恢复原有持久路由（轮询替代固定 sleep）
+        await wait_until(lambda: ucr.umop_to_conf_id == {umop: "conf_a"})
     finally:
         task.cancel()
     # 覆盖结束后恢复原有持久路由
@@ -908,8 +950,12 @@ async def test_plugin_sync_conf_route(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.framework_internal
 async def test_conf_route_precedence_over_broad_fallback():
     """插件精确路由须优先于用户已配的「全部会话」兜底（真实 UCR 端到端）。
+
+    直接依赖 AstrBot 内部模块（astrbot.core.umop_config_router，无版本契约），
+    最低支持版矩阵下跳过（见 .github/workflows/pytest.yml）。
 
     AstrBot UCR 按 dict 插入顺序**首个匹配即返回**（get_conf_id_for_umop 顺序
     遍历），update_route 对新键追加到末尾——兜底路由先插入时，后追加的会话级
@@ -2107,7 +2153,8 @@ async def test_plugin_regenerate_history(tmp_path):
         resp = await call_handler(
             plugin.regenerate_history, {"id": session["id"], "index": 3}
         )
-        await asyncio.sleep(0.05)
+        # 重发是异步入队执行，轮询等待 handler 收到该消息（替代固定 sleep）
+        await wait_until(lambda: received == ["第二问"])
     finally:
         task.cancel()
     body = json.loads(resp.body)
@@ -2243,7 +2290,8 @@ async def test_plugin_regenerate_history_with_conversation_id(tmp_path):
             plugin.regenerate_history,
             {"id": session["id"], "index": 1, "conversation_id": old_cid},
         )
-        await asyncio.sleep(0.05)
+        # 重发是异步入队执行，轮询等待 handler 收到该消息（替代固定 sleep）
+        await wait_until(lambda: received == ["旧问"])
     finally:
         task.cancel()
     assert resp.status_code == 200
@@ -2820,6 +2868,38 @@ async def test_testset_runner_step_timeout(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_testset_runner_step_failure_skips_review(monkeypatch):
+    """TB-14: 单步段失败（置 error）后评审不执行——评审只针对完整执行的数据。
+
+    语义锚定：`_drive_segments` 在单步失败后中止后续并跳过 `_review_phase`
+    （批量段内错误不中止、评审照常，只评估 done 步骤）；失败运行不带
+    final_verdicts、不经过 reviewing 阶段。
+    """
+    monkeypatch.setattr(tsr_mod, "TESTSET_STEP_TIMEOUT", 0.05)
+    queue = asyncio.Queue()
+    context = FakeContext(queue)
+    tsr = TestsetRunner(context, VirtualTestRunner(context))
+
+    # 步骤带规则 + final_rules：若评审执行会产出 verdicts，失败跳过则没有
+    testset = _make_testset("ts_6", "失败跳过评审", [("m1", None), ("m2", None)])
+    testset["messages"][0]["rules"] = [{"type": "contains", "value": "x"}]
+    testset["final_rules"] = [
+        {"rule": {"type": "contains", "value": "x"}, "scope": "all"}
+    ]
+    run_id = tsr.start_run(testset, [make_session(1)])
+    rec = await wait_testset_done(tsr, run_id)
+    # 收尾：放行悬挂的 _await_event
+    while not queue.empty():
+        queue.get_nowait().cleanup_temporary_local_files()
+    await asyncio.sleep(0.01)
+
+    assert rec["status"] == "error"
+    assert rec["steps"][0]["status"] == "error"
+    assert not rec.get("reviewing")
+    assert not rec.get("final_verdicts")
+
+
+@pytest.mark.asyncio
 async def test_testset_runner_abort():
     queue = asyncio.Queue()
     context = FakeContext(queue)
@@ -2907,6 +2987,71 @@ async def test_testset_runner_batch_segment_abort_collects_started():
     # 已发出的两条都要落定；旧实现收集循环遇 abort 提前 break，步骤 1 永远 running
     assert [s["status"] for s in rec["steps"]] == ["done", "done"]
     assert all(s["test_id"] for s in rec["steps"])
+
+
+@pytest.mark.asyncio
+async def test_runner_multiple_sessions_inflight_simultaneously():
+    """TB-28: 多会话同时 pending——并发是核心卖点：3 个会话的消息全部入队后
+    才陆续完成，pending 中同时存在全部 submitted 条目（不是逐条串行）。"""
+    queue = asyncio.Queue()
+    runner = VirtualTestRunner(FakeContext(queue))
+    gate = asyncio.Event()
+
+    async def handler(event):
+        await gate.wait()
+        await event.send(MessageChain().message("ok"))
+        event.cleanup_temporary_local_files()
+
+    # 与真实 EventBus 一致：每个事件并行处理
+    async def consume_parallel(queue, handler):
+        while True:
+            event = await queue.get()
+            asyncio.create_task(handler(event))
+
+    task = asyncio.create_task(consume_parallel(queue, handler))
+    try:
+        test_id = await runner.start(
+            sessions=[make_session(1), make_session(2), make_session(3)],
+            text="并发消息",
+        )
+        # 全部 3 条已入队（handler 都阻塞在 gate 上 → 不可能有 done）
+        await wait_until(lambda: len(runner.pending_entries()) >= 3)
+        entries = runner.pending_entries()
+        assert {e["session_id"] for e in entries} == {"vs_1", "vs_2", "vs_3"}
+        assert all(e["status"] == "submitted" for e in entries)
+        gate.set()
+        rec = await wait_run_done(runner, test_id)
+    finally:
+        task.cancel()
+    assert rec["done"] is True
+    assert {r["session_id"] for r in rec["results"]} == {"vs_1", "vs_2", "vs_3"}
+
+
+@pytest.mark.asyncio
+async def test_runner_out_of_order_completion():
+    """TB-28: 乱序完成：各会话处理时长不同（完成顺序与入队顺序相反），
+    结果按 session 正确归位、全部收敛。"""
+    queue = asyncio.Queue()
+    runner = VirtualTestRunner(FakeContext(queue))
+
+    async def handler(event):
+        # 会话 id 末尾数字越大等待越久 → 完成顺序与入队顺序相反
+        await asyncio.sleep(0.02 * int(event.session_id.split("_")[1]))
+        await event.send(MessageChain().message(f"回复 {event.session_id}"))
+        event.cleanup_temporary_local_files()
+
+    task = asyncio.create_task(consume(queue, handler))
+    try:
+        test_id = await runner.start(
+            sessions=[make_session(1), make_session(2), make_session(3)],
+            text="乱序",
+        )
+        rec = await wait_run_done(runner, test_id)
+    finally:
+        task.cancel()
+    assert {r["session_id"] for r in rec["results"]} == {"vs_1", "vs_2", "vs_3"}
+    for r in rec["results"]:
+        assert r["reply"] == f"回复 {r['session_id']}"
 
 
 def test_testset_runner_segments_edge_cases():
@@ -3635,6 +3780,47 @@ async def test_event_bus_unsubscribe():
 
 
 @pytest.mark.asyncio
+async def test_event_bus_publisher_not_blocked_by_slow_consumer():
+    """TB-30: 慢消费者（从不消费）不阻塞发布者：publish 为同步调用、满则丢最旧，
+    内存只保留最新 maxlen 条——页面切后台时发布者行为不变。
+    """
+    bus = EventBus(maxlen=3)
+    q = bus.subscribe()
+    for i in range(50):
+        bus.publish({"type": "e", "i": i})  # 同步返回：不 await、不抛错
+    remaining = []
+    while not q.empty():
+        remaining.append(q.get_nowait()["i"])
+    assert remaining == [47, 48, 49]  # 只保留最新 3 条（maxlen）
+
+
+@pytest.mark.asyncio
+async def test_events_endpoint_sse_format_and_unsubscribe():
+    """TB-30: /events SSE 端点：事件序列化为 data: 行；generator 结束自动退订。"""
+    plugin = main_mod.VirtualSessionPlugin(FakeContext())
+    resp = await plugin.events()
+    chunks: list[str] = []
+
+    async def drain():
+        async for chunk in resp.body_iterator:
+            chunks.append(chunk)
+            if "data:" in chunk:
+                break
+        # async for 的 break/return 不会自动 aclose 生成器——显式关闭，
+        # 触发 gen 的 finally 退订（否则消费者永久滞留、后续 wait_until 超时）
+        await resp.body_iterator.aclose()
+
+    task = asyncio.create_task(drain())
+    # 等订阅建立（generator 首轮迭代在 subscribe 之后才可发布）
+    await wait_until(lambda: len(plugin.event_bus._consumers) == 1)
+    plugin.event_bus.publish({"type": "test_ping", "n": 1})
+    await asyncio.wait_for(task, timeout=5)
+    assert any('"type": "test_ping"' in c for c in chunks)
+    # generator 关闭 → finally 退订，后续事件不再送达该消费者
+    await wait_until(lambda: len(plugin.event_bus._consumers) == 0)
+
+
+@pytest.mark.asyncio
 async def test_runner_publishes_pending_session_test_events():
     bus = RecordingBus()
     queue = asyncio.Queue()
@@ -4012,6 +4198,22 @@ async def test_stream_store_compaction(tmp_path, monkeypatch):
     msgs = await store2.read_stream("vs_1")
     assert len(msgs) == 12
     assert all(m["reply_status"] == "ok" for m in msgs)
+
+
+@pytest.mark.asyncio
+async def test_stream_store_corrupt_line_tolerated(tmp_path):
+    """TB-30: 单条损坏行（半截 JSON，崩溃遗留）在重载时跳过，其余行正常回放。"""
+    store = StreamStore(data_dir=tmp_path)
+    await store.append("vs_1", {"role": "user", "text": "ok1"})
+    await store.append("vs_2", {"role": "user", "text": "ok2"})
+    # 模拟崩溃遗留的半截行
+    with (tmp_path / "virtual_session" / "streams.jsonl").open(
+        "a", encoding="utf-8"
+    ) as f:
+        f.write('{"op": "append", "session_id": "vs_9", "message": {"text": "半截')
+    store2 = StreamStore(data_dir=tmp_path)
+    assert [m["text"] for m in await store2.read_stream("vs_1")] == ["ok1"]
+    assert [m["text"] for m in await store2.read_stream("vs_2")] == ["ok2"]
 
 
 @pytest.mark.asyncio
@@ -5430,11 +5632,41 @@ def test_assessor_scope_indices_clamping():
     assert Assessor._scope_indices("all", 3) == [0, 1, 2]
 
 
+@pytest.mark.asyncio
+async def test_assessor_final_rule_combo_falls_back_pass_false():
+    """TB-30: final_rules 不支持组合——op:any 组合 final rule 走机械「未知断言
+    类型」兜底 pass False（组合语义仅消息规则支持，final 保持单叶）。"""
+    assessor = Assessor(FakeContext(), {})
+    steps = [
+        {
+            "status": "done",
+            "text": "q1",
+            "rules": [],
+            "results": [{"session_id": "vs_1", "reply": "r1", "status": "ok"}],
+        }
+    ]
+    final_rules = [
+        {
+            "rule": {"op": "any", "rules": [{"type": "contains", "value": "r1"}]},
+            "scope": "all",
+        }
+    ]
+    out = await assessor.assess(steps, final_rules, [{"id": "vs_1"}])
+    v = out[0]["results"][0]["verdict"]
+    assert v["status"] == "ok"
+    assert v["pass"] is False  # 未知断言类型兜底：不静默通过
+
+
 # ---------- 实际输入快照与结构化评审材料 ----------
 
 
+@pytest.mark.framework_internal
 def test_snapshot_llm_input_renders_strings():
-    """实际输入快照：prompt + extra parts（TextPart / ThinkPart）+ system_prompt。"""
+    """实际输入快照：prompt + extra parts（TextPart / ThinkPart）+ system_prompt。
+
+    直接依赖 AstrBot 内部模块（astrbot.core.agent.message，无版本契约），
+    最低支持版矩阵下跳过（见 .github/workflows/pytest.yml）。
+    """
     from astrbot.core.agent.message import TextPart, ThinkPart
 
     req = SimpleNamespace(
@@ -5465,8 +5697,13 @@ def test_snapshot_llm_input_renders_strings():
 
 
 @pytest.mark.asyncio
+@pytest.mark.framework_internal
 async def test_plugin_on_llm_snapshots_actual_input():
-    """on_llm hook 把实际输入快照写入事件 extra（评审材料的数据源）。"""
+    """on_llm hook 把实际输入快照写入事件 extra（评审材料的数据源）。
+
+    直接依赖 AstrBot 内部模块（astrbot.core.agent.message，无版本契约），
+    最低支持版矩阵下跳过（见 .github/workflows/pytest.yml）。
+    """
     from astrbot.core.agent.message import TextPart
 
     queue = asyncio.Queue()
@@ -7317,8 +7554,6 @@ def test_cron_job_warning_basic_payload_miss():
 @pytest.mark.asyncio
 async def test_collect_cron_warnings():
     """collect_cron_warnings 枚举任务并补入活值 next_run_time。"""
-    from datetime import datetime
-
     umos, ids = target_sets([make_session(1)])
     mgr = FakeCronManager(
         [

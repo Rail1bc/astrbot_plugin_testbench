@@ -7,7 +7,7 @@ from typing import Any
 from astrbot.api.web import error_response, json_response, request
 
 from ..store.testset_store import MAX_MESSAGES_PER_TESTSET
-from .common import json_dict
+from .common import json_dict, validate_id_list
 
 
 class TestsetsAPI:
@@ -322,9 +322,9 @@ class TestsetsAPI:
         payload = await json_dict()
         if payload is None:
             return error_response("请求体必须是 JSON 对象", status_code=400)
-        ids = payload.get("ids")
-        if not isinstance(ids, list) or not ids:
-            return error_response("ids 不能为空", status_code=400)
+        ids = validate_id_list(payload.get("ids"))
+        if ids is None:
+            return error_response("ids 须为非空字符串列表", status_code=400)
         deleted = await self.testset_store.write(
             self.testset_store.delete_testsets, ids
         )
@@ -354,9 +354,9 @@ class TestsetsAPI:
         if not testset.get("messages"):
             return error_response("该测试集没有消息", status_code=400)
         sessions = payload.get("sessions")
-        if not isinstance(sessions, list) or not sessions:
-            return error_response("sessions 不能为空", status_code=400)
-        requested = list(dict.fromkeys(sessions))  # 去重，保持顺序
+        requested = validate_id_list(sessions)
+        if requested is None:
+            return error_response("sessions 须为非空字符串列表", status_code=400)
         session_objs = self.group_mgr.effective_many(requested)
         if len(session_objs) != len(requested):
             found = {s["id"] for s in session_objs}

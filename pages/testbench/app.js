@@ -83,7 +83,7 @@ function openPanel(id) {
     `</span>` +
     `<span class="panel-actions">` +
     `<div class="panel-menu">` +
-    `<button class="icon-btn menu-toggle" data-action="menu" title="更多操作">⋯</button>` +
+    `<button class="icon-btn menu-toggle" data-action="menu" title="更多操作" aria-label="更多操作">⋯</button>` +
     `<div class="panel-menu-dropdown" hidden>` +
     `<button class="panel-menu-item" data-action="history">编辑历史</button>` +
     `<button class="panel-menu-item" data-action="reset">重置历史</button>` +
@@ -93,8 +93,8 @@ function openPanel(id) {
     `<button class="panel-menu-item" data-action="derive">衍生测试组…</button>` +
     `</div>` +
     `</div>` +
-    `<button class="icon-btn" data-action="pin" title="置顶">置顶</button>` +
-    `<button class="icon-btn" data-action="close" title="关闭">✕</button>` +
+    `<button class="icon-btn" data-action="pin" title="置顶" aria-label="置顶">置顶</button>` +
+    `<button class="icon-btn" data-action="close" title="关闭" aria-label="关闭">✕</button>` +
     `</span>` +
     `</div>` +
     `<div class="panel-body">` +
@@ -170,6 +170,7 @@ async function loadHistory(id) {
     renderChat(panel, conversations);
     // 记录本次成功刷新时刻：完成的消息刷入历史后即从在途条移除
     state.historyRefreshedAt.set(id, Date.now());
+    events.renderAllPendingStrips();
     if (align.isAlignMode()) align.reflowAlign();
   } catch (err) {
     if (historySeq.get(id) !== seq) return; // 迟到失败同样丢弃，不覆盖较新内容
@@ -203,6 +204,10 @@ async function loadStream(id) {
     const messages = Array.isArray(data.messages) ? data.messages : [];
     state.streamCache.set(id, messages);
     chat.renderStream(panel, messages);
+    // 与 loadHistory 一致：消息流刷新成功也更新在途条移除基准时刻，
+    // 完成条目随之从在途条消失（否则消息流视图下会永久残留）
+    state.historyRefreshedAt.set(id, Date.now());
+    events.renderAllPendingStrips();
     if (align.isAlignMode()) align.reflowAlign();
   } catch (err) {
     if (historySeq.get(id) !== seq) return;
@@ -219,7 +224,8 @@ function setGlobalView(view) {
   state.globalView = view;
   const toggle = $("view-toggle");
   if (toggle) {
-    toggle.textContent = view === "stream" ? "LLM 历史" : "消息流";
+    // 文案显示「切换到目标视图」（TB-21）：避免只显示目标名被误读为当前视图
+    toggle.textContent = view === "stream" ? "切换到 LLM 历史" : "切换到消息流";
     toggle.title = view === "stream" ? "切换为 LLM 对话历史" : "切换为真实消息流";
   }
   for (const id of state.openIds) {
@@ -258,6 +264,7 @@ async function openHistoryEditor(id) {
     content: wrap,
     okText: "保存",
     wide: true,
+    dirty: true,
     onOk: async () => {
       let parsed;
       try {
@@ -339,10 +346,12 @@ async function sendToOne(id, text) {
   if (!text) return;
   const panel = state.panelEls.get(id);
   const input = panel.querySelector(".msg-input");
-  input.value = "";
   panelStatus(panel, "warn", "发送中…");
   try {
     const resp = await runTest({ sessions: [id], text, ...selectedBroadcastOptions() });
+    // 入队成功后才清空输入：失败时保留用户内容可直接重试（曾先清空再 await，
+    // 网络/后端失败后长消息无法找回）
+    input.value = "";
     events.registerTestConsumer(resp.test_id, events.applySessionFeedback, () => {});
   } catch (err) {
     panelStatus(panel, "error", "发送失败: " + err.message);
@@ -362,10 +371,11 @@ async function sendToAll() {
   }
   // 不阻止重叠发送：agent 处理中可再次群发（真实「重复追问」场景），
   // 各会话的在途消息由面板底部的在途条实时展示
-  $("run-text").value = "";
   showRunStatus("warn", `正在并发发送给 ${ids.length} 个会话…`);
   try {
     const resp = await runTest({ sessions: ids, text, ...selectedBroadcastOptions() });
+    // 入队成功后才清空群发栏：失败时保留内容供重试（同 sendToOne）
+    $("run-text").value = "";
     events.registerTestConsumer(
       resp.test_id,
       events.applySessionFeedback,
@@ -602,6 +612,7 @@ function promptFormDialog(title, message, fields, okText, onOk) {
     title,
     content: wrap,
     okText,
+    dirty: true,
     onOk: () => onOk(inputs),
   });
 }
@@ -736,34 +747,27 @@ panelsEl.addEventListener("click", (e) => {
 // ---------- 选项加载 ----------
 
 async function loadOptions() {
-  try {
-    const data = await listPlatforms();
-    state.platforms = Array.isArray(data) ? data : [];
-  } catch (err) {
-    console.warn("加载平台列表失败:", err);
-    state.platforms = [];
-  }
-  try {
-    const data = await listConfs();
-    state.confs = Array.isArray(data) ? data : [];
-  } catch (err) {
-    console.warn("加载配置档案失败:", err);
-    state.confs = [];
-  }
-  try {
-    const data = await listProviders();
-    state.providers = Array.isArray(data) ? data : [];
-  } catch (err) {
-    console.warn("加载 Provider 列表失败:", err);
-    state.providers = [];
-  }
-  try {
-    const data = await listReviewers();
-    state.reviewers = Array.isArray(data.reviewers) ? data.reviewers : [];
-  } catch (err) {
-    console.warn("加载评审 Profile 失败:", err);
-    state.reviewers = [];
-  }
+  // 四个下拉数据源互不依赖，并行拉取（曾 4 个串行 await）
+  const [platforms, confs, providers, reviewers] = await Promise.allSettled([
+    listPlatforms(),
+    listConfs(),
+    listProviders(),
+    listReviewers(),
+  ]);
+  state.platforms =
+    platforms.status === "fulfilled" && Array.isArray(platforms.value)
+      ? platforms.value
+      : [];
+  state.confs =
+    confs.status === "fulfilled" && Array.isArray(confs.value) ? confs.value : [];
+  state.providers =
+    providers.status === "fulfilled" && Array.isArray(providers.value)
+      ? providers.value
+      : [];
+  state.reviewers =
+    reviewers.status === "fulfilled" && Array.isArray(reviewers.value?.reviewers)
+      ? reviewers.value.reviewers
+      : [];
 }
 
 // ---------- 初始化 ----------
@@ -883,6 +887,9 @@ function showView(view) {
     document.querySelector(".sessions-view").hidden = false;
     document.querySelector(".testsets-view").hidden = true;
     document.querySelector(".chat-group-view").hidden = true;
+    // 切回会话列表刷新组数据：测试集 / 身份视图里可能改动了组相关状态
+    // （TB-16，与 testsets / identities 分支的刷新口径一致）
+    void refreshGroups();
   } else if (view === "testsets") {
     document.querySelector(".sessions-view").hidden = true;
     document.querySelector(".testsets-view").hidden = false;
@@ -907,7 +914,21 @@ document.querySelectorAll(".rail-btn").forEach((btn) => {
   });
 });
 
-await ready();
+// bridge 就绪等待超时（毫秒）：正常在 iframe 挂载后立即 resolve；桥异常时
+// 页面不再永远空白——超时后显示可见错误并继续（各初始化步骤已自行降级）
+const BRIDGE_READY_TIMEOUT_MS = 10_000;
+await Promise.race([
+  ready(),
+  new Promise((_, reject) =>
+    setTimeout(
+      () => reject(new Error(`桥接初始化超时（> ${BRIDGE_READY_TIMEOUT_MS}ms）`)),
+      BRIDGE_READY_TIMEOUT_MS,
+    ),
+  ),
+]).catch((err) => {
+  showRunStatus("error", "插件页面桥接初始化失败: " + err.message);
+  console.error("桥接初始化失败:", err);
+});
 // 配置档案必须先于测试组列表加载：组徽标按 state.confs 映射档案名称，若与
 // refreshGroups 并行，首帧渲染时档案可能尚未就绪，confName 回退显示原始 id
 // （如 eadfcf07…），须手动刷新才恢复名称。loadOptions 内部已各自捕获降级。

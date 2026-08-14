@@ -60,6 +60,11 @@ export function createReportView(deps) {
   let viewMode = "edit";
   // 报告视图渲染序号：两个 await 间切换测试集 / 视图会渲染错对象，乱序响应丢弃
   let reportSeq = 0;
+  // 生成中的 LLM 报告 id 集合：连续点击不并发多个生成请求（浪费 LLM 调用、
+  // 后写覆盖），按钮置灰并显示「生成中…」，完成后随重渲染恢复
+  const generatingReports = new Set();
+  // 批量评审重试进行中的报告 id 集合（与生成同口径防并发）
+  const retryingReports = new Set();
 
   // 页眉「报告」按钮：在编辑与报告视图之间切换；切到报告时拉取渲染
   function toggleViewMode() {
@@ -124,16 +129,20 @@ export function createReportView(deps) {
     } catch (err) {
       reportsFailed = true;
     }
-    if (runsFailed) runsHolder.appendChild(hintEl("加载最近运行失败"));
-    else if (!runs.length) {
+    if (runsFailed) {
+      runsHolder.appendChild(hintEl("加载最近运行失败"));
+      runsHolder.appendChild(retryBtn());
+    } else if (!runs.length) {
       runsHolder.appendChild(
         hintEl("暂无运行记录，运行测试集后在此找回进度（运行由后台任务驱动，离开页面不中断）"),
       );
     } else {
       buildRunsSection(runsHolder, runs);
     }
-    if (reportsFailed) reportsHolder.appendChild(hintEl("加载报告失败"));
-    else if (!reports.length) {
+    if (reportsFailed) {
+      reportsHolder.appendChild(hintEl("加载报告失败"));
+      reportsHolder.appendChild(retryBtn());
+    } else if (!reports.length) {
       reportsHolder.appendChild(
         hintEl("该测试集未产出报告。编辑视图勾选「运行结束后产出持久化报告」后运行即可产出"),
       );
@@ -154,6 +163,15 @@ export function createReportView(deps) {
     div.className = "hint";
     div.textContent = text;
     return div;
+  }
+
+  // 加载失败重试按钮（TB-19）：失败后不必切换测试集重进，点击重拉当前视图
+  function retryBtn() {
+    const btn = document.createElement("button");
+    btn.className = "btn small";
+    btn.textContent = "重试";
+    btn.addEventListener("click", () => void renderReportView());
+    return btn;
   }
 
   // 最近运行条目：状态 chip + 名称 + 时间 + 步骤进度 + 查看（运行中找回进度，
@@ -217,27 +235,37 @@ export function createReportView(deps) {
     exportBtn.addEventListener("click", () => exportReport(report));
     actions.append(view, exportBtn);
     // 「生成 LLM 报告」：仅该测试集配置了报告 LLM（report_llm）时显示，未配置
-    // 不显示（避免死按钮）
+    // 不显示（避免死按钮）；生成中置灰 + 「生成中…」
     const ts = currentSelected();
     if (ts && ts.report_llm && ts.report_llm.provider_id) {
       const llmBtn = document.createElement("button");
       llmBtn.className = "btn small";
-      llmBtn.textContent = data.llm_report ? "重新生成 LLM 报告" : "生成 LLM 报告";
+      const inFlight = generatingReports.has(report.id);
+      llmBtn.textContent = inFlight
+        ? "生成中…"
+        : data.llm_report
+          ? "重新生成 LLM 报告"
+          : "生成 LLM 报告";
+      llmBtn.disabled = inFlight;
       llmBtn.title = "按测试集配置的报告 LLM 生成 markdown 总结报告";
       llmBtn.addEventListener("click", () => generateLlmReportAction(report));
       actions.appendChild(llmBtn);
     }
     const stats = retryableReportStats(data);
     if (stats.total) {
+      const retrying = retryingReports.has(report.id);
       const retryFail = document.createElement("button");
       retryFail.className = "btn small";
-      retryFail.textContent = `重试失败（${stats.failed}）`;
-      retryFail.disabled = stats.failed === 0;
+      retryFail.textContent = retrying
+        ? "重试中…"
+        : `重试失败（${stats.failed}）`;
+      retryFail.disabled = stats.failed === 0 || retrying;
       retryFail.title = "重跑状态为失败（error/invalid）的 LLM 评审";
       retryFail.addEventListener("click", () => confirmRetryReviews(report, "failed"));
       const retryAll = document.createElement("button");
       retryAll.className = "btn small";
-      retryAll.textContent = "重试全部";
+      retryAll.textContent = retrying ? "重试中…" : "重试全部";
+      retryAll.disabled = retrying;
       retryAll.title = "重跑报告的全部 LLM 评审";
       retryAll.addEventListener("click", () => confirmRetryReviews(report, "all"));
       actions.append(retryFail, retryAll);
@@ -252,18 +280,25 @@ export function createReportView(deps) {
   }
 
   // 批量重试确认（scope=failed|all）：重试后重渲染报告视图（列表总览与卡片按钮
-  // 按新数据刷新）并提示结果
+  // 按新数据刷新）并提示结果。同一报告的重试串行（retryingReports 防并发），
+  // 与单条重试按钮的 disabled 行为保持一致
   function confirmRetryReviews(report, scope) {
+    if (retryingReports.has(report.id)) return; // 已有批量重试在途，忽略重复点击
     const label = scope === "failed" ? "失败评审" : "全部评审";
     showModal(`确定重试该报告的全部${label}吗？将按评审时保存的输入重新调用评审 LLM，报告数据会更新。`, {
       onOk: async () => {
-        const resp = await retryReviews(report.id, { scope });
-        void renderReportView();
-        const msg = `重试完成：更新 ${resp.updated} 条`;
-        showRunStatus(
-          resp.failed ? "warn" : "ok",
-          resp.failed ? `${msg}，${resp.failed} 条仍失败` : msg,
-        );
+        retryingReports.add(report.id);
+        try {
+          const resp = await retryReviews(report.id, { scope });
+          const msg = `重试完成：更新 ${resp.updated} 条`;
+          showRunStatus(
+            resp.failed ? "warn" : "ok",
+            resp.failed ? `${msg}，${resp.failed} 条仍失败` : msg,
+          );
+        } finally {
+          retryingReports.delete(report.id);
+          void renderReportView();
+        }
       },
     });
   }
@@ -321,15 +356,21 @@ export function createReportView(deps) {
     return wrap;
   }
 
-  // 生成 / 重新生成 LLM 报告：调生成端点后重渲染报告视图并提示
+  // 生成 / 重新生成 LLM 报告：调生成端点后重渲染报告视图并提示。
+  // generatingReports 防重：同一报告在途时忽略重复点击（卡片按钮已置灰，
+  // 详情弹窗内的「重新生成」同样受保护），避免并发生成浪费 LLM 调用
   function generateLlmReportAction(report) {
+    if (generatingReports.has(report.id)) return;
+    generatingReports.add(report.id);
     showRunStatus("warn", "正在生成 LLM 报告…");
     void generateLlmReport(report.id).then(
       () => {
+        generatingReports.delete(report.id);
         void renderReportView();
         showRunStatus("ok", "LLM 报告已生成");
       },
       (err) => {
+        generatingReports.delete(report.id);
         showRunStatus(
           "error",
           err && err.message ? `LLM 报告生成失败：${err.message}` : "LLM 报告生成失败",
@@ -356,7 +397,8 @@ export function createReportView(deps) {
       if (ts && ts.report_llm && ts.report_llm.provider_id) {
         const regen = document.createElement("button");
         regen.className = "btn small";
-        regen.textContent = "重新生成";
+        regen.textContent = generatingReports.has(report.id) ? "生成中…" : "重新生成";
+        regen.disabled = generatingReports.has(report.id);
         regen.addEventListener("click", () => generateLlmReportAction(report));
         wrap.appendChild(regen);
       }
@@ -429,7 +471,9 @@ export function createReportView(deps) {
 
     function switchReportTab(tab) {
       tabBar.querySelectorAll(".tab-btn").forEach((b) => {
-        b.classList.toggle("active", b.dataset.tab === tab);
+        const active = b.dataset.tab === tab;
+        b.classList.toggle("active", active);
+        b.setAttribute("aria-selected", String(active)); // a11y（TB-21）
       });
       for (const [key, pane] of [
         ["stats", statsPane],

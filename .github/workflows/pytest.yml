@@ -14,6 +14,14 @@ jobs:
       contents: read
       pull-requests: write
 
+    # astrbot 双矩阵：最低支持版（metadata.yaml 声明 >=4.24.1）+ 已实测版本
+    # （4.26.6）。锁版本使框架内部 API 变更可归因：最低版恒绿作回归基准、
+    # 实测版 bump 显式提交，避免「主项目一变更 CI 全红且难定位是否插件回归」。
+    strategy:
+      fail-fast: false
+      matrix:
+        astrbot-version: ["4.24.1", "4.26.6"]
+
     steps:
       - name: 检出代码
         uses: actions/checkout@v7
@@ -26,13 +34,28 @@ jobs:
       - name: 安装依赖
         run: |
           pip install --upgrade pip
-          pip install astrbot pytest pytest-asyncio
+          pip install "astrbot==${{ matrix.astrbot-version }}"
+          # pytest 系同样锁定，防工具链自身升级引入噪音
+          pip install "pytest==9.1.1" "pytest-asyncio==1.4.0"
 
       - name: 运行单元测试
         run: |
           # 后端测试需要 astrbot（插件运行时依赖，PyPI 包）；
           # 前端静态检查（tests/test_frontend.py）零依赖，任何环境可运行。
-          python -m pytest tests/ -q --tb=short
+          # 最低支持版矩阵跳过直接依赖 astrbot.core.* 内部模块的用例
+          # （framework_internal 标记，无版本契约，随实测版 bump 显式验证）。
+          if [ "${{ matrix.astrbot-version }}" = "4.24.1" ]; then
+            OUT=$(python -m pytest tests/ -q --tb=short -m "not framework_internal" 2>&1)
+          else
+            OUT=$(python -m pytest tests/ -q --tb=short 2>&1)
+          fi
+          echo "$OUT"
+          # TB-29：本地缺 astrbot 时整组 importorskip 会让 CI「全绿但零覆盖」——
+          # 跳过数必须为 0（framework_internal 用例是 deselect 而非 skip，不误伤）
+          if echo "$OUT" | grep -qi "skipped"; then
+            echo "::error::存在被跳过的测试（预期 0）——astrbot 可能未正确安装"
+            exit 1
+          fi
 
   js-check:
     name: 前端 JS 语法与纯函数测试

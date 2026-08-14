@@ -16,7 +16,7 @@ from typing import Any
 
 from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
 
-from ._base import AsyncWriteMixin
+from ._base import AsyncWriteMixin, atomic_write_text, backup_corrupt_file, logger
 
 DEFAULT_PLATFORM_ID = "webchat"
 DEFAULT_SENDER_ID = "testbench"
@@ -58,8 +58,16 @@ class VirtualGroupManager(AsyncWriteMixin):
         if self._file.exists():
             try:
                 data = json.loads(self._file.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                data = None
+            except json.JSONDecodeError:
+                # 损坏文件改名备份（保留现场供人工恢复），从空数据继续——
+                # 而不是静默清空后把「空」写回（用户数据永久丢失）
+                backup_corrupt_file(self._file)
+                return []
+            except OSError:
+                logger.warning(
+                    "[testbench] 读取数据文件 %s 失败，从空数据继续", self._file
+                )
+                return []
             if isinstance(data, dict) and isinstance(data.get("groups"), list):
                 groups: list[dict] = []
                 for g in data["groups"]:
@@ -86,7 +94,13 @@ class VirtualGroupManager(AsyncWriteMixin):
             return []
         try:
             legacy = json.loads(self._legacy_file.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        except json.JSONDecodeError:
+            backup_corrupt_file(self._legacy_file)
+            return []
+        except OSError:
+            logger.warning(
+                "[testbench] 读取旧数据文件 %s 失败，跳过迁移", self._legacy_file
+            )
             return []
         if not isinstance(legacy, list) or not legacy:
             return []
@@ -107,9 +121,9 @@ class VirtualGroupManager(AsyncWriteMixin):
         return self._groups
 
     def _save(self) -> None:
-        self._file.write_text(
+        atomic_write_text(
+            self._file,
             json.dumps({"groups": self._groups}, ensure_ascii=False, indent=2),
-            encoding="utf-8",
         )
 
     # ---------- 查询 ----------

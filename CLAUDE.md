@@ -6,10 +6,11 @@
 
 会话测试台（astrbot_plugin_testbench）是一个 AstrBot 插件：通过框架原生插件页面创建「虚拟会话」，并把一句话并发投递给多个虚拟会话，用于测试插件、提示词、模型与整体稳定性。
 
-- **版本**：v1.0.1（metadata.yaml 中的版本号；版本号 bump 须经用户批准——用户已批准 Phase 2 升到 v0.4.2、Phase 3 升到 v0.4.3、Phase 4 升到 v0.4.4、testset-redesign v2 收尾升到 v0.4.5、1.0.0 正式发布、1.0.1 发布）
+- **版本**：v1.0.2（metadata.yaml 中的版本号；版本号 bump 须经用户批准——用户已批准 Phase 2 升到 v0.4.2、Phase 3 升到 v0.4.3、Phase 4 升到 v0.4.4、testset-redesign v2 收尾升到 v0.4.5、1.0.0 正式发布、1.0.1 发布、v1.0.2 审查修复批次（2026-08-14，TB-01..TB-30 中 29 项修复））
 - **兼容范围**：`astrbot_version: ">=4.24.1"`（v4.24.1 起提供插件页面 `subscribeSSE`，事件驱动前端依赖它）
 - **独立 git 仓库**：remote `git@github.com:Rail1bc/astrbot_plugin_testbench.git`；**开发在 `dev` 分支，`main` 仅用于发布**（release.yml 只在 main 上 metadata.yaml 变更时触发自动发版）
-- **无第三方依赖**：只依赖 AstrBot 公共 API（`astrbot.api.*`），不需要 requirements.txt
+- **无第三方依赖**：无 PyPI 依赖（不需要 requirements.txt）。框架依赖以 `astrbot.api.*` 公共 API 为主；**唯一例外**是 store 层的数据目录入口 `astrbot.core.utils.astrbot_path.get_astrbot_plugin_data_path`（内部模块，但为 AstrBot 全仓库统一使用的稳定路径助手，`astrbot.api` 未暴露等价物，故如实记录而非声明「只依赖公共 API」）；测试另有 3 条用例直接依赖 `astrbot.core.*` 内部模块（`umop_config_router` / `agent.message`），已标 `framework_internal` 标记，最低支持版矩阵下跳过（见 .github/workflows/pytest.yml）
+- **注释语言约定（TB-25 显式声明）**：插件仓库（本 CLAUDE.md / README / 源码注释）**统一使用中文**——插件是独立仓库，用户与协作者均为中文语境；主仓库 AGENTS.md 的「Use English for all comments」规则适用于 AstrBot 主仓库代码，不适用于本插件。新代码保持与既有中文注释一致，不中英混用。
 - **核心卖点**：虚拟会话与真实会话走**完全相同的处理路径**（不是模拟），只是把消息注入点从平台适配器换成了插件侧直接入队
 
 ### 消息处理路径（核心机制）
@@ -203,7 +204,7 @@ astrbot_plugin_testbench/
 - **组合算子（any / not）**（消息规则，testset-redesign v2 收尾）：`rules` 列表元素 = 叶（机械或 LLM）| `{op:"any", rules:[叶...]}`（任意组：任一子规则通过即组通过）| `{op:"not", rule:叶}`（取反），**顶层隐式 all**（全部 entry 通过才整步通过）。评估由 `Assessor._eval_entry` 递归（eval/assessor.py）：机械子叶**恒评估**（便宜、确定性，verdict 恒产出）、LLM 子叶仅当「组尚未被已评估子叶决定为通过」时评估（短路：任一子叶 value True 后后续 LLM 子叶跳过，机械子叶仍评估）；**每 entry 一条 verdict**（与平铺契约一致——组合节点内子叶共享该 entry 下标，verdict 数组位置才是定位键，retry locator 不受影响）；组 verdict：`status` = 全部子叶 error/invalid 才 "error"，否则 "ok"，`pass` = 任一子叶 true → true、任一 false → false、否则 None，`metrics` = **全部子叶 metrics 拼接**（报告聚合与「详情=完整数据」都得到全部子叶数据），`detail` 说明「任意（至少一条通过）：X/Y 子规则通过」；`op:"not"` 取反子 verdict 的 pass（子 pass None 不取反——评审失败不掩盖组合结果），metrics / detail 保留，`rule_index` = entry 下标；顶层 `skip_llm` 按「此前任一 entry value 为 False」推进（镜像平铺短路），对 not 原样透传（子叶被跳过 → not 也跳过）。**final_rules 不支持组合**（每条保持单叶，组合 final rule 走机械「未知断言类型」兜底 pass False）。前端：规则区「＋ 任意组」按钮（`.ts-msg-rule-group` 组行「任意组（至少一条通过）」+ 删除 + 子规则区缩进，组内子行隐式 all、**不嵌套**），叶行头部「取反」checkbox `.ts-msg-rule-not`（机械与 LLM 叶都提供，表达 not 覆盖 json / non_empty 等无否定类型的取反）；pure.js `buildAnyGroupRule` / `buildRule(type, value, profileId, context, sliceRange, injectSystemPrompt, not)` / `collectRules` 识别 `r.kind === "group"`（子输入列表 → 组节点，空组丢弃）；store `_clean_rules` / API `_validate_messages` 不做规则键白名单，组合节点天然透传。
 - **实际输入捕获链路**：main.py 的 `on_llm` hook（AstrBot 原生 LLM 阶段 hook，调用前触发，拥有装饰后的 `req`）用模块级纯函数 `_snapshot_llm_input(req)` 快照 `{"prompt", "extra_parts": [str...], "system_prompt"}`——`extra_user_content_parts` 里的 TextPart/ThinkPart 逐一抽取文本，**必须渲染为纯字符串**（存 ContentPart 引用会破坏 SSE / 报告的 JSON 序列化）；快照写入事件 extra（`TESTBENCH_LLM_INPUT_EXTRA_KEY`），`VirtualMessageEvent.result_summary()` 随结果返回 `llm_input` 字段，经 runner 落进步骤结果，评审阶段据此构造材料——未捕获（无 llm_input）时回退测试集原始文本。
 - **final_rules 数据形状**：`[{rule: <Rule dict>, scope: "all"|{from, to}}]`——创建 / 更新时 `api/testsets.py _validate_final_rules` 严格校验（非 list / 项缺 rule / scope 形状非法 → 400），store `_normalize_final_rules` 宽松清洗（非法整项丢弃、scope 回退 "all"）；scope 边界由评估层 `_scope_indices` 钳制到 [0, n-1]，机械规则评估 scope 内各会话回复拼接文本、LLM 规则按 context 取切片上下文。
-- **评审时机**：全部步骤完成后由 `TestsetRunner._review_phase` 统一触发（消息级 verdicts 由 Assessor 原地写入各已 done 步骤的 results，final_verdicts 返回存 run 级 `run["final_verdicts"]`）；评审期间 `run["reviewing"]=True`、status 保持 running（会话锁防取消 / 重复运行），终态解锁；评审编排异常（非单条规则失败）→ run error「评审失败」。profile 在**评审时点**读取快照（`_profiles()`，配置事后修改仍生效）。
+- **评审时机**：全部步骤**成功执行完**后由 `TestsetRunner._review_phase` 统一触发（消息级 verdicts 由 Assessor 原地写入各已 done 步骤的 results，final_verdicts 返回存 run 级 `run["final_verdicts"]`）；评审期间 `run["reviewing"]=True`、status 保持 running（会话锁防取消 / 重复运行），终态解锁；评审编排异常（非单条规则失败）→ run error「评审失败」。**例外（TB-14 锚定）**：单步段失败（超时 / 异常置 run error，`_drive_segments` 中止后续）或 abort（cancelled）后**不执行评审**——评审只针对完整执行的数据，半截数据不产出 verdicts；批量段内单步错误不中止、评审照常（只评估 done 步骤）。profile 在**评审时点**读取快照（`_profiles()`，配置事后修改仍生效）。
 - **短路**：每步消息规则按序评估，机械规则未通过即短路，同步骤后续 LLM 规则跳过（成本 / 不确定性控制）。
 - **profile 输出契约**（`validate_profile`）：name / provider_id / system_prompt 必填，model 可选（省略时评审用 Provider 当前模型），context ∈ reply|record|slice，metrics ≥1 且 key 唯一，type ∈ number|enum|text（number 可带 pass_threshold、enum 可带 enum_values / pass_categories）；`validate_metrics` 对 LLM 输出做轻校验（类型 + 声明枚举成员），pass 由 `derive_pass` 派生（number → 阈值比较、enum → 分类集合，未声明 → None）。
 - **profile 存储**（store/reviewer_store.py）：`virtual_session/reviewers.json`，模型 `{profiles: [{id: "rp_<uuid8>", name, note?, provider_id, model?, system_prompt, context, metrics, created_at}]}`；`update_profile` 未传字段（None）保持不变。**支持多个 profile**：消息规则 / 最终断言按 profile_id 引用，存储层不强制唯一。
@@ -319,7 +320,7 @@ astrbot_plugin_testbench/
 
 测试随插件仓库维护（`tests/`，可与主仓库无关地推送、供协作者运行）。
 
-- `tests/test_backend.py`：后端单元测试（251 个），需要 astrbot（PyPI 包，插件运行时依赖）。以 **namespace package** 加载插件：`sys.path.insert(0, str(REPO_ROOT.parent))` 后 `import astrbot_plugin_testbench.*`——插件模块用相对导入（`from .group_store import ...`），必须按包加载，这与 AstrBot 在 data/plugins 下加载插件的方式一致。未安装 astrbot 时整组跳过（`pytest.importorskip`）。
+- `tests/test_backend.py`：后端单元测试（259 个，TB-28/TB-30 补齐真并行在途与设计声明覆盖后由 251 增至 259），需要 astrbot（PyPI 包，插件运行时依赖）。以 **namespace package** 加载插件：`sys.path.insert(0, str(REPO_ROOT.parent))` 后 `import astrbot_plugin_testbench.*`——插件模块用相对导入（`from .group_store import ...`），必须按包加载，这与 AstrBot 在 data/plugins 下加载插件的方式一致。未安装 astrbot 时整组跳过（`pytest.importorskip`）；CI 已加「跳过数为 0」守卫（TB-29）。3 条直接依赖 `astrbot.core.*` 内部模块的用例标 `framework_internal`（最低支持版矩阵跳过，见 .github/workflows/pytest.yml）。
 - `tests/test_frontend.py`：前端脚本静态检查（69 个），零依赖，任何环境可运行。
 - `tests/frontend/pure.test.mjs`：**pure.js 纯函数动态测试**（node:test，61 个断言组），零依赖；`node --test` 直接加载页面模块 `pages/testbench/pure.js`（仓库根 package.json 声明 `"type": "module"`）。
 - `tests/frontend/render_markdown.test.mjs`：**markdown 受限子集渲染器测试**（node:test，13 个断言组），零依赖；`parseMarkdown` / `parseInline` 零 DOM 依赖纯函数直接断言块 / token 结构，`renderMarkdownBlocks` 用最小 mock document 断言转义（HTML 注入文本按文本渲染、不产生注入元素）与链接协议白名单。

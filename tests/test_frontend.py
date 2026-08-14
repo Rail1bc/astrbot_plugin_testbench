@@ -422,8 +422,11 @@ def test_frontend_load_options_before_initial_group_list():
     档案 id 直接显示成原始值（如 eadfcf07…），须手动刷新才恢复名称。
     """
     app_js = _read_module("app")
-    assert app_js.index("await loadOptions()") < app_js.index("Promise.allSettled"), (
-        "loadOptions 须先于 Promise.allSettled 完成（refreshGroups 首帧依赖 state.confs）"
+    # loadOptions 现在内部用 Promise.allSettled 并行拉取四个数据源（TB-17），
+    # 顺序不变量保持不变：初始化处 loadOptions 调用先于含 refreshGroups 的
+    # allSettled 块（用 "refreshGroups()," 精确锚定初始化块，避开函数体内的调用）
+    assert app_js.index("await loadOptions();") < app_js.index("refreshGroups(),"), (
+        "loadOptions 须先于 refreshGroups 完成（首帧渲染依赖 state.confs）"
     )
 
 
@@ -962,7 +965,9 @@ def test_frontend_identity_admin_field():
     assert "is_admin: inpAdmin.checked" in src, "身份表单未提交 is_admin"
     assert "管理员（发送时自动按管理员身份设置角色）" in src, "身份表单缺少管理员字段"
     assert "fAdmin.append(inpAdmin" in src, "管理员单选框未与标签同行（checkbox 在前）"
-    assert 'fAdmin.className = "settings-field"' in src, "管理员行未复用 settings-field"
+    assert 'fAdmin.className = "settings-field settings-field-checkbox"' in src, (
+        "管理员行未用 settings-field-checkbox 修饰类（替代 :has() 的布局规则，TB-26）"
+    )
     assert 'inpAdmin.type = "checkbox"' in src, "管理员字段不是 checkbox"
     assert "ident.is_admin" in src, "身份列表未按 is_admin 渲染管理员徽标"
     # 管理员身份旁的警告提示（列表徽标 + 表单内联警告条）
@@ -1200,16 +1205,20 @@ def test_frontend_reviewer_provider_list():
     state_js = _read_module("state")
     app_js = _read_module("app")
     list_js = _read_module("testset_list")
+    utils_js = _read_module("utils")
     assert "listProviders" in api_js, "api.js 缺少 listProviders 封装"
     assert "providers: []" in state_js, "state 缺少 providers 初始值"
     assert "listProviders" in app_js, "app.js 未 import listProviders"
-    assert "state.providers = Array.isArray(data)" in app_js, (
-        "loadOptions 未把 Provider 列表写入 state.providers"
+    assert "Array.isArray(providers.value)" in app_js, (
+        "loadOptions 未把 Provider 列表写入 state.providers（并行 allSettled，TB-17）"
     )
     assert "state.providers" in list_js, "Profile 表单未读 state.providers"
-    # Provider 即「供应商 / 模型」：下拉须显示 current_model（不再单独配模型字段）
-    assert "p.current_model" in list_js, "Provider 下拉未显示当前模型"
-    assert "（${escapeHtml(p.current_model)}）" in list_js, "Provider 下拉未拼接模型名"
+    # Provider 即「供应商 / 模型」：下拉须显示 current_model（不再单独配模型字段）；
+    # 下拉构建已抽到 utils.js 的 providerOptions（TB-23 去重），断言落在共享实现
+    assert "p.current_model" in utils_js, "providerOptions 未显示当前模型"
+    assert "（${escapeHtml(p.current_model)}）" in utils_js, (
+        "providerOptions 未拼接模型名"
+    )
     assert "providerCurrentModel(" in list_js, "缺少 Provider 当前模型解析"
     assert "模型名不能为空" not in list_js, "表单仍保留独立模型必填校验"
 

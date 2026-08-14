@@ -15,7 +15,7 @@
 import { createTestset, updateTestset } from "./api.js";
 import { showModal } from "./modal.js";
 import { state } from "./state.js";
-import { escapeHtml } from "./utils.js";
+import { escapeHtml, providerOptions } from "./utils.js";
 import { createReportView } from "./testset_reports.js";
 import {
   EXPORT_FORMAT,
@@ -682,16 +682,7 @@ export function createTestsetEditor(env) {
     const cfg =
       ts && ts.report_llm && typeof ts.report_llm === "object" ? ts.report_llm : null;
     const sel = $("ts-report-llm-provider");
-    sel.innerHTML =
-      `<option value="">选择 Provider…</option>` +
-      state.providers
-        .map(
-          (p) =>
-            `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name || p.id)}${
-              p.current_model ? `（${escapeHtml(p.current_model)}）` : ""
-            }</option>`,
-        )
-        .join("");
+    sel.innerHTML = providerOptions();
     if (cfg && cfg.provider_id) {
       if (!state.providers.some((p) => p.id === cfg.provider_id)) {
         const opt = document.createElement("option");
