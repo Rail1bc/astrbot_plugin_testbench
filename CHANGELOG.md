@@ -9,7 +9,7 @@
 
 ### ⚙️ Compatibility (兼容性)
 
-- **最低兼容版本修正为 astrbot >=4.26.0**：插件 Web API 依赖 `astrbot.api.web`（PR #8688 的 Quart→FastAPI 迁移引入，首个包含版本为 v4.26.0；4.24.1/4.25.x 均无此模块）——原 `>=4.24.1` 声明不实（v4.24.1 的 subscribeSSE 不足以支撑本插件），metadata.yaml 与 CI 双矩阵（4.26.0 / 4.26.6）同步修正。
+- **最低兼容版本修正为 astrbot >=4.26.0**：插件 Web API 依赖 `astrbot.api.web`（PR #8688 的 Quart→FastAPI 迁移引入，首个包含版本为 v4.26.0；4.24.1/4.25.x 均无此模块）——原 `>=4.24.1` 声明不实（v4.24.1 的 subscribeSSE 不足以支撑本插件），metadata.yaml 与 CI 双矩阵（4.26.0 / latest 上游最新版）同步修正。
 
 ### 🐛 Bug Fixes (修复)
 
@@ -21,7 +21,7 @@
 ### ⚙️ Reliability (可靠性)
 
 - **API 列表元素级校验（TB-06）**：`sessions`/`ids` 元素须为非空字符串（dict/list 元素此前使 `dict.fromkeys`/`set` 抛 TypeError → 500）；`conf_id`/`provider_id`/`model` 补字符串校验（非字符串 conf_id 曾可能污染 UCR 路由表）；评审重试 `targets` 防不可哈希。
-- **CI 双矩阵锁定 astrbot（TB-05）**：pytest.yml 改为 `astrbot==4.24.1`（最低支持版）+ `4.26.6`（已实测版）矩阵，pytest 系锁定；直接依赖内部模块的 3 条用例标 `framework_internal` 并在最低版矩阵跳过；新增「跳过数为 0」守卫（TB-29），缺 astrbot 整组跳过时 CI 直接报错。
+- **CI 双矩阵锁定 astrbot（TB-05）**：pytest.yml 改为 `astrbot==4.26.0`（最低支持版，锁定）+ `latest`（上游最新版，不写死，随上游发版自动跟进）矩阵，pytest 系锁定；直接依赖内部模块的 3 条用例标 `framework_internal` 并在最低版矩阵跳过；新增「跳过数为 0」守卫（TB-29），缺 astrbot 整组跳过时 CI 直接报错。
 - **测试 flaky 消除（TB-04）**：4 处固定 `asyncio.sleep(0.05)` 竞态窗口改为 `wait_until` 轮询（路由恢复 ×2、历史重生成 ×2）。
 
 ### 🎨 UI / UX (交互改进)

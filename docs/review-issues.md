@@ -32,8 +32,8 @@
 
 ### TB-05 CI 依赖未锁定（astrbot 活跃演进）【中】✅ 已修复
 - **背景**：CI `pip install astrbot` 无版本约束，而测试直接依赖其内部模块（`astrbot.core.umop_config_router`、`astrbot.core.agent.message` 的 TextPart/ThinkPart）；主项目任一内部 API 变更都会让 CI 全红且难定位是否插件回归。
-- **修复**：pytest.yml 双矩阵锁定 `astrbot==4.26.0`（最低支持版）+ `4.26.6`（已实测版，`fail-fast: false`），pytest 系同步锁定（pytest 9.1.1 / pytest-asyncio 1.4.0）；3 条直接依赖内部模块的用例标 `framework_internal` 标记（pyproject 注册），最低版矩阵 `-m "not framework_internal"` 跳过。
-- **追加修正（2026-08-14）**：矩阵最初取 4.24.1（照抄 metadata 声明）导致 CI 必红——核实发现插件硬依赖的 `astrbot.api.web`（PR #8688 FastAPI 迁移）**自 v4.26.0 起才存在**（4.24.1/4.25.x 均无），故 metadata.yaml 兼容声明由 `>=4.24.1` 修正为 `>=4.26.0`，矩阵同步改为 4.26.0 / 4.26.6。
+- **修复**：pytest.yml 双矩阵 `astrbot==4.26.0`（最低支持版，锁定）+ `latest`（上游最新版，不写死，随上游发版自动跟进；安装步骤打印实际版本便于日志定位，`fail-fast: false`），pytest 系同步锁定（pytest 9.1.1 / pytest-asyncio 1.4.0）；3 条直接依赖内部模块的用例标 `framework_internal` 标记（pyproject 注册），最低版矩阵 `-m "not framework_internal"` 跳过。
+- **追加修正（2026-08-14）**：矩阵最初取 4.24.1（照抄 metadata 声明）导致 CI 必红——核实发现插件硬依赖的 `astrbot.api.web`（PR #8688 FastAPI 迁移）**自 v4.26.0 起才存在**（4.24.1/4.25.x 均无），故 metadata.yaml 兼容声明由 `>=4.24.1` 修正为 `>=4.26.0`，矩阵同步改为 4.26.0 / latest。
 
 ### TB-06 API 列表元素未校验 → 500；conf_id 类型未校验 → 可能污染 UCR【中】✅ 已修复
 - **背景**：`sessions`/`ids` 只校验「是 list 且非空」，元素为 dict/list 时 `dict.fromkeys`/`set` 抛 TypeError → 500（已实测确认）——与插件 v0.4.5 修掉的「非 dict 体 → 400」是同一类缝隙的更深处；`conf_id` 传数字会经 `put_route_front` 把非字符串临时写进 UCR 路由表。
