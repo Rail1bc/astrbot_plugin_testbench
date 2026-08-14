@@ -4,7 +4,7 @@
 - 审查对象：`astrbot_plugin_testbench` v1.0.1 全部源码（后端 20 个 Python 文件通读 + 前端 17 个 JS 模块深审 + 测试套件深审与实测）
 - 实测结果（审查时）：后端 251 条测试全绿（10.3s），无阻塞级缺陷
 - 优先级：P0（数据安全与核心体验，先做）→ P1（可靠性）→ P2（改进项，迭代排期）
-- **修复状态（2026-08-14）**：30 条中 29 条已修复并验证（TB-09 单文件测试拆分列为排期项）；验证：后端测试 333 全绿、前端静态 + node:test（74）全绿、ruff check / format 通过；CI 新增 astrbot 双版本矩阵与「跳过数为 0」守卫
+- **修复状态（2026-08-14）**：30 条全部修复并验证（含 TB-09 测试文件拆分）；验证：后端测试 259 全绿（328 含前端）、前端静态 + node:test（74）全绿、ruff check / format 通过；CI 新增 astrbot 双版本矩阵与「跳过数为 0」守卫
 
 ---
 
@@ -53,7 +53,7 @@
 
 ### 项目质量 / 健壮性
 
-- **TB-09 单文件 295KB 测试**【中】⏳ 排期未修：251 条测试 + 10+ Fake 类堆在一个文件，导航/分跑/合并成本高。→ 按域拆 `test_runner/test_testset/test_assessor/test_stores/test_api.py`，Fake 与辅助函数迁 `tests/fakes.py`。本轮新增 10 条测试后文件更大，拆分建议保留为独立重构批次（改动面大、纯工程价值，风险与收益需单独评估）。
+- **TB-09 单文件 295KB 测试**【中】✅ 已修复（2026-08-14）：原 7719 行单文件按域拆分为 `tests/fakes.py`（28 个公共辅助/Fake 类）+ `test_runner.py`（39）/ `test_stores.py`（31）/ `test_testset.py`（29）/ `test_assessor.py`（54）/ `test_api.py`（102）五个后端测试文件（283 个顶层定义全部归位、零遗漏，259 条测试全绿）；每个文件只含本域用例与按需 import（含 `@pytest.mark.asyncio` 装饰器），`framework_internal` 标记保留。
 - **TB-10 `_prune_runs` 触发点不足**【低】✅ 已修复：仅在 `start()` 调用，无新测试时已完成条目不会按时清理。→ `pending_entries()` 现在顺带触发 `_prune_runs`（core/runner.py），断线对账/轮询取回时即清理。
 - **TB-11 「只依赖公共 API」声明不实**【低】✅ 已修复：`astrbot.api` 未暴露路径工具（已核实），故保留 `astrbot.core.utils.astrbot_path` 但**如实声明**——CLAUDE.md 更新为「唯一例外 + 3 条 framework_internal 测试用例」的准确描述。
 - **TB-12 `add_group_sessions` 缺总数上限**【低】✅ 已修复：补 `len(group.sessions) + count <= MAX_SESSIONS_PER_GROUP` 校验（与 clone_sessions 同口径，超限 400）。
@@ -93,7 +93,7 @@
 | :--- | :--- | :--- | :--- |
 | P0 | 3 | 数据安全 1（TB-01）+ 交互 2（TB-02/03） | 3/3 ✅ |
 | P1 | 5 | 测试可靠性 2 + 接口健壮性 2 + 交互 1 | 5/5 ✅ |
-| P2 | 22 | 质量/健壮性 6 + 交互 7 + 可维护 5 + 测试覆盖 4 | 21/22 ✅（TB-09 排期） |
+| P2 | 22 | 质量/健壮性 6 + 交互 7 + 可维护 5 + 测试覆盖 4 | 22/22 ✅ |
 
 实施顺序（已按此执行）：TB-01（原子写 + 损坏备份）→ TB-02/TB-03（日常体验）→ TB-04/TB-05/TB-06（可靠性）→ 其余按迭代排期。
 

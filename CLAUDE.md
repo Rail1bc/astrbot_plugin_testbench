@@ -92,7 +92,7 @@ astrbot_plugin_testbench/
 ├─ README.md            # 面向用户的说明
 ├─ package.json         # 声明 type: module（node:test 可直接加载 pure.js；无 npm 依赖）
 ├─ run_ruff.bat         # Windows 一键 ruff format+check 脚本（调用主仓库 venv）
-├─ tests/               # 单元测试（test_backend.py 需 astrbot，test_frontend.py 零依赖，frontend/ 为 node:test）
+├─ tests/               # 单元测试（fakes.py 公共辅助 + 按域拆分的 5 个后端文件需 astrbot，test_frontend.py 零依赖，frontend/ 为 node:test）
 ├─ data/                # 本地运行数据（gitignored，发布时排除）
 ├─ assets/  .github/    # 仓库资源与 CI 工作流
 ```
@@ -320,7 +320,7 @@ astrbot_plugin_testbench/
 
 测试随插件仓库维护（`tests/`，可与主仓库无关地推送、供协作者运行）。
 
-- `tests/test_backend.py`：后端单元测试（259 个，TB-28/TB-30 补齐真并行在途与设计声明覆盖后由 251 增至 259），需要 astrbot（PyPI 包，插件运行时依赖）。以 **namespace package** 加载插件：`sys.path.insert(0, str(REPO_ROOT.parent))` 后 `import astrbot_plugin_testbench.*`——插件模块用相对导入（`from .group_store import ...`），必须按包加载，这与 AstrBot 在 data/plugins 下加载插件的方式一致。未安装 astrbot 时整组跳过（`pytest.importorskip`）；CI 已加「跳过数为 0」守卫（TB-29）。3 条直接依赖 `astrbot.core.*` 内部模块的用例标 `framework_internal`（最低支持版矩阵跳过，见 .github/workflows/pytest.yml）。
+- `tests/fakes.py` + `tests/test_runner.py` / `test_stores.py` / `test_testset.py` / `test_assessor.py` / `test_api.py`：后端单元测试（259 个，TB-09 按域拆分——Fake 类与通用辅助（FakeContext / wait_run_done / _make_testset 等）集中在 fakes.py，各测试文件只含本域用例与按需 import），需要 astrbot（PyPI 包，插件运行时依赖）。以 **namespace package** 加载插件：`sys.path.insert(0, str(REPO_ROOT.parent))` 后 `import astrbot_plugin_testbench.*`——插件模块用相对导入（`from .group_store import ...`），必须按包加载，这与 AstrBot 在 data/plugins 下加载插件的方式一致。未安装 astrbot 时整组跳过（`pytest.importorskip`）；CI 已加「跳过数为 0」守卫（TB-29）。3 条直接依赖 `astrbot.core.*` 内部模块的用例标 `framework_internal`（最低支持版矩阵跳过，见 .github/workflows/pytest.yml）。
 - `tests/test_frontend.py`：前端脚本静态检查（69 个），零依赖，任何环境可运行。
 - `tests/frontend/pure.test.mjs`：**pure.js 纯函数动态测试**（node:test，61 个断言组），零依赖；`node --test` 直接加载页面模块 `pages/testbench/pure.js`（仓库根 package.json 声明 `"type": "module"`）。
 - `tests/frontend/render_markdown.test.mjs`：**markdown 受限子集渲染器测试**（node:test，13 个断言组），零依赖；`parseMarkdown` / `parseInline` 零 DOM 依赖纯函数直接断言块 / token 结构，`renderMarkdownBlocks` 用最小 mock document 断言转义（HTML 注入文本按文本渲染、不产生注入元素）与链接协议白名单。

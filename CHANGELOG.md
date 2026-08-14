@@ -41,6 +41,7 @@
 
 ### 🧪 Testing (测试)
 
+- **后端测试按域拆分（TB-09）**：7719 行单文件拆为 `tests/fakes.py`（28 个公共辅助/Fake 类）+ `test_runner` / `test_stores` / `test_testset` / `test_assessor` / `test_api` 五个测试文件（283 个顶层定义零遗漏归位），导航/分跑/合并成本显著下降。
 - 新增 10 条测试：损坏文件备份（TB-01）、评审时机跳过（TB-14）、真并行在途与乱序完成（TB-28）、EventBus 慢消费者不阻塞 / StreamStore 损坏行容忍 / SSE 端点 / final_rules 组合兜底（TB-30）；后端测试 251 → 259。
 
 ## [v1.0.1] - 2026-08-07
