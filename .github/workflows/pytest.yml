@@ -14,13 +14,15 @@ jobs:
       contents: read
       pull-requests: write
 
-    # astrbot 双矩阵：最低支持版（metadata.yaml 声明 >=4.24.1）+ 已实测版本
-    # （4.26.6）。锁版本使框架内部 API 变更可归因：最低版恒绿作回归基准、
-    # 实测版 bump 显式提交，避免「主项目一变更 CI 全红且难定位是否插件回归」。
+    # astrbot 双矩阵：最低支持版（metadata.yaml 声明 >=4.26.0——插件 Web API
+    # astrbot.api.web 由 PR #8688 的 FastAPI 迁移引入，首个包含版本为 v4.26.0，
+    # 4.24.1/4.25.x 均无此模块）+ 已实测版本（4.26.6）。锁版本使框架内部 API
+    # 变更可归因：最低版恒绿作回归基准、实测版 bump 显式提交，避免「主项目一
+    # 变更 CI 全红且难定位是否插件回归」。
     strategy:
       fail-fast: false
       matrix:
-        astrbot-version: ["4.24.1", "4.26.6"]
+        astrbot-version: ["4.26.0", "4.26.6"]
 
     steps:
       - name: 检出代码
@@ -44,7 +46,7 @@ jobs:
           # 前端静态检查（tests/test_frontend.py）零依赖，任何环境可运行。
           # 最低支持版矩阵跳过直接依赖 astrbot.core.* 内部模块的用例
           # （framework_internal 标记，无版本契约，随实测版 bump 显式验证）。
-          if [ "${{ matrix.astrbot-version }}" = "4.24.1" ]; then
+          if [ "${{ matrix.astrbot-version }}" = "4.26.0" ]; then
             OUT=$(python -m pytest tests/ -q --tb=short -m "not framework_internal" 2>&1)
           else
             OUT=$(python -m pytest tests/ -q --tb=short 2>&1)
