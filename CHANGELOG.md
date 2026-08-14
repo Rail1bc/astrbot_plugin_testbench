@@ -5,6 +5,17 @@
 <!-- markdownlint-disable MD041 -->
 # ChangeLog
 
+## [v1.0.3] - 2026-08-14
+
+### ⚙️ Compatibility (兼容性)
+
+- **最低兼容版本修正为 astrbot >=4.26.0**：插件 Web API 依赖 `astrbot.api.web`（PR #8688 的 Quart→FastAPI 迁移引入，首个包含版本为 v4.26.0；4.24.1/4.25.x 均无此模块）——原 `>=4.24.1` 声明不实（v4.24.1 的 subscribeSSE 不足以支撑本插件），metadata.yaml 修正为 `>=4.26.0`。
+
+### 🧹 Chores / Refactoring (重构与工程化)
+
+- **后端测试按域拆分（TB-09）**：7719 行单文件拆为 `tests/fakes.py`（28 个公共辅助/Fake 类）+ `test_runner` / `test_stores` / `test_testset` / `test_assessor` / `test_api` 五个测试文件（283 个顶层定义零遗漏归位），导航/分跑/合并成本显著下降。
+- **CI 只跑上游最新版（TB-05 最终定案）**：pytest.yml 改为 `pip install astrbot`（不写死版本，随上游发版自动跟进），安装步骤打印实际版本便于按日志定位上游变更；曾尝试「最低支持版 4.26.0 + latest」双矩阵，但固定旧版本在全新 runner 环境安装/运行不可靠（旧版重依赖解析失败），且与用户实际使用场景（总是跑最新 AstrBot）脱节——砍掉固定版本 leg；`framework_internal` 标记保留作语义标注（最新版全量运行）；「跳过数为 0」守卫（TB-29）保留，缺 astrbot 整组跳过时 CI 直接报错。
+
 ## [v1.0.2] - 2026-08-14
 
 ### 🐛 Bug Fixes (修复)

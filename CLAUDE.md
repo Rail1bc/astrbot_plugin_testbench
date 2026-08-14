@@ -6,10 +6,10 @@
 
 会话测试台（astrbot_plugin_testbench）是一个 AstrBot 插件：通过框架原生插件页面创建「虚拟会话」，并把一句话并发投递给多个虚拟会话，用于测试插件、提示词、模型与整体稳定性。
 
-- **版本**：v1.0.2（metadata.yaml 中的版本号；版本号 bump 须经用户批准——用户已批准 Phase 2 升到 v0.4.2、Phase 3 升到 v0.4.3、Phase 4 升到 v0.4.4、testset-redesign v2 收尾升到 v0.4.5、1.0.0 正式发布、1.0.1 发布、v1.0.2 审查修复批次（2026-08-14，TB-01..TB-30 中 29 项修复））
+- **版本**：v1.0.3（metadata.yaml 中的版本号；版本号 bump 须经用户批准——用户已批准 Phase 2 升到 v0.4.2、Phase 3 升到 v0.4.3、Phase 4 升到 v0.4.4、testset-redesign v2 收尾升到 v0.4.5、1.0.0 正式发布、1.0.1 发布、v1.0.2 审查修复批次（2026-08-14，TB-01..TB-30 中 29 项修复）、v1.0.3 工程批次（2026-08-14：兼容范围修正 >=4.26.0 + TB-09 测试拆分 + CI 只跑上游最新版））
 - **兼容范围**：`astrbot_version: ">=4.26.0"`（插件 Web API 依赖 `astrbot.api.web`——由 PR #8688 的 Quart→FastAPI 迁移引入，首个包含版本为 v4.26.0；v4.24.1 的 subscribeSSE 不足以支撑本插件。v4.26.0 起同时提供插件页面 `subscribeSSE`，事件驱动前端依赖它）
 - **独立 git 仓库**：remote `git@github.com:Rail1bc/astrbot_plugin_testbench.git`；**开发在 `dev` 分支，`main` 仅用于发布**（release.yml 只在 main 上 metadata.yaml 变更时触发自动发版）
-- **无第三方依赖**：无 PyPI 依赖（不需要 requirements.txt）。框架依赖以 `astrbot.api.*` 公共 API 为主；**唯一例外**是 store 层的数据目录入口 `astrbot.core.utils.astrbot_path.get_astrbot_plugin_data_path`（内部模块，但为 AstrBot 全仓库统一使用的稳定路径助手，`astrbot.api` 未暴露等价物，故如实记录而非声明「只依赖公共 API」）；测试另有 3 条用例直接依赖 `astrbot.core.*` 内部模块（`umop_config_router` / `agent.message`），已标 `framework_internal` 标记，最低支持版矩阵下跳过（见 .github/workflows/pytest.yml）
+- **无第三方依赖**：无 PyPI 依赖（不需要 requirements.txt）。框架依赖以 `astrbot.api.*` 公共 API 为主；**唯一例外**是 store 层的数据目录入口 `astrbot.core.utils.astrbot_path.get_astrbot_plugin_data_path`（内部模块，但为 AstrBot 全仓库统一使用的稳定路径助手，`astrbot.api` 未暴露等价物，故如实记录而非声明「只依赖公共 API」）；测试另有 3 条用例直接依赖 `astrbot.core.*` 内部模块（`umop_config_router` / `agent.message`），已标 `framework_internal` 标记（无版本契约，CI 在最新版上全量运行，见 .github/workflows/pytest.yml）
 - **注释语言约定（TB-25 显式声明）**：插件仓库（本 CLAUDE.md / README / 源码注释）**统一使用中文**——插件是独立仓库，用户与协作者均为中文语境；主仓库 AGENTS.md 的「Use English for all comments」规则适用于 AstrBot 主仓库代码，不适用于本插件。新代码保持与既有中文注释一致，不中英混用。
 - **核心卖点**：虚拟会话与真实会话走**完全相同的处理路径**（不是模拟），只是把消息注入点从平台适配器换成了插件侧直接入队
 
@@ -320,7 +320,7 @@ astrbot_plugin_testbench/
 
 测试随插件仓库维护（`tests/`，可与主仓库无关地推送、供协作者运行）。
 
-- `tests/fakes.py` + `tests/test_runner.py` / `test_stores.py` / `test_testset.py` / `test_assessor.py` / `test_api.py`：后端单元测试（259 个，TB-09 按域拆分——Fake 类与通用辅助（FakeContext / wait_run_done / _make_testset 等）集中在 fakes.py，各测试文件只含本域用例与按需 import），需要 astrbot（PyPI 包，插件运行时依赖）。以 **namespace package** 加载插件：`sys.path.insert(0, str(REPO_ROOT.parent))` 后 `import astrbot_plugin_testbench.*`——插件模块用相对导入（`from .group_store import ...`），必须按包加载，这与 AstrBot 在 data/plugins 下加载插件的方式一致。未安装 astrbot 时整组跳过（`pytest.importorskip`）；CI 已加「跳过数为 0」守卫（TB-29）。3 条直接依赖 `astrbot.core.*` 内部模块的用例标 `framework_internal`（最低支持版矩阵跳过，见 .github/workflows/pytest.yml）。
+- `tests/fakes.py` + `tests/test_runner.py` / `test_stores.py` / `test_testset.py` / `test_assessor.py` / `test_api.py`：后端单元测试（259 个，TB-09 按域拆分——Fake 类与通用辅助（FakeContext / wait_run_done / _make_testset 等）集中在 fakes.py，各测试文件只含本域用例与按需 import），需要 astrbot（PyPI 包，插件运行时依赖）。以 **namespace package** 加载插件：`sys.path.insert(0, str(REPO_ROOT.parent))` 后 `import astrbot_plugin_testbench.*`——插件模块用相对导入（`from .group_store import ...`），必须按包加载，这与 AstrBot 在 data/plugins 下加载插件的方式一致。未安装 astrbot 时整组跳过（`pytest.importorskip`）；CI 已加「跳过数为 0」守卫（TB-29）。3 条直接依赖 `astrbot.core.*` 内部模块的用例标 `framework_internal`（无版本契约；CI 只跑上游最新版，全量运行，见 .github/workflows/pytest.yml）。
 - `tests/test_frontend.py`：前端脚本静态检查（69 个），零依赖，任何环境可运行。
 - `tests/frontend/pure.test.mjs`：**pure.js 纯函数动态测试**（node:test，61 个断言组），零依赖；`node --test` 直接加载页面模块 `pages/testbench/pure.js`（仓库根 package.json 声明 `"type": "module"`）。
 - `tests/frontend/render_markdown.test.mjs`：**markdown 受限子集渲染器测试**（node:test，13 个断言组），零依赖；`parseMarkdown` / `parseInline` 零 DOM 依赖纯函数直接断言块 / token 结构，`renderMarkdownBlocks` 用最小 mock document 断言转义（HTML 注入文本按文本渲染、不产生注入元素）与链接协议白名单。
