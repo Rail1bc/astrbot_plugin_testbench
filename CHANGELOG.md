@@ -5,6 +5,40 @@
 <!-- markdownlint-disable MD041 -->
 # ChangeLog
 
+## [v1.0.2] - 2026-08-14
+
+### 🐛 Bug Fixes (修复)
+
+- **持久化写入原子化 + 损坏文件备份（TB-01，数据安全）**：全部 store 的 `_save` 改为「写临时文件 + `os.replace` 原子替换」，崩溃/断电不再留下半截 JSON；`_load` 解析失败时把损坏文件改名备份（`*.corrupt-<ts>`）并记告警日志，而非静默从空开始（下一次保存会把「空」写回、用户数据永久丢失）。
+- **在途条「完成」条目不再残留（TB-02）**：`loadHistory`/`loadStream` 成功后立即重渲染在途条（events.js 新增 `renderAllPendingStrips` 入口），消息流视图同步补写 `historyRefreshedAt`——完成且已刷入历史的条目即时消失。
+- **弹窗误关丢表单防护（TB-03）**：`openModal` 新增 `dirty` 选项（8 处表单弹窗启用），取消/遮罩点击/Esc 对已修改内容先显示内联确认条（不销毁表单 DOM），确认后才关闭；补 Esc 关闭、Tab 焦点圈定、关闭后焦点还原与 `aria-labelledby`。
+- **单发/群发失败保留输入（TB-08）**：入队成功后才清空输入框，网络/后端失败时原文保留可直接重试。
+
+### ⚙️ Reliability (可靠性)
+
+- **API 列表元素级校验（TB-06）**：`sessions`/`ids` 元素须为非空字符串（dict/list 元素此前使 `dict.fromkeys`/`set` 抛 TypeError → 500）；`conf_id`/`provider_id`/`model` 补字符串校验（非字符串 conf_id 曾可能污染 UCR 路由表）；评审重试 `targets` 防不可哈希。
+- **CI 双矩阵锁定 astrbot（TB-05）**：pytest.yml 改为 `astrbot==4.24.1`（最低支持版）+ `4.26.6`（已实测版）矩阵，pytest 系锁定；直接依赖内部模块的 3 条用例标 `framework_internal` 并在最低版矩阵跳过；新增「跳过数为 0」守卫（TB-29），缺 astrbot 整组跳过时 CI 直接报错。
+- **测试 flaky 消除（TB-04）**：4 处固定 `asyncio.sleep(0.05)` 竞态窗口改为 `wait_until` 轮询（路由恢复 ×2、历史重生成 ×2）。
+
+### 🎨 UI / UX (交互改进)
+
+- **报告生成/批量重试防重（TB-07）**：同一报告的 LLM 生成与批量评审重试在途时忽略重复点击，按钮置灰 + 「生成中…/重试中…」，完成后恢复。
+- **历史刷新不再强制拉回底部（TB-15）**：向上翻阅时反馈刷新保持阅读位置，仅原在底部/初始加载才滚动。
+- **视图切换刷新一致（TB-16）/ 桥接超时可见错误（TB-17）/ 身份搜索防抖（TB-18）/ 报告加载失败重试（TB-19）/ 组会话数量减少提示（TB-20）**：一批交互细节补齐。
+- **a11y 补齐（TB-21）**：tab 按钮 `role="tab"`/`aria-selected`、图标按钮 `aria-label`、视图切换按钮文案「切换到 X」消歧义。
+
+### 🧹 Chores / Refactoring (重构与工程化)
+
+- **在途条清理触发点补全（TB-10）**：`pending_entries()` 顺带 `_prune_runs`，无新测试时已完成条目也按时清理。
+- **`add_group_sessions` 总数上限（TB-12）/ `update_group` 严格类型校验（TB-13）**：与 clone_sessions / update_session 同口径。
+- **死代码与重复实现清理（TB-22/23/24）**：删除未使用的 `clearStream` 导出与未消费导出；Provider 下拉抽为 `utils.js providerOptions()` 共享；重连/防抖/截断魔法数字提为具名常量。
+- **`:has()` 布局规则改修饰类（TB-26）**：checkbox 标签布局不再依赖老内核 WebView 不支持的 `:has()`；清理 `.ruff_cache`/`.pytest_cache`/`__pycache__` 残留；函数内 stdlib import 提顶。
+- **文档如实化（TB-11/14/25）**：CLAUDE.md 依赖声明改为「公共 API 为主 + 唯一内部路径助手 + 3 条 framework_internal 用例」的准确描述，并显式声明插件仓库中文注释约定；评审时机语义（单步失败/中止不评审）写入 README 与 CLAUDE.md 并有锚定测试。
+
+### 🧪 Testing (测试)
+
+- 新增 10 条测试：损坏文件备份（TB-01）、评审时机跳过（TB-14）、真并行在途与乱序完成（TB-28）、EventBus 慢消费者不阻塞 / StreamStore 损坏行容忍 / SSE 端点 / final_rules 组合兜底（TB-30）；后端测试 251 → 259。
+
 ## [v1.0.1] - 2026-08-07
 
 ### 🧹 Chores / Refactoring (重构与工程化)
